@@ -1,7 +1,72 @@
 [project]
 name = "foamai"
 version = "0.1.0"
-description = "Add your description here"
+description = "AI-powered CFD application using OpenFOAM and ParaView"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    # Core LLM and Agent Framework
+    "langchain>=0.2.0",
+    "langchain-openai>=0.1.0",
+    "langchain-core>=0.2.0",
+    "langgraph>=0.2.0",
+    "openai>=1.0.0",
+    
+    # Configuration and Environment
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.0",
+    
+    # CLI and Utilities
+    "click>=8.0.0",
+    "rich>=13.0.0",  # For beautiful CLI output
+    "typer>=0.9.0",  # Alternative to click for CLI
+    
+    # File and Path handling
+    "jinja2>=3.0.0",  # For template rendering
+    
+    # Logging and Monitoring
+    "loguru>=0.7.0",
+    
+    # Data handling
+    "pyyaml>=6.0.0",
+    "toml>=0.10.0",
+    
+    # Async support
+    "aiofiles>=23.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "isort>=5.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+    "pre-commit>=3.0.0",
+]
+
+[project.scripts]
+foamai = "foamai.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/foamai"]
+
+[tool.black]
+line-length = 88
+target-version = ['py313']
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true

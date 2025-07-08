@@ -95,9 +95,12 @@ def start_pvserver(case_path: str, port: int) -> int:
     cmd = [
         'pvserver',
         f'--server-port={port}',
-        '--disable-xdisplay-test',
-        f'--data={case_path}'
+        '--disable-xdisplay-test'
     ]
+    
+    # Add data parameter if case exists and has data
+    if case_path.exists() and any(case_path.glob('*')):
+        cmd.append(f'--data={case_path}')
     
     try:
         process = subprocess.Popen(

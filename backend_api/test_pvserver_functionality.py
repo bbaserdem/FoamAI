@@ -17,7 +17,7 @@ from pathlib import Path
 from datetime import datetime
 
 DATABASE_PATH = 'tasks.db'
-API_BASE_URL = 'http://localhost:8000'
+API_BASE_URL = 'http://3.139.77.134:8000'  # Update this to your EC2 IP
 
 def test_database_schema():
     """Test that the database schema includes all pvserver columns"""

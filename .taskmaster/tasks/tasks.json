@@ -1,0 +1,184 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": 1,
+        "title": "Setup Project Repository",
+        "description": "Initialize the project repository with the required folder structure and files.",
+        "details": "Create the following folder structure: infra/, docker/, .github/, and docs/. Add placeholder files for main.tf, variables.tf, outputs.tf, user_data.sh, docker-compose.yml, .github/workflows/docker.yml, flake.nix, .env.template, and documentation markdown files.",
+        "testStrategy": "Verify that the repository contains all required files and folders with correct naming and paths.",
+        "priority": "medium",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 2,
+        "title": "Configure Terraform for AWS EC2",
+        "description": "Write Terraform configuration to provision an AWS EC2 instance.",
+        "details": "Create main.tf to define a c7i.2xlarge EC2 instance in us-east-1 with a static public IP. Open ports 22, 80, 443, 11111. Attach a security group and accept user_data.sh for startup provisioning. Ensure the public IP is outputted after apply.",
+        "testStrategy": "Run 'terraform plan' and 'terraform apply' to ensure the EC2 instance is created and the public IP is outputted correctly.",
+        "priority": "medium",
+        "dependencies": [
+          1
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 3,
+        "title": "Develop Startup Script for EC2 Instance",
+        "description": "Create a startup script to configure the EC2 instance on first boot.",
+        "details": "Write user_data.sh to install Docker and docker-compose, clone the GitHub repository, pull Docker images from Docker Hub, and run 'docker-compose up -d'.",
+        "testStrategy": "SSH into the EC2 instance after provisioning and verify Docker and docker-compose are installed and running the expected services.",
+        "priority": "medium",
+        "dependencies": [
+          2
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 4,
+        "title": "Define Docker Compose Configuration",
+        "description": "Create a docker-compose.yml file to manage service containers.",
+        "details": "Define a docker-compose.yml file that exposes port 8000 for the API and port 11111 for pvserver. Define a shared volume at /data for simulation files. Pull images from yourorg/cfd-api:latest, yourorg/openfoam:latest, yourorg/pvserver:latest.",
+        "testStrategy": "Run 'docker-compose up -d' on the EC2 instance and verify that all services are running as expected.",
+        "priority": "medium",
+        "dependencies": [
+          3
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 5,
+        "title": "Implement CI/CD with GitHub Actions",
+        "description": "Set up GitHub Actions to automate Docker image builds and deployments.",
+        "details": "Create a .github/workflows/docker.yml file to build Docker images for each service on push to main. Tag images with both latest and Git commit SHA. Push images to Docker Hub using credentials from GitHub Secrets.",
+        "testStrategy": "Push a commit to the main branch and verify that GitHub Actions build and push the Docker images to Docker Hub.",
+        "priority": "medium",
+        "dependencies": [
+          4
+        ],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Create OpenFOAM Dockerfile",
+            "description": "Develop a Dockerfile for OpenFOAM based on Ubuntu to ensure proper installation and configuration.",
+            "dependencies": [],
+            "details": "The Dockerfile should include all necessary dependencies for OpenFOAM and ensure it runs correctly in a containerized environment.\n<info added on 2025-07-08T14:10:42.669Z>\nSuccessfully created OpenFOAM Dockerfile based on research findings:\n\n## Implementation Details:\n- Used Ubuntu 22.04 LTS as base image (research recommended)\n- Installed OpenFOAM 10 from official repository\n- Implemented security best practices (non-root user)\n- Added proper environment variables for OpenFOAM\n- Included health check to verify installation\n- Created test script for validation\n- Added .dockerignore for build optimization\n\n## Key Features:\n- Layer optimization (combined apt commands)\n- Proper dependency management (MPI, build tools)\n- Security-focused (dedicated openfoam user)\n- Includes /data volume mount point for simulations\n- Built-in installation test functionality\n\n## Next Steps:\n- Test the Docker build process\n- Verify OpenFOAM functionality with sample case\n- Integrate with docker-compose configuration\n</info added on 2025-07-08T14:10:42.669Z>\n<info added on 2025-07-08T14:17:48.065Z>\n## Testing Results:\n- Docker build: ✅ Successful (completed in ~7s with layer caching)\n- OpenFOAM installation: ✅ Verified (blockMesh and foamJob commands found)\n- Test script execution: ✅ Working perfectly\n- Health check: ✅ Functional\n- Container runs as non-root user: ✅ Security best practice\n\n## Final Implementation:\n- OpenFOAM 10 successfully installed from official repository\n- Ubuntu 22.04 LTS base image working correctly\n- All core OpenFOAM commands available and functional\n- Proper environment sourcing working\n- /data volume mount point ready for simulations\n- Docker image tagged as foamai/openfoam:latest\n\n## Ready for Integration:\nThe OpenFOAM Dockerfile is now complete and tested. Ready to move to next subtask (5.2) to create Dockerfiles for other services.\n</info added on 2025-07-08T14:17:48.065Z>",
+            "status": "done",
+            "testStrategy": "Build the Docker image and run a sample OpenFOAM case to verify functionality."
+          },
+          {
+            "id": 2,
+            "title": "Create Dockerfiles for Other Services",
+            "description": "Develop Dockerfiles for other services that will be part of the CI/CD pipeline.",
+            "dependencies": [
+              1
+            ],
+            "details": "Each Dockerfile should be tailored to the specific service requirements and based on Ubuntu.",
+            "status": "in-progress",
+            "testStrategy": "Build each Docker image and run basic tests to ensure they function as expected."
+          },
+          {
+            "id": 3,
+            "title": "Set Up GitHub Actions Workflow",
+            "description": "Create a .github/workflows/docker.yml file to automate the Docker image build process.",
+            "dependencies": [
+              1,
+              2
+            ],
+            "details": "The workflow should trigger on pushes to the main branch, build images, tag them, and push to Docker Hub.",
+            "status": "pending",
+            "testStrategy": "Test the workflow by pushing changes to the main branch and verifying the images are built and pushed correctly."
+          },
+          {
+            "id": 4,
+            "title": "Configure GitHub Secrets for Docker Hub",
+            "description": "Set up GitHub Secrets to securely store Docker Hub credentials for image pushing.",
+            "dependencies": [
+              3
+            ],
+            "details": "Ensure that the Docker Hub username and access token are stored as secrets in the GitHub repository settings.",
+            "status": "pending",
+            "testStrategy": "Verify that the workflow can access the secrets and push images to Docker Hub without errors."
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Configure Nix-based Development Environment",
+        "description": "Set up a reproducible Nix-based development environment.",
+        "details": "Write a flake.nix file to define a devShell with terraform, awscli2, docker, docker-buildx, openssh, jq, and tflint. Export TF_PLUGIN_CACHE_DIR in the shellHook.",
+        "testStrategy": "Run 'nix develop' and verify that the development environment provides access to all specified tools.",
+        "priority": "medium",
+        "dependencies": [
+          5
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 7,
+        "title": "Document DevOps Workflow and Setup",
+        "description": "Create documentation for the DevOps workflow and setup procedures.",
+        "details": "Write markdown files: docs/devops_workflow.md for daily tasks, docs/terraform_setup.md for infrastructure management, and docs/nixos_devops_notes.md for NixOS-specific notes.",
+        "testStrategy": "Review the documentation for completeness and clarity. Ensure all steps are reproducible by a new team member.",
+        "priority": "medium",
+        "dependencies": [
+          6
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 8,
+        "title": "Test API and ParaView Server Accessibility",
+        "description": "Ensure the API and ParaView server are accessible and responsive.",
+        "details": "After deploying the services, test the API by sending a request to http://<ip>:8000/ping and verify it returns 'pong'. Test the ParaView server by connecting to port 11111.",
+        "testStrategy": "Use curl to test the API endpoint and a ParaView client to test the server connection.",
+        "priority": "medium",
+        "dependencies": [
+          7
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 9,
+        "title": "Secure Secrets and Credentials Management",
+        "description": "Implement secure management of secrets and credentials using GitHub Secrets and AWS CLI.",
+        "details": "Use GitHub Secrets to store and manage API keys, passwords, and AWS access credentials. Ensure these are injected securely into CI workflows and the EC2 instance.",
+        "testStrategy": "Verify that secrets are not exposed in logs or code and are correctly used in CI/CD workflows and EC2 instance configuration.",
+        "priority": "medium",
+        "dependencies": [
+          5
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 10,
+        "title": "Final Testing and Handoff",
+        "description": "Conduct final testing and prepare for project handoff.",
+        "details": "Perform a comprehensive test of the entire setup, including infrastructure provisioning, service deployment, and CI/CD workflows. Prepare a handoff document summarizing the setup and any remaining issues.",
+        "testStrategy": "Conduct end-to-end testing to ensure all components function as expected. Review handoff document for completeness.",
+        "priority": "medium",
+        "dependencies": [
+          8,
+          9
+        ],
+        "status": "pending",
+        "subtasks": []
+      }
+    ],
+    "metadata": {
+      "created": "2025-07-08T13:24:41.803Z",
+      "updated": "2025-07-08T14:35:07.885Z",
+      "description": "Tasks for master context"
+    }
+  }
+}

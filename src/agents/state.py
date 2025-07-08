@@ -29,6 +29,17 @@ class GeometryType(str, Enum):
     CUSTOM = "custom"
 
 
+class SolverType(str, Enum):
+    """Available OpenFOAM solvers."""
+    SIMPLE_FOAM = "simpleFoam"
+    PIMPLE_FOAM = "pimpleFoam"
+    # Future additions:
+    # RHOSIMPLE_FOAM = "rhoSimpleFoam"  # Compressible steady
+    # RHOPIMPLE_FOAM = "rhoPimpleFoam"  # Compressible transient
+    # INTER_FOAM = "interFoam"          # Multiphase
+    # BUOYANT_SIMPLE_FOAM = "buoyantSimpleFoam"  # Heat transfer
+
+
 class FlowType(str, Enum):
     """Flow analysis types."""
     LAMINAR = "laminar"

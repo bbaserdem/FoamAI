@@ -376,7 +376,29 @@ def run_solver(case_directory: Path, solver: str, state: CFDState) -> Dict[str, 
         
         # Additional info for transient simulations
         if "pimple" in solver.lower() or "ico" in solver.lower():
-            logger.info(f"  Velocity: {velocity} m/s")
+            velocity = state.get("parsed_parameters", {}).get("velocity", None)
+            if velocity:
+                logger.info(f"  Velocity: {velocity} m/s")
+            else:
+                # Try to get velocity from boundary conditions
+                bc_velocity = None
+                if "boundary_conditions" in state and "U" in state["boundary_conditions"]:
+                    u_field = state["boundary_conditions"]["U"]
+                    if "boundaryField" in u_field and "inlet" in u_field["boundaryField"]:
+                        inlet_bc = u_field["boundaryField"]["inlet"]
+                        if "value" in inlet_bc and "uniform" in inlet_bc["value"]:
+                            # Extract velocity magnitude from uniform value string
+                            vel_match = re.search(r'\(([\d.e-]+)\s+[\d.e-]+\s+[\d.e-]+\)', inlet_bc["value"])
+                            if vel_match:
+                                bc_velocity = float(vel_match.group(1))
+                                logger.info(f"  Velocity: {bc_velocity} m/s (from boundary conditions)")
+                
+                if not velocity and not bc_velocity:
+                    logger.info(f"  Velocity: Not directly specified (calculated from Re)")
+            
+            # The rest of the velocity-dependent calculations need velocity defined
+            if not velocity:
+                velocity = bc_velocity if bc_velocity else 1.0  # Default for CFL calculations
             
             # Estimate CFL number if possible
             if geometry_info and delta_t and delta_t > 0:
@@ -402,9 +424,9 @@ def run_solver(case_directory: Path, solver: str, state: CFDState) -> Dict[str, 
         logger.info("=" * 60)
     
     # Special warning for very high velocity flows
-    velocity = state.get("parsed_parameters", {}).get("velocity", 1.0)
-    if velocity and velocity > 50:
-        logger.warning(f"High velocity ({velocity} m/s) detected - simulation may take longer due to small time steps required for stability")
+    velocity_check = state.get("parsed_parameters", {}).get("velocity", None)
+    if velocity_check and velocity_check > 50:
+        logger.warning(f"High velocity ({velocity_check} m/s) detected - simulation may take longer due to small time steps required for stability")
     
     try:
         # Get settings to check if we need WSL
@@ -470,10 +492,13 @@ def run_solver(case_directory: Path, solver: str, state: CFDState) -> Dict[str, 
                 
                 # In verbose mode, report progress for time steps
                 if state["verbose"]:
-                    # Look for time step progress
-                    time_match = re.search(r"Time = ([\d.e-]+)", line)
+                    # Look for time step progress - use robust regex for scientific notation
+                    time_match = re.search(r"Time = ([\d.]+(?:[eE][+-]?\d+)?)", line)
                     if time_match:
-                        current_time = float(time_match.group(1))
+                        try:
+                            current_time = float(time_match.group(1))
+                        except ValueError:
+                            continue  # Skip malformed numbers
                         time_step_count += 1
                         # Report every 10 seconds of real time or every 100 time steps
                         if time.time() - last_time_reported > 10 or time_step_count % 100 == 0:
@@ -519,12 +544,16 @@ def run_solver(case_directory: Path, solver: str, state: CFDState) -> Dict[str, 
                     if "FOAM Warning" in line:
                         logger.warning(f"Solver warning: {line.strip()}")
                     if "time step continuity errors" in line and "sum local" in line:
-                        # Extract continuity error
-                        error_match = re.search(r"sum local = ([\d.e-]+)", line)
+                        # Extract continuity error - use more robust regex for scientific notation
+                        error_match = re.search(r"sum local = ([\d.]+(?:[eE][+-]?\d+)?)", line)
                         if error_match:
-                            error = float(error_match.group(1))
-                            if error > 1e-5:
-                                logger.warning(f"High continuity error: {error:.2e}")
+                            try:
+                                error = float(error_match.group(1))
+                                if error > 1e-5:
+                                    logger.warning(f"High continuity error: {error:.2e}")
+                            except ValueError:
+                                # Skip malformed numbers
+                                pass
             
             # Wait for process to complete with timeout
             timeout = state.get("max_simulation_time", 3600)
@@ -705,21 +734,25 @@ def parse_solver_output(log_file: Path, solver: str) -> Dict[str, Any]:
         with open(log_file, "r") as f:
             content = f.read()
         
-        # Extract final residuals (simplified parsing)
+        # Extract final residuals (simplified parsing) - use robust regex for scientific notation
         residual_patterns = {
-            "p": r"Solving for p.*Final residual = ([\d.e-]+)",
-            "Ux": r"Solving for Ux.*Final residual = ([\d.e-]+)",
-            "Uy": r"Solving for Uy.*Final residual = ([\d.e-]+)",
-            "Uz": r"Solving for Uz.*Final residual = ([\d.e-]+)",
-            "k": r"Solving for k.*Final residual = ([\d.e-]+)",
-            "omega": r"Solving for omega.*Final residual = ([\d.e-]+)",
-            "epsilon": r"Solving for epsilon.*Final residual = ([\d.e-]+)"
+            "p": r"Solving for p.*Final residual = ([\d.]+(?:[eE][+-]?\d+)?)",
+            "Ux": r"Solving for Ux.*Final residual = ([\d.]+(?:[eE][+-]?\d+)?)",
+            "Uy": r"Solving for Uy.*Final residual = ([\d.]+(?:[eE][+-]?\d+)?)",
+            "Uz": r"Solving for Uz.*Final residual = ([\d.]+(?:[eE][+-]?\d+)?)",
+            "k": r"Solving for k.*Final residual = ([\d.]+(?:[eE][+-]?\d+)?)",
+            "omega": r"Solving for omega.*Final residual = ([\d.]+(?:[eE][+-]?\d+)?)",
+            "epsilon": r"Solving for epsilon.*Final residual = ([\d.]+(?:[eE][+-]?\d+)?)"
         }
         
         for field, pattern in residual_patterns.items():
             matches = re.findall(pattern, content)
             if matches:
-                solver_info["final_residuals"][field] = float(matches[-1])  # Take last value
+                try:
+                    solver_info["final_residuals"][field] = float(matches[-1])  # Take last value
+                except ValueError:
+                    # Skip malformed numbers
+                    pass
         
         # Check convergence - more robust detection
         if "SIMPLE solution converged" in content or "PIMPLE: converged" in content:
@@ -732,9 +765,12 @@ def parse_solver_output(log_file: Path, solver: str) -> Dict[str, Any]:
             solver_info["converged"] = True
         
         # Extract execution time
-        time_match = re.search(r"ExecutionTime = ([\d.]+) s", content)
+        time_match = re.search(r"ExecutionTime = ([\d.]+(?:[eE][+-]?\d+)?) s", content)
         if time_match:
-            solver_info["execution_time"] = float(time_match.group(1))
+            try:
+                solver_info["execution_time"] = float(time_match.group(1))
+            except ValueError:
+                pass  # Skip malformed numbers
         
         # Extract iterations/time steps
         if "steady" in solver.lower():
@@ -742,9 +778,12 @@ def parse_solver_output(log_file: Path, solver: str) -> Dict[str, Any]:
             if iteration_matches:
                 solver_info["iterations"] = int(iteration_matches[-1])
         else:
-            time_matches = re.findall(r"Time = ([\d.e-]+)", content)
+            time_matches = re.findall(r"Time = ([\d.]+(?:[eE][+-]?\d+)?)", content)
             if time_matches:
-                solver_info["final_time"] = float(time_matches[-1])
+                try:
+                    solver_info["final_time"] = float(time_matches[-1])
+                except ValueError:
+                    pass  # Skip malformed numbers
         
         # Extract warnings and errors
         warnings = re.findall(r"Warning.*", content)

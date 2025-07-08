@@ -1,14 +1,81 @@
 """Solver Selector Agent - Chooses appropriate OpenFOAM solvers and configurations."""
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from loguru import logger
+import re
 
-from .state import CFDState, CFDStep, GeometryType, FlowType, AnalysisType
+from .state import CFDState, CFDStep, GeometryType, FlowType, AnalysisType, SolverType
+
+
+# Solver Registry - defines available solvers and their characteristics
+SOLVER_REGISTRY = {
+    SolverType.SIMPLE_FOAM: {
+        "name": "simpleFoam",
+        "description": "Steady-state incompressible flow solver using SIMPLE algorithm",
+        "capabilities": {
+            "flow_type": ["incompressible"],
+            "time_dependency": ["steady"],
+            "turbulence": ["laminar", "RANS"],
+            "heat_transfer": False,
+            "multiphase": False,
+            "compressible": False
+        },
+        "recommended_for": [
+            "Low Reynolds number flows (Re < 40-50 for cylinders)",
+            "Steady aerodynamic analysis",
+            "Pressure drop calculations",
+            "Design optimization studies",
+            "Flows without vortex shedding"
+        ],
+        "not_recommended_for": [
+            "Vortex shedding analysis",
+            "Transient phenomena",
+            "Startup/shutdown simulations",
+            "Time-periodic flows"
+        ],
+        "typical_applications": [
+            "Internal flows in pipes/ducts",
+            "External aerodynamics at low Re",
+            "HVAC system design",
+            "Steady heat exchanger flows"
+        ]
+    },
+    SolverType.PIMPLE_FOAM: {
+        "name": "pimpleFoam",
+        "description": "Transient incompressible flow solver using PIMPLE algorithm",
+        "capabilities": {
+            "flow_type": ["incompressible"],
+            "time_dependency": ["transient", "steady"],  # Can do both
+            "turbulence": ["laminar", "RANS", "LES"],
+            "heat_transfer": False,
+            "multiphase": False,
+            "compressible": False
+        },
+        "recommended_for": [
+            "Vortex shedding analysis",
+            "Moderate to high Reynolds number flows",
+            "Time-dependent phenomena",
+            "Flow development studies",
+            "Unsteady aerodynamics"
+        ],
+        "not_recommended_for": [
+            "Quick steady-state solutions",
+            "Very low Reynolds number flows",
+            "Cases where only final state matters"
+        ],
+        "typical_applications": [
+            "Bluff body flows",
+            "Turbulent wakes",
+            "Oscillating flows",
+            "Transient HVAC scenarios"
+        ]
+    }
+}
 
 
 def solver_selector_agent(state: CFDState) -> CFDState:
     """
-    Solver Selector Agent.
+    Enhanced Solver Selector Agent using AI-based decision making.
     
     Chooses appropriate OpenFOAM solver and generates solver configuration
     files (fvSchemes, fvSolution, controlDict) based on flow parameters.
@@ -19,10 +86,22 @@ def solver_selector_agent(state: CFDState) -> CFDState:
         
         parsed_params = state["parsed_parameters"]
         geometry_info = state["geometry_info"]
-        boundary_conditions = state["boundary_conditions"]
         
-        # Select appropriate solver
-        solver_settings = select_solver(parsed_params, geometry_info)
+        # Extract problem features for AI decision
+        problem_features = extract_problem_features(state)
+        
+        # Get AI recommendation for solver
+        solver_recommendation = get_ai_solver_recommendation(
+            problem_features, 
+            SOLVER_REGISTRY
+        )
+        
+        # Build solver settings with the recommended solver
+        solver_settings = build_solver_settings(
+            solver_recommendation,
+            parsed_params,
+            geometry_info
+        )
         
         # Generate solver configuration files
         solver_config = generate_solver_config(solver_settings, parsed_params, geometry_info)
@@ -54,6 +133,229 @@ def solver_selector_agent(state: CFDState) -> CFDState:
             "errors": state["errors"] + [f"Solver selection failed: {str(e)}"],
             "current_step": CFDStep.ERROR
         }
+
+
+def extract_problem_features(state: CFDState) -> Dict[str, Any]:
+    """Extract key features for solver selection."""
+    params = state["parsed_parameters"]
+    geometry = state["geometry_info"]
+    
+    # Calculate dimensionless numbers
+    reynolds_number = params.get("reynolds_number", 0)
+    velocity = params.get("velocity", None)
+    density = params.get("density", 1.225)
+    viscosity = params.get("viscosity", 1.81e-5)
+    
+    # If velocity is not provided but Reynolds number is, calculate velocity
+    if velocity is None and reynolds_number > 0:
+        # Get characteristic length based on geometry
+        geometry_type = geometry["type"]
+        if geometry_type == GeometryType.CYLINDER:
+            char_length = geometry.get("diameter", 0.1)
+        elif geometry_type == GeometryType.SPHERE:
+            char_length = geometry.get("diameter", 0.1)
+        elif geometry_type == GeometryType.CUBE:
+            char_length = geometry.get("side_length", 0.1)
+        elif geometry_type == GeometryType.AIRFOIL:
+            char_length = geometry.get("chord_length", 0.1)
+        elif geometry_type == GeometryType.PIPE:
+            char_length = geometry.get("diameter", 0.1)
+        elif geometry_type == GeometryType.CHANNEL:
+            char_length = geometry.get("height", 0.1)
+        else:
+            char_length = 0.1  # Default
+        
+        # Calculate velocity from Re = ρ * V * L / μ
+        velocity = reynolds_number * viscosity / (density * char_length)
+        logger.info(f"Calculated velocity {velocity:.3f} m/s from Reynolds number {reynolds_number}")
+    
+    # Default velocity if still None
+    if velocity is None:
+        velocity = 1.0
+    
+    speed_of_sound = 343.0  # m/s at 20°C
+    mach_number = velocity / speed_of_sound if velocity else 0
+    
+    # Determine expected flow phenomena
+    expects_vortex_shedding = check_vortex_shedding(
+        geometry["type"], 
+        reynolds_number
+    )
+    
+    # Extract keywords from original prompt
+    original_prompt = state.get("original_prompt", "")
+    keywords = extract_keywords(original_prompt)
+    
+    return {
+        "geometry_type": geometry["type"].value if hasattr(geometry["type"], 'value') else str(geometry["type"]),
+        "reynolds_number": reynolds_number,
+        "mach_number": mach_number,
+        "flow_type": params.get("flow_type", FlowType.LAMINAR),
+        "analysis_type": params.get("analysis_type", AnalysisType.UNSTEADY),
+        "expects_vortex_shedding": expects_vortex_shedding,
+        "has_heat_transfer": params.get("temperature") is not None,
+        "is_compressible": mach_number > 0.3,
+        "user_keywords": keywords,
+        "time_scale_interest": infer_time_scale_interest(params, keywords)
+    }
+
+
+def check_vortex_shedding(geometry_type: GeometryType, reynolds_number: float) -> bool:
+    """Check if vortex shedding is expected based on geometry and Re."""
+    if reynolds_number <= 0:
+        return False
+    
+    # Geometry-specific vortex shedding thresholds
+    vortex_shedding_thresholds = {
+        GeometryType.CYLINDER: 40,      # Vortex shedding starts around Re=40
+        GeometryType.SPHERE: 200,        # Vortex shedding starts around Re=200
+        GeometryType.CUBE: 50,           # Similar to cylinder
+        GeometryType.AIRFOIL: 100000,    # Much higher for streamlined bodies
+    }
+    
+    threshold = vortex_shedding_thresholds.get(geometry_type, 100)
+    return reynolds_number > threshold
+
+
+def extract_keywords(prompt: str) -> List[str]:
+    """Extract relevant keywords from user prompt."""
+    # Convert to lowercase for matching
+    prompt_lower = prompt.lower()
+    
+    # Keywords that suggest specific solver needs
+    steady_keywords = ["steady", "equilibrium", "final", "converged", "pressure drop", "drag coefficient"]
+    transient_keywords = ["transient", "time", "unsteady", "vortex", "shedding", "oscillat", "frequency", 
+                         "startup", "development", "periodic"]
+    
+    found_keywords = []
+    
+    for keyword in steady_keywords:
+        if keyword in prompt_lower:
+            found_keywords.append(f"steady:{keyword}")
+    
+    for keyword in transient_keywords:
+        if keyword in prompt_lower:
+            found_keywords.append(f"transient:{keyword}")
+    
+    return found_keywords
+
+
+def infer_time_scale_interest(params: Dict[str, Any], keywords: List[str]) -> str:
+    """Infer whether user is interested in transient or steady behavior."""
+    # Check explicit analysis type
+    if params.get("analysis_type") == AnalysisType.STEADY:
+        return "steady"
+    elif params.get("analysis_type") == AnalysisType.UNSTEADY:
+        return "transient"
+    
+    # Check keywords
+    steady_count = sum(1 for k in keywords if k.startswith("steady:"))
+    transient_count = sum(1 for k in keywords if k.startswith("transient:"))
+    
+    if steady_count > transient_count:
+        return "steady"
+    elif transient_count > steady_count:
+        return "transient"
+    else:
+        return "unknown"
+
+
+def get_ai_solver_recommendation(
+    features: Dict[str, Any], 
+    solver_registry: Dict[SolverType, Dict]
+) -> SolverType:
+    """
+    AI agent logic to select best solver based on problem features.
+    This is where the intelligence lives.
+    """
+    
+    # Log the decision process
+    logger.info(f"AI Solver Selection - Problem features:")
+    logger.info(f"  Geometry: {features['geometry_type']}")
+    logger.info(f"  Reynolds Number: {features['reynolds_number']}")
+    logger.info(f"  Analysis Type: {features['analysis_type']}")
+    logger.info(f"  Expects Vortex Shedding: {features['expects_vortex_shedding']}")
+    logger.info(f"  Time Scale Interest: {features['time_scale_interest']}")
+    logger.info(f"  Keywords: {features['user_keywords']}")
+    
+    # Decision logic
+    # Priority 1: Explicit steady-state request
+    if features['analysis_type'] == AnalysisType.STEADY or features['time_scale_interest'] == "steady":
+        logger.info("AI Decision: Explicit steady-state request → simpleFoam")
+        return SolverType.SIMPLE_FOAM
+    
+    # Priority 2: Low Reynolds number without vortex shedding
+    if not features['expects_vortex_shedding'] and features['reynolds_number'] < 100:
+        logger.info(f"AI Decision: Low Re={features['reynolds_number']} without vortex shedding → simpleFoam")
+        return SolverType.SIMPLE_FOAM
+    
+    # Priority 3: Keywords strongly suggesting steady state
+    steady_keywords = ["pressure drop", "drag coefficient", "lift coefficient", "steady", "equilibrium"]
+    if any(f"steady:{kw}" in features['user_keywords'] for kw in steady_keywords):
+        logger.info("AI Decision: Steady-state keywords detected → simpleFoam")
+        return SolverType.SIMPLE_FOAM
+    
+    # Priority 4: Vortex shedding or explicit transient request
+    if features['expects_vortex_shedding'] or features['analysis_type'] == AnalysisType.UNSTEADY:
+        logger.info("AI Decision: Vortex shedding expected or transient requested → pimpleFoam")
+        return SolverType.PIMPLE_FOAM
+    
+    # Priority 5: Transient keywords
+    transient_keywords = ["vortex", "shedding", "frequency", "oscillat", "time", "transient"]
+    if any(f"transient:{kw}" in features['user_keywords'] for kw in transient_keywords):
+        logger.info("AI Decision: Transient keywords detected → pimpleFoam")
+        return SolverType.PIMPLE_FOAM
+    
+    # Default: For ambiguous cases, prefer efficiency
+    if features['time_scale_interest'] == "unknown":
+        logger.info("AI Decision: Ambiguous case, defaulting to efficient steady solver → simpleFoam")
+        return SolverType.SIMPLE_FOAM
+    
+    # Final fallback
+    logger.info("AI Decision: Default fallback → pimpleFoam")
+    return SolverType.PIMPLE_FOAM
+
+
+def build_solver_settings(
+    solver_type: SolverType,
+    parsed_params: Dict[str, Any],
+    geometry_info: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Build complete solver settings based on selected solver type."""
+    flow_type = parsed_params.get("flow_type", FlowType.LAMINAR)
+    reynolds_number = parsed_params.get("reynolds_number", 0)
+    
+    # Determine analysis type based on solver
+    if solver_type == SolverType.SIMPLE_FOAM:
+        analysis_type = AnalysisType.STEADY
+    else:
+        analysis_type = AnalysisType.UNSTEADY
+    
+    # Get solver info from registry
+    solver_info = SOLVER_REGISTRY[solver_type]
+    
+    solver_settings = {
+        "solver": solver_info["name"],
+        "solver_type": solver_type,
+        "flow_type": flow_type,
+        "analysis_type": analysis_type,
+        "reynolds_number": reynolds_number,
+        "mach_number": parsed_params.get("mach_number", 0),
+        "compressible": False  # Both solvers are incompressible
+    }
+    
+    # Turbulence model selection
+    if flow_type == FlowType.TURBULENT:
+        if reynolds_number is not None and reynolds_number < 10000:
+            solver_settings["turbulence_model"] = "kOmegaSST"
+        elif reynolds_number is not None and reynolds_number >= 10000:
+            solver_settings["turbulence_model"] = "kEpsilon"
+        else:
+            solver_settings["turbulence_model"] = "kOmegaSST"
+    else:
+        solver_settings["turbulence_model"] = "laminar"
+    
+    return solver_settings
 
 
 def select_solver(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any]) -> Dict[str, Any]:
@@ -127,10 +429,36 @@ def generate_solver_config(solver_settings: Dict[str, Any], parsed_params: Dict[
 
 def generate_control_dict(solver: str, analysis_type: AnalysisType, parsed_params: Dict[str, Any], geometry_info: Dict[str, Any]) -> Dict[str, Any]:
     """Generate controlDict configuration."""
-    # For transient simulations, use smaller time steps and more frequent output
+    # Check if this is a transient solver
     if analysis_type == AnalysisType.UNSTEADY or "pimple" in solver.lower():
         # Calculate appropriate time step based on flow parameters
-        velocity = parsed_params.get("velocity", 1.0)
+        velocity = parsed_params.get("velocity", None)
+        
+        # If velocity is not provided but Reynolds number is, calculate velocity
+        if velocity is None and parsed_params.get("reynolds_number", 0) > 0:
+            reynolds_number = parsed_params["reynolds_number"]
+            density = parsed_params.get("density", 1.225)
+            viscosity = parsed_params.get("viscosity", 1.81e-5)
+            
+            # Get characteristic length based on geometry
+            if geometry_info["type"] == GeometryType.CYLINDER:
+                char_length = geometry_info.get("diameter", 0.1)
+            elif geometry_info["type"] == GeometryType.SPHERE:
+                char_length = geometry_info.get("diameter", 0.1)
+            elif geometry_info["type"] == GeometryType.CUBE:
+                char_length = geometry_info.get("side_length", 0.1)
+            elif geometry_info["type"] == GeometryType.AIRFOIL:
+                char_length = geometry_info.get("chord_length", 0.1)
+            elif geometry_info["type"] == GeometryType.PIPE:
+                char_length = geometry_info.get("diameter", 0.1)
+            elif geometry_info["type"] == GeometryType.CHANNEL:
+                char_length = geometry_info.get("height", 0.1)
+            else:
+                char_length = 0.1  # Default
+            
+            # Calculate velocity from Re = ρ * V * L / μ
+            velocity = reynolds_number * viscosity / (density * char_length)
+            logger.info(f"Calculated velocity {velocity:.3f} m/s from Reynolds number {reynolds_number} for time step calculation")
         
         # Ensure velocity is valid
         if velocity is None or velocity <= 0:
@@ -423,12 +751,25 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
     
     # Algorithm settings
     if analysis_type == AnalysisType.STEADY:
+        # Adjust SIMPLE settings based on Reynolds number
+        reynolds_number = parsed_params.get("reynolds_number", 1000)
+        
+        # Low Re flows might need more correctors
+        if reynolds_number < 100:
+            n_corr = 1  # More corrections for stability
+            p_tol = 1e-02
+            u_tol = 1e-03
+        else:
+            n_corr = 0
+            p_tol = 1e-02
+            u_tol = 1e-03
+        
         fv_solution["SIMPLE"] = {
-            "nNonOrthogonalCorrectors": 0,
+            "nNonOrthogonalCorrectors": n_corr,
             "consistent": "true",
             "residualControl": {
-                "p": 1e-02,
-                "U": 1e-03
+                "p": p_tol,
+                "U": u_tol
             }
         }
         
@@ -439,17 +780,33 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
                 "epsilon": 1e-03
             })
         
-        # Relaxation factors
+        # Relaxation factors - adjust based on Reynolds number for stability
+        reynolds_number = parsed_params.get("reynolds_number", 1000)
+        
+        if reynolds_number < 100:  # Very low Re flows need more relaxation
+            p_relax = 0.1
+            u_relax = 0.3
+            turb_relax = 0.3
+            logger.info(f"Using conservative relaxation factors for low Re={reynolds_number}: p={p_relax}, U={u_relax}")
+        elif reynolds_number < 1000:  # Moderate Re
+            p_relax = 0.2
+            u_relax = 0.5
+            turb_relax = 0.5
+        else:  # Higher Re
+            p_relax = 0.3
+            u_relax = 0.7
+            turb_relax = 0.7
+        
         fv_solution["relaxationFactors"] = {
-            "fields": {"p": 0.3},
-            "equations": {"U": 0.7}
+            "fields": {"p": p_relax},
+            "equations": {"U": u_relax}
         }
         
         if flow_type == FlowType.TURBULENT:
             fv_solution["relaxationFactors"]["equations"].update({
-                "k": 0.8,
-                "omega": 0.8,
-                "epsilon": 0.8
+                "k": turb_relax,
+                "omega": turb_relax,
+                "epsilon": turb_relax
             })
     
     else:

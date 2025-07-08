@@ -228,9 +228,12 @@ def apply_intelligent_defaults(geometry_type: GeometryType, dimensions: Dict[str
                              flow_context: FlowContext, reynolds_number: Optional[float]) -> Dict[str, float]:
     """Apply intelligent defaults for missing dimensions based on geometry and flow type."""
     
+    # Remove None values from dimensions dictionary
+    dimensions = {k: v for k, v in dimensions.items() if v is not None}
+    
     # Geometry-specific intelligent defaults
     if geometry_type == GeometryType.CYLINDER:
-        if 'diameter' not in dimensions:
+        if 'diameter' not in dimensions or dimensions.get('diameter') is None:
             if reynolds_number and reynolds_number < 1000:
                 dimensions['diameter'] = 0.01  # Small cylinder for low Re
             elif reynolds_number and reynolds_number > 100000:
@@ -247,40 +250,40 @@ def apply_intelligent_defaults(geometry_type: GeometryType, dimensions: Dict[str
                 dimensions['length'] = dimensions['diameter'] * 10
     
     elif geometry_type == GeometryType.AIRFOIL:
-        if 'chord' not in dimensions:
+        if 'chord' not in dimensions or dimensions.get('chord') is None:
             dimensions['chord'] = 0.1  # Default 10cm chord
-        if 'span' not in dimensions:
+        if 'span' not in dimensions or dimensions.get('span') is None:
             # For 2D simulation, use thin span
-            dimensions['span'] = dimensions['chord'] * 0.1
-        if 'thickness' not in dimensions:
+            dimensions['span'] = dimensions.get('chord', 0.1) * 0.1
+        if 'thickness' not in dimensions or dimensions.get('thickness') is None:
             # Typical airfoil thickness ratio
-            dimensions['thickness'] = dimensions['chord'] * 0.12
+            dimensions['thickness'] = dimensions.get('chord', 0.1) * 0.12
     
     elif geometry_type == GeometryType.PIPE:
-        if 'diameter' not in dimensions:
+        if 'diameter' not in dimensions or dimensions.get('diameter') is None:
             dimensions['diameter'] = 0.05  # Default 5cm pipe
-        if 'length' not in dimensions:
+        if 'length' not in dimensions or dimensions.get('length') is None:
             # Ensure sufficient length for flow development
-            dimensions['length'] = max(dimensions['diameter'] * 20, 1.0)
+            dimensions['length'] = max(dimensions.get('diameter', 0.05) * 20, 1.0)
     
     elif geometry_type == GeometryType.CHANNEL:
-        if 'height' not in dimensions:
+        if 'height' not in dimensions or dimensions.get('height') is None:
             dimensions['height'] = 0.1  # Default 10cm height
-        if 'width' not in dimensions:
+        if 'width' not in dimensions or dimensions.get('width') is None:
             # Aspect ratio considerations
             if 'height' in dimensions:
                 dimensions['width'] = dimensions['height'] * 2  # 2:1 aspect ratio
             else:
                 dimensions['width'] = 0.2
-        if 'length' not in dimensions:
+        if 'length' not in dimensions or dimensions.get('length') is None:
             dimensions['length'] = max(dimensions.get('height', 0.1) * 10, 1.0)
     
     elif geometry_type == GeometryType.SPHERE:
-        if 'diameter' not in dimensions:
+        if 'diameter' not in dimensions or dimensions.get('diameter') is None:
             dimensions['diameter'] = 0.1  # Default 10cm sphere
     
     elif geometry_type == GeometryType.CUBE:
-        if 'side_length' not in dimensions:
+        if 'side_length' not in dimensions or dimensions.get('side_length') is None:
             if reynolds_number and reynolds_number < 1000:
                 dimensions['side_length'] = 0.01  # Small cube for low Re
             elif reynolds_number and reynolds_number > 100000:
@@ -434,6 +437,7 @@ Return valid JSON that matches the schema exactly.
             **state,
             "parsed_parameters": parsed_params,
             "geometry_info": geometry_info,
+            "original_prompt": state["user_prompt"],  # Pass original prompt for AI solver selection
             "errors": []
         }
         

@@ -84,10 +84,37 @@ def generate_boundary_conditions(parsed_params: Dict[str, Any], geometry_info: D
 
 def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any], mesh_config: Dict[str, Any]) -> Dict[str, Any]:
     """Generate velocity field (U)."""
-    velocity = parsed_params.get("velocity", 1.0)
+    velocity = parsed_params.get("velocity", None)
+    
+    # If velocity is not provided but Reynolds number is, calculate velocity
+    if velocity is None and "reynolds_number" in parsed_params and parsed_params["reynolds_number"] is not None:
+        reynolds_number = parsed_params["reynolds_number"]
+        density = parsed_params.get("density", 1.225)  # kg/m³
+        viscosity = parsed_params.get("viscosity", 1.81e-5)  # Pa·s
+        
+        # Get characteristic length based on geometry
+        if geometry_info["type"] == GeometryType.CYLINDER:
+            char_length = geometry_info.get("diameter", 0.1)
+        elif geometry_info["type"] == GeometryType.SPHERE:
+            char_length = geometry_info.get("diameter", 0.1)
+        elif geometry_info["type"] == GeometryType.CUBE:
+            char_length = geometry_info.get("side_length", 0.1)
+        elif geometry_info["type"] == GeometryType.AIRFOIL:
+            char_length = geometry_info.get("chord_length", 0.1)
+        elif geometry_info["type"] == GeometryType.PIPE:
+            char_length = geometry_info.get("diameter", 0.1)
+        elif geometry_info["type"] == GeometryType.CHANNEL:
+            char_length = geometry_info.get("height", 0.1)
+        else:
+            char_length = 0.1  # Default
+        
+        # Calculate velocity from Re = ρ * V * L / μ
+        velocity = reynolds_number * viscosity / (density * char_length)
+        logger.info(f"Calculated velocity {velocity:.3f} m/s from Reynolds number {reynolds_number}")
+    
     # Ensure velocity is not None
     if velocity is None:
-        logger.warning("Velocity is None, using default 1.0 m/s")
+        logger.warning("Velocity is None and cannot be calculated from Reynolds number, using default 1.0 m/s")
         velocity = 1.0
     
     velocity_components = parsed_params.get("velocity_components", None)
@@ -537,7 +564,33 @@ def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
 
 def generate_turbulent_kinetic_energy_field(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any], mesh_config: Dict[str, Any]) -> Dict[str, Any]:
     """Generate turbulent kinetic energy field (k)."""
-    velocity = parsed_params.get("velocity", 1.0)
+    velocity = parsed_params.get("velocity", None)
+    
+    # If velocity is not provided but Reynolds number is, calculate velocity
+    if velocity is None and "reynolds_number" in parsed_params and parsed_params["reynolds_number"] is not None:
+        reynolds_number = parsed_params["reynolds_number"]
+        density = parsed_params.get("density", 1.225)  # kg/m³
+        viscosity = parsed_params.get("viscosity", 1.81e-5)  # Pa·s
+        
+        # Get characteristic length based on geometry
+        if geometry_info["type"] == GeometryType.CYLINDER:
+            char_length = geometry_info.get("diameter", 0.1)
+        elif geometry_info["type"] == GeometryType.SPHERE:
+            char_length = geometry_info.get("diameter", 0.1)
+        elif geometry_info["type"] == GeometryType.CUBE:
+            char_length = geometry_info.get("side_length", 0.1)
+        elif geometry_info["type"] == GeometryType.AIRFOIL:
+            char_length = geometry_info.get("chord_length", 0.1)
+        elif geometry_info["type"] == GeometryType.PIPE:
+            char_length = geometry_info.get("diameter", 0.1)
+        elif geometry_info["type"] == GeometryType.CHANNEL:
+            char_length = geometry_info.get("height", 0.1)
+        else:
+            char_length = 0.1  # Default
+        
+        # Calculate velocity from Re = ρ * V * L / μ
+        velocity = reynolds_number * viscosity / (density * char_length)
+    
     if velocity is None:
         velocity = 1.0  # Default velocity
     turbulence_intensity = parsed_params.get("turbulence_intensity", 0.05)
@@ -749,7 +802,33 @@ def generate_turbulent_kinetic_energy_field(parsed_params: Dict[str, Any], geome
 
 def generate_specific_dissipation_field(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any], mesh_config: Dict[str, Any]) -> Dict[str, Any]:
     """Generate specific dissipation rate field (omega)."""
-    velocity = parsed_params.get("velocity", 1.0)
+    velocity = parsed_params.get("velocity", None)
+    
+    # If velocity is not provided but Reynolds number is, calculate velocity
+    if velocity is None and "reynolds_number" in parsed_params and parsed_params["reynolds_number"] is not None:
+        reynolds_number = parsed_params["reynolds_number"]
+        density = parsed_params.get("density", 1.225)  # kg/m³
+        viscosity = parsed_params.get("viscosity", 1.81e-5)  # Pa·s
+        
+        # Get characteristic length based on geometry
+        if geometry_info["type"] == GeometryType.CYLINDER:
+            char_length = geometry_info.get("diameter", 0.1)
+        elif geometry_info["type"] == GeometryType.SPHERE:
+            char_length = geometry_info.get("diameter", 0.1)
+        elif geometry_info["type"] == GeometryType.CUBE:
+            char_length = geometry_info.get("side_length", 0.1)
+        elif geometry_info["type"] == GeometryType.AIRFOIL:
+            char_length = geometry_info.get("chord_length", 0.1)
+        elif geometry_info["type"] == GeometryType.PIPE:
+            char_length = geometry_info.get("diameter", 0.1)
+        elif geometry_info["type"] == GeometryType.CHANNEL:
+            char_length = geometry_info.get("height", 0.1)
+        else:
+            char_length = 0.1  # Default
+        
+        # Calculate velocity from Re = ρ * V * L / μ
+        velocity = reynolds_number * viscosity / (density * char_length)
+    
     if velocity is None:
         velocity = 1.0  # Default velocity
     turbulence_intensity = parsed_params.get("turbulence_intensity", 0.05)
@@ -960,7 +1039,33 @@ def generate_specific_dissipation_field(parsed_params: Dict[str, Any], geometry_
 
 def generate_dissipation_field(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any], mesh_config: Dict[str, Any]) -> Dict[str, Any]:
     """Generate dissipation rate field (epsilon)."""
-    velocity = parsed_params.get("velocity", 1.0)
+    velocity = parsed_params.get("velocity", None)
+    
+    # If velocity is not provided but Reynolds number is, calculate velocity
+    if velocity is None and "reynolds_number" in parsed_params and parsed_params["reynolds_number"] is not None:
+        reynolds_number = parsed_params["reynolds_number"]
+        density = parsed_params.get("density", 1.225)  # kg/m³
+        viscosity = parsed_params.get("viscosity", 1.81e-5)  # Pa·s
+        
+        # Get characteristic length based on geometry
+        if geometry_info["type"] == GeometryType.CYLINDER:
+            char_length = geometry_info.get("diameter", 0.1)
+        elif geometry_info["type"] == GeometryType.SPHERE:
+            char_length = geometry_info.get("diameter", 0.1)
+        elif geometry_info["type"] == GeometryType.CUBE:
+            char_length = geometry_info.get("side_length", 0.1)
+        elif geometry_info["type"] == GeometryType.AIRFOIL:
+            char_length = geometry_info.get("chord_length", 0.1)
+        elif geometry_info["type"] == GeometryType.PIPE:
+            char_length = geometry_info.get("diameter", 0.1)
+        elif geometry_info["type"] == GeometryType.CHANNEL:
+            char_length = geometry_info.get("height", 0.1)
+        else:
+            char_length = 0.1  # Default
+        
+        # Calculate velocity from Re = ρ * V * L / μ
+        velocity = reynolds_number * viscosity / (density * char_length)
+    
     if velocity is None:
         velocity = 1.0  # Default velocity
     turbulence_intensity = parsed_params.get("turbulence_intensity", 0.05)

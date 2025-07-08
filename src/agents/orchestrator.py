@@ -20,6 +20,10 @@ def orchestrator_agent(state: CFDState) -> CFDState:
         logger.info(f"Orchestrator: Errors = {state['errors']}")
         logger.info(f"Orchestrator: Retry count = {state['retry_count']}")
     
+    # Initialize error recovery tracking if not present
+    if "error_recovery_attempts" not in state:
+        state["error_recovery_attempts"] = {}
+    
     # Handle maximum retries exceeded
     if state["retry_count"] >= state["max_retries"]:
         logger.error("Maximum retries exceeded")
@@ -30,14 +34,15 @@ def orchestrator_agent(state: CFDState) -> CFDState:
         }
     
     # Handle errors first - determine recovery strategy
-    if state["errors"]:
+    # But not if we're already in ERROR state (terminal)
+    if state["errors"] and state["current_step"] != CFDStep.ERROR:
         return handle_error_recovery(state)
     
     # Handle successful completion
     if state["current_step"] == CFDStep.SIMULATION and state.get("convergence_metrics", {}).get("converged", False):
         logger.info("Simulation completed successfully - proceeding to completion")
         # Check if visualization is requested
-        if state.get("export_images", False):
+        if state.get("export_images", True):
             return {
                 **state,
                 "current_step": CFDStep.VISUALIZATION,
@@ -64,13 +69,17 @@ def handle_error_recovery(state: CFDState) -> CFDState:
     
     logger.warning(f"Handling error: {last_error}")
     
+    # Initialize error recovery tracking if not present
+    if "error_recovery_attempts" not in state:
+        state["error_recovery_attempts"] = {}
+    
     # Check retry count first
     if state["retry_count"] >= state.get("max_retries", 3):
         logger.error("Maximum retries exceeded")
         return {
             **state,
             "current_step": CFDStep.ERROR,
-            "errors": state["errors"] + ["Maximum retries exceeded"],
+            "errors": ["Maximum retries exceeded: " + state["errors"][-1] if state["errors"] else "Unknown error"],
         }
     
     # Check for OpenFOAM availability issues
@@ -85,23 +94,54 @@ def handle_error_recovery(state: CFDState) -> CFDState:
     # Parse error type and route to appropriate agent
     if any(keyword in last_error for keyword in ["mesh", "blockmesh", "geometry"]):
         next_step = CFDStep.MESH_GENERATION
-    elif any(keyword in last_error for keyword in ["boundary", "inlet", "outlet", "wall"]):
+    elif any(keyword in last_error for keyword in ["boundary", "inlet", "outlet", "wall", "patch type", "patchfield"]):
         next_step = CFDStep.BOUNDARY_CONDITIONS
-    elif any(keyword in last_error for keyword in ["solver", "scheme", "solution"]):
+    elif any(keyword in last_error for keyword in ["solver", "scheme", "solution", "diverged", "converged", "residual data"]):
         next_step = CFDStep.SOLVER_SELECTION
     elif any(keyword in last_error for keyword in ["case", "file", "directory"]):
         next_step = CFDStep.CASE_WRITING
-    elif any(keyword in last_error for keyword in ["simulation", "execution", "foam"]):
-        next_step = CFDStep.SIMULATION
+    elif any(keyword in last_error for keyword in ["simulation", "execution", "foam", "failed with code"]):
+        # For simulation failures, go back to boundary conditions or solver settings
+        # to fix the underlying issue, not just retry the simulation
+        if "patch" in last_error or "boundary" in last_error:
+            next_step = CFDStep.BOUNDARY_CONDITIONS
+        elif "residual" in last_error:
+            next_step = CFDStep.SOLVER_SELECTION
+        else:
+            next_step = CFDStep.SOLVER_SELECTION
     else:
         # If error type is unclear, restart from interpretation
         next_step = CFDStep.NL_INTERPRETATION
+    
+    # Track which steps we've tried for this error
+    error_key = f"{state['current_step']}_to_{next_step}"
+    error_attempts = state.get("error_recovery_attempts", {})
+    if error_attempts is None:
+        error_attempts = {}
+    
+    if error_key in error_attempts:
+        # We've already tried this recovery path
+        logger.warning(f"Already attempted recovery path: {error_key}")
+        # Count how many different recovery attempts we've made
+        total_recovery_attempts = len(error_attempts)
+        if total_recovery_attempts >= 3 or state["current_step"] == CFDStep.SIMULATION:
+            # If we've tried 3 different recovery paths or simulation keeps failing, stop
+            logger.error(f"Unable to recover after {total_recovery_attempts} different recovery attempts")
+            return {
+                **state,
+                "current_step": CFDStep.ERROR,
+                "errors": ["Unable to recover from error: " + last_error],
+            }
+    
+    # Record this recovery attempt
+    error_attempts[error_key] = True
     
     return {
         **state,
         "current_step": next_step,
         "retry_count": state["retry_count"] + 1,
-        "errors": []  # Clear errors for retry
+        "errors": [],  # Clear errors for retry
+        "error_recovery_attempts": error_attempts
     }
 
 
@@ -253,12 +293,12 @@ def create_cfd_workflow():
 
 
 def create_initial_state(
-    user_prompt: str,
-    verbose: bool = False,
-    export_images: bool = False,
-    output_format: str = "images",
-    max_retries: int = 3
-) -> CFDState:
+        user_prompt: str, 
+        verbose: bool = False,
+        export_images: bool = True,
+        output_format: str = "images",
+        max_retries: int = 3
+    ) -> CFDState:
     """Create initial state for the CFD workflow."""
     return CFDState(
         user_prompt=user_prompt,
@@ -276,6 +316,7 @@ def create_initial_state(
         current_step=CFDStep.START,
         retry_count=0,
         max_retries=max_retries,
+        error_recovery_attempts=None,
         mesh_quality=None,
         convergence_metrics=None,
         verbose=verbose,

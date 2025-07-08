@@ -72,6 +72,7 @@ class CFDState(TypedDict):
     current_step: CFDStep
     retry_count: int
     max_retries: int
+    error_recovery_attempts: Optional[Dict[str, bool]]
     
     # Quality metrics
     mesh_quality: Optional[Dict[str, Any]]

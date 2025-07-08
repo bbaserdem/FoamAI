@@ -208,4 +208,39 @@ results/
 │   │   ├── velocity_field.png
 │   │   └── streamlines.png
 │   └── summary.json            # Simulation summary and results
-``` 
+```
+
+## Future Improvements & Next Tasks
+
+### NL Interpreter Enhancements
+**Priority Task**: Improve the Natural Language Interpreter to properly define geometry dimensions and other currently hardcoded values:
+
+1. **Channel Geometry Dimensions**
+   - Currently hardcoded: Z-dimension limited to 0.1m in case_writer.py
+   - Need: NL interpreter should intelligently set width/height/length based on context
+   - Example: "flow in a narrow channel" vs "flow in a wide channel" should produce different aspect ratios
+
+2. **Other Hardcoded Values to Address**
+   - Default mesh resolutions per geometry type
+   - Turbulence model parameters (intensity, length scale)
+   - Solver convergence criteria
+   - Time step calculations for unsteady simulations
+   - Domain size multipliers for external flows (e.g., 20x diameter for cylinder)
+
+3. **Context-Aware Defaults**
+   - Implement geometry-specific dimension ratios
+   - Use flow regime to suggest appropriate parameters
+   - Consider Reynolds number when setting mesh resolution
+   - Auto-calculate time steps based on CFL conditions
+
+4. **Enhanced Parameter Extraction**
+   - Parse relative terms: "thin", "thick", "narrow", "wide"
+   - Handle unit conversions: "2 inches diameter" → 0.0508m
+   - Extract multiple constraints: "1m long pipe with 5cm diameter"
+   - Infer missing dimensions from typical engineering practice
+
+### Implementation Approach
+- Create a knowledge base of typical dimension ratios for each geometry type
+- Use few-shot prompting with examples of good dimension choices
+- Implement validation rules to catch unrealistic dimensions
+- Add warning system for potentially problematic aspect ratios 

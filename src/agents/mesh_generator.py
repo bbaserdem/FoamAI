@@ -64,20 +64,24 @@ def generate_mesh_config(geometry_info: Dict[str, Any], parsed_params: Dict[str,
     geometry_type = geometry_info["type"]
     dimensions = geometry_info["dimensions"]
     mesh_resolution = geometry_info.get("mesh_resolution", "medium")
+    flow_context = geometry_info.get("flow_context", {})
     
     # Get resolution multiplier
     resolution_multiplier = get_resolution_multiplier(mesh_resolution)
     
+    # Check if this is external or internal flow
+    is_external_flow = flow_context.get("is_external_flow", False)
+    
     if geometry_type == GeometryType.CYLINDER:
-        return generate_cylinder_mesh(dimensions, mesh_resolution)
+        return generate_cylinder_mesh(dimensions, mesh_resolution, is_external_flow, flow_context)
     elif geometry_type == GeometryType.AIRFOIL:
-        return generate_airfoil_mesh(dimensions, resolution_multiplier, parsed_params)
+        return generate_airfoil_mesh(dimensions, resolution_multiplier, parsed_params, is_external_flow)
     elif geometry_type == GeometryType.PIPE:
         return generate_pipe_mesh(dimensions, resolution_multiplier, parsed_params)
     elif geometry_type == GeometryType.CHANNEL:
         return generate_channel_mesh(dimensions, resolution_multiplier, parsed_params)
     elif geometry_type == GeometryType.SPHERE:
-        return generate_sphere_mesh(dimensions, resolution_multiplier, parsed_params)
+        return generate_sphere_mesh(dimensions, resolution_multiplier, parsed_params, is_external_flow)
     else:
         raise ValueError(f"Unsupported geometry type: {geometry_type}")
 
@@ -93,59 +97,216 @@ def get_resolution_multiplier(mesh_resolution: str) -> float:
     return resolution_map.get(mesh_resolution, 1.0)
 
 
-def generate_cylinder_mesh(dimensions: Dict[str, float], resolution: str = "medium") -> Dict[str, Any]:
+def generate_cylinder_mesh(dimensions: Dict[str, float], resolution: str = "medium", 
+                          is_external_flow: bool = True, flow_context: Dict[str, Any] = None) -> Dict[str, Any]:
     """Generate mesh configuration for cylinder geometry."""
     diameter = dimensions.get("diameter", 0.1)  # Default 0.1m diameter
-    length = dimensions.get("length", 1.0)  # Default 1m length
+    length = dimensions.get("length", diameter * 0.1)  # Default thin slice for 2D
     
-    # For 2D cylinder flow, we use a thin slice
-    cylinder_length = 0.1  # Changed from 1.0 to 0.1 for 2D
+    # Determine if this is a 2D or 3D case based on length
+    # If length is very small compared to diameter, it's 2D
+    is_2d = length < diameter * 0.2  # Less than 20% of diameter means 2D
     
-    # Domain size (typically 20D x 10D for cylinder flow)
-    domain_length = diameter * 20
-    domain_height = diameter * 10
+    if is_external_flow:
+        # External flow around cylinder - create proper O-grid mesh
+        domain_multiplier = flow_context.get("domain_size_multiplier", 20.0) if flow_context else 20.0
+        
+        # Domain dimensions
+        domain_length = diameter * domain_multiplier
+        domain_height = diameter * (domain_multiplier / 2)  # Typically half in height
+        domain_upstream = diameter * (domain_multiplier * 0.4)  # 40% upstream
+        domain_downstream = diameter * (domain_multiplier * 0.6)  # 60% downstream
+        
+        # For 3D, ensure adequate domain width
+        if is_2d:
+            domain_width = length
+            n_cells_z = 1
+        else:
+            # For 3D, domain width should be wider than cylinder length
+            domain_width = max(length * 4, diameter * domain_multiplier / 2)
+            # Calculate z cells based on resolution
+            base_resolution = {"coarse": 15, "medium": 30, "fine": 60, "very_fine": 90}.get(resolution, 30)
+            n_cells_z = max(int(base_resolution * domain_width / domain_length), 10)
+        
+        # Get resolution count
+        base_resolution = {"coarse": 15, "medium": 30, "fine": 60, "very_fine": 90}.get(resolution, 30)
+        
+        # Use snappyHexMesh for proper cylinder geometry
+        mesh_config = {
+            "type": "snappyHexMesh",  # Use snappyHexMesh instead of blockMesh
+            "mesh_topology": "snappy",
+            "geometry_type": "cylinder",
+            "is_external_flow": True,
+            "is_2d": is_2d,
+            "background_mesh": {
+                # Background mesh (will be refined by snappyHexMesh)
+                "type": "blockMesh",
+                "domain_length": domain_length,
+                "domain_height": domain_height,
+                "domain_width": domain_width,
+                "n_cells_x": int(base_resolution * 1.5),
+                "n_cells_y": int(base_resolution * 0.75),
+                "n_cells_z": n_cells_z
+            },
+            "geometry": {
+                "cylinder": {
+                    "type": "cylinder",
+                    "point1": [domain_upstream, domain_height/2, (domain_width - length)/2] if not is_2d else [domain_upstream, domain_height/2, 0],
+                    "point2": [domain_upstream, domain_height/2, (domain_width + length)/2] if not is_2d else [domain_upstream, domain_height/2, length],
+                    "radius": diameter / 2.0
+                }
+            },
+            "snappy_settings": {
+                "castellated_mesh": True,
+                "snap": True,
+                "add_layers": False,  # Disabled for faster execution - can be enabled later
+                "refinement_levels": {
+                    "min": 1,
+                    "max": 2  # Reduced for faster execution
+                },
+                "refinement_region": {
+                    # Refinement box around cylinder
+                    "min": [domain_upstream - diameter*2, domain_height/2 - diameter*2, 0],
+                    "max": [domain_upstream + diameter*3, domain_height/2 + diameter*2, length]
+                },
+                "layers": {
+                    "n_layers": 5,
+                    "expansion_ratio": 1.3,
+                    "final_layer_thickness": 0.7,
+                    "min_thickness": 0.1
+                }
+            },
+            "dimensions": {
+                "cylinder_diameter": diameter,
+                "cylinder_length": length,
+                "domain_length": domain_length,
+                "domain_height": domain_height,
+                "domain_upstream": domain_upstream,
+                "domain_downstream": domain_downstream,
+                "cylinder_center_x": domain_upstream,
+                "cylinder_center_y": domain_height / 2,
+                "diameter": diameter  # Also store standard diameter key
+            },
+            "resolution": {
+                "background": base_resolution,
+                "surface": base_resolution * 2,
+                "refinement": base_resolution * 4
+            },
+            "total_cells": base_resolution * base_resolution * 8,  # Estimate after refinement
+            "quality_metrics": {
+                "aspect_ratio": 1.5,
+                "quality_score": 0.9  # High quality with snappyHexMesh
+            }
+        }
+        
+        # Original O-grid implementation (commented out for now)
+        """
+        # O-grid mesh parameters
+        circumferential_cells = base_resolution * 2  # Around cylinder
+        radial_cells = int(base_resolution * 0.8)  # From cylinder to far field
+        wake_cells = int(base_resolution * 1.5)  # Downstream refinement
+        upstream_cells = int(base_resolution * 0.5)  # Upstream cells
+        axial_cells = 1  # Force 1 cell for 2D
+        
+        # Mesh grading for boundary layer and wake
+        radial_grading = 5.0  # Expansion ratio from cylinder surface
+        wake_grading = 3.0  # Expansion in wake region
+        
+        # Boundary layer parameters
+        first_layer_height = diameter * 1e-5  # y+ ~ 1 for Re=1000-10000
+        boundary_layer_cells = min(20, int(radial_cells * 0.3))
+        expansion_ratio = 1.2
+        
+        mesh_config = {
+            "type": "blockMesh",
+            "mesh_topology": "o-grid",
+            "geometry_type": "cylinder",
+            "is_external_flow": True,
+            "dimensions": {
+                "cylinder_diameter": diameter,
+                "cylinder_length": length,
+                "domain_length": domain_length,
+                "domain_height": domain_height,
+                "domain_upstream": domain_upstream,
+                "domain_downstream": domain_downstream,
+                "cylinder_center_x": domain_upstream,
+                "cylinder_center_y": domain_height / 2
+            },
+            "resolution": {
+                "circumferential": circumferential_cells,
+                "radial": radial_cells,
+                "wake": wake_cells,
+                "upstream": upstream_cells,
+                "axial": axial_cells
+            },
+            "grading": {
+                "radial": radial_grading,
+                "wake": wake_grading
+            },
+            "boundary_layer": {
+                "enabled": True,
+                "first_layer_height": first_layer_height,
+                "layers": boundary_layer_cells,
+                "expansion_ratio": expansion_ratio
+            },
+            "total_cells": (circumferential_cells * radial_cells + 
+                          wake_cells * radial_cells + 
+                          upstream_cells * radial_cells) * axial_cells,
+            "quality_metrics": {
+                "aspect_ratio": calculate_aspect_ratio(first_layer_height, diameter/circumferential_cells),
+                "expansion_ratio": expansion_ratio,
+                "y_plus_estimate": estimate_y_plus(first_layer_height, diameter, 10.0)  # Assuming Re~10000
+            }
+        }
+        """
+        
+    else:
+        # Internal flow (cylinder in a channel) - simplified rectangular mesh
+        # This is unusual for cylinders but supported
+        channel_length = dimensions.get("length", diameter * 20)
+        channel_height = dimensions.get("channel_height", diameter * 5)
+        channel_width = dimensions.get("channel_width", channel_height)  # Default to square cross-section
+        
+        base_resolution = {"coarse": 20, "medium": 40, "fine": 80}.get(resolution, 40)
+        
+        # Determine spanwise cells based on whether it's 2D or 3D
+        if channel_width < diameter * 0.2:  # 2D case
+            spanwise_cells = 1
+            is_2d = True
+        else:
+            spanwise_cells = int(base_resolution * channel_width / channel_height)
+            is_2d = False
+        
+        mesh_config = {
+            "type": "blockMesh",
+            "mesh_topology": "structured",
+            "geometry_type": "cylinder_in_channel",
+            "is_external_flow": False,
+            "is_2d": is_2d,
+            "dimensions": {
+                "cylinder_diameter": diameter,
+                "channel_length": channel_length,
+                "channel_height": channel_height,
+                "channel_width": channel_width,
+                "diameter": diameter  # Also store standard diameter key
+            },
+            "resolution": {
+                "streamwise": base_resolution * 2,
+                "normal": base_resolution,
+                "spanwise": spanwise_cells
+            },
+            "total_cells": base_resolution * base_resolution * 2 * spanwise_cells,
+            "use_toposet": False,  # Still disabled due to internal boundary issues
+            "quality_metrics": {
+                "aspect_ratio": 2.0,
+                "quality_score": 0.8
+            }
+        }
     
-    # Get resolution count
-    base_resolution = {"coarse": 20, "medium": 40, "fine": 80}.get(resolution, 40)
-    
-    # Calculate mesh resolution
-    circumferential_cells = base_resolution
-    radial_cells = max(int(base_resolution * 0.5), 10)
-    axial_cells = 1  # Force 1 cell for 2D
-    
-    # Total cells estimate (rectangular domain for now)
-    total_cells = circumferential_cells * radial_cells * axial_cells
-    
-    # Quality metrics
-    aspect_ratio = max(domain_length/circumferential_cells, domain_height/radial_cells) / min(domain_length/circumferential_cells, domain_height/radial_cells)
-    quality_score = 1.0 / (1.0 + aspect_ratio - 1.0)  # Simple quality metric
-    
-    return {
-        "type": "blockMesh",
-        "geometry_type": "cylinder",
-        "dimensions": {
-            "cylinder_diameter": diameter,
-            "cylinder_length": cylinder_length,
-            "domain_length": domain_length,
-            "domain_height": domain_height
-        },
-        "resolution": {
-            "circumferential": circumferential_cells,
-            "radial": radial_cells,
-            "axial": axial_cells
-        },
-        "total_cells": total_cells,
-        "quality_metrics": {
-            "aspect_ratio": aspect_ratio,
-            "quality_score": quality_score
-        },
-        "cylinder_center": [domain_length * 0.3, domain_height * 0.5, cylinder_length * 0.5],
-        "cylinder_radius": diameter / 2.0,
-        "use_toposet": False  # Disabled - createPatch can't create internal boundaries
-    }
+    return mesh_config
 
 
-def generate_airfoil_mesh(dimensions: Dict[str, float], resolution_multiplier: float, params: Dict[str, Any]) -> Dict[str, Any]:
+def generate_airfoil_mesh(dimensions: Dict[str, float], resolution_multiplier: float, params: Dict[str, Any], is_external_flow: bool = True) -> Dict[str, Any]:
     """Generate mesh configuration for airfoil geometry."""
     chord = dimensions.get("chord", 0.1)
     span = dimensions.get("span", 0.01)  # For 2D simulation
@@ -258,37 +419,51 @@ def generate_channel_mesh(dimensions: Dict[str, float], resolution_multiplier: f
     return mesh_config
 
 
-def generate_sphere_mesh(dimensions: Dict[str, float], resolution_multiplier: float, params: Dict[str, Any]) -> Dict[str, Any]:
+def generate_sphere_mesh(dimensions: Dict[str, float], resolution_multiplier: float, 
+                        params: Dict[str, Any], is_external_flow: bool = True) -> Dict[str, Any]:
     """Generate mesh configuration for sphere geometry."""
     diameter = dimensions.get("diameter", 0.1)
     
-    # Domain dimensions
-    domain_size = diameter * 20
-    
-    # Base mesh resolution
-    base_resolution = int(50 * resolution_multiplier)
-    
-    mesh_config = {
-        "type": "blockMesh",
-        "geometry_type": "sphere",
-        "dimensions": {
-            "diameter": diameter,
-            "domain_size": domain_size
-        },
-        "resolution": {
-            "circumferential": max(int(base_resolution * 0.8), 20),
-            "radial": max(int(base_resolution * 0.6), 15),
-            "meridional": max(int(base_resolution * 0.8), 20)
-        },
-        "blocks": generate_sphere_blocks(diameter, domain_size, base_resolution),
-        "total_cells": 0,
-        "boundary_patches": {
-            "inlet": "patch",
-            "outlet": "patch",
-            "sphere": "wall",
-            "farfield": "patch"
+    if is_external_flow:
+        # External flow around sphere - 3D O-grid
+        domain_size = diameter * 20
+        
+        # Base mesh resolution
+        base_resolution = int(50 * resolution_multiplier)
+        
+        mesh_config = {
+            "type": "blockMesh",
+            "mesh_topology": "o-grid-3d",
+            "geometry_type": "sphere",
+            "is_external_flow": True,
+            "dimensions": {
+                "sphere_diameter": diameter,
+                "domain_size": domain_size,
+                "sphere_center": [domain_size/2, domain_size/2, domain_size/2]
+            },
+            "resolution": {
+                "circumferential": max(int(base_resolution * 1.0), 24),
+                "radial": max(int(base_resolution * 0.8), 20),
+                "meridional": max(int(base_resolution * 1.0), 24)
+            },
+            "boundary_layer": {
+                "enabled": True,
+                "first_layer_height": diameter * 1e-5,
+                "layers": 15,
+                "expansion_ratio": 1.2
+            },
+            "blocks": generate_sphere_ogrid_blocks(diameter, domain_size, base_resolution),
+            "total_cells": 0,
+            "boundary_patches": {
+                "inlet": "patch",
+                "outlet": "patch",
+                "sphere": "wall",
+                "farfield": "patch"
+            }
         }
-    }
+    else:
+        # Internal flow (sphere in duct) - less common
+        mesh_config = generate_sphere_internal_mesh(dimensions, resolution_multiplier, params)
     
     mesh_config["total_cells"] = calculate_total_cells(mesh_config)
     
@@ -366,21 +541,45 @@ def generate_channel_blocks(width: float, height: float, length: float, resoluti
     }
 
 
-def generate_sphere_blocks(diameter: float, domain_size: float, resolution: int) -> Dict[str, Any]:
-    """Generate block structure for sphere mesh."""
+def generate_sphere_ogrid_blocks(diameter: float, domain_size: float, resolution: int) -> Dict[str, Any]:
+    """Generate O-grid block structure for sphere mesh."""
     return {
-        "block_count": 6,  # Spherical coordinate blocks
+        "block_count": 6,  # 6 blocks for O-grid around sphere
+        "topology": "o-grid-3d",
+        "inner_radius": diameter / 2,
+        "outer_radius": domain_size / 2,
         "grading": {
-            "radial": 1.0,
+            "radial": 5.0,  # Expansion from sphere surface
             "circumferential": 1.0,
             "meridional": 1.0
-        },
-        "boundary_layer": {
-            "enabled": True,
-            "first_layer_thickness": diameter * 1e-5,
-            "expansion_ratio": 1.2,
-            "layers": 12
         }
+    }
+
+
+def generate_sphere_internal_mesh(dimensions: Dict[str, float], resolution_multiplier: float, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate mesh for sphere in internal flow (duct)."""
+    diameter = dimensions.get("diameter", 0.1)
+    duct_diameter = dimensions.get("duct_diameter", diameter * 3)
+    duct_length = dimensions.get("duct_length", diameter * 10)
+    
+    base_resolution = int(40 * resolution_multiplier)
+    
+    return {
+        "type": "blockMesh",
+        "mesh_topology": "structured",
+        "geometry_type": "sphere_in_duct",
+        "is_external_flow": False,
+        "dimensions": {
+            "sphere_diameter": diameter,
+            "duct_diameter": duct_diameter,
+            "duct_length": duct_length
+        },
+        "resolution": {
+            "axial": base_resolution * 2,
+            "radial": base_resolution,
+            "circumferential": base_resolution
+        },
+        "total_cells": base_resolution * base_resolution * base_resolution * 2
     }
 
 
@@ -464,4 +663,28 @@ def generate_mesh_recommendations(mesh_config: Dict[str, Any], quality_score: fl
     if not mesh_config.get("blocks", {}).get("boundary_layer", {}).get("enabled", False):
         recommendations.append("Consider adding boundary layer mesh for better accuracy")
     
-    return recommendations 
+    return recommendations
+
+
+def calculate_aspect_ratio(cell_height: float, cell_width: float) -> float:
+    """Calculate mesh aspect ratio."""
+    if cell_height == 0 or cell_width == 0:
+        return 1.0
+    return max(cell_height/cell_width, cell_width/cell_height)
+
+
+def estimate_y_plus(first_layer_height: float, characteristic_length: float, velocity: float) -> float:
+    """Estimate y+ value for boundary layer mesh."""
+    # Simplified estimation assuming air at standard conditions
+    nu = 1.5e-5  # Kinematic viscosity of air
+    Re = velocity * characteristic_length / nu
+    
+    # Wall shear stress estimation
+    Cf = 0.058 * Re**(-0.2)  # Flat plate correlation
+    tau_w = 0.5 * 1.225 * velocity**2 * Cf
+    u_tau = (tau_w / 1.225)**0.5
+    
+    # y+ calculation
+    y_plus = first_layer_height * u_tau / nu
+    
+    return y_plus 

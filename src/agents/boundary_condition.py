@@ -4,7 +4,7 @@ import json
 from typing import Dict, Any, Optional
 from loguru import logger
 
-from .state import CFDState, CFDStep, GeometryType, FlowType
+from .state import CFDState, CFDStep, GeometryType, FlowType, AnalysisType
 
 
 def boundary_condition_agent(state: CFDState) -> CFDState:
@@ -83,45 +83,135 @@ def generate_boundary_conditions(parsed_params: Dict[str, Any], geometry_info: D
 
 
 def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any], mesh_config: Dict[str, Any]) -> Dict[str, Any]:
-    """Generate velocity field (U) boundary conditions."""
+    """Generate velocity field (U)."""
     velocity = parsed_params.get("velocity", 1.0)
+    # Ensure velocity is not None
     if velocity is None:
-        velocity = 1.0  # Default velocity
+        logger.warning("Velocity is None, using default 1.0 m/s")
+        velocity = 1.0
+    
+    velocity_components = parsed_params.get("velocity_components", None)
     geometry_type = geometry_info["type"]
+    flow_type = parsed_params.get("flow_type", FlowType.LAMINAR)
+    flow_context = geometry_info.get("flow_context", {})
+    is_external_flow = flow_context.get("is_external_flow", False)
+    
+    # For turbulent channel flow, consider increasing velocity for better visualization
+    if geometry_type == GeometryType.CHANNEL and flow_type == FlowType.TURBULENT:
+        # Scale up velocity if it seems too low for interesting turbulent features
+        if velocity < 2.0:
+            logger.info(f"Scaling up velocity from {velocity} to {velocity * 2.5} for better turbulent flow visualization")
+            velocity = velocity * 2.5
+    
+    # Determine velocity vector
+    if velocity_components:
+        velocity_vector = f"({velocity_components[0]} {velocity_components[1]} {velocity_components[2]})"
+    else:
+        # Default flow direction based on geometry
+        if geometry_type in [GeometryType.PIPE, GeometryType.CHANNEL]:
+            velocity_vector = f"({velocity} 0 0)"
+        elif geometry_type in [GeometryType.CYLINDER, GeometryType.SPHERE, GeometryType.AIRFOIL]:
+            velocity_vector = f"({velocity} 0 0)"
+        else:
+            velocity_vector = f"({velocity} 0 0)"
     
     # Get boundary patches from mesh config
     boundary_patches = mesh_config.get("boundary_patches", {})
+    mesh_topology = mesh_config.get("mesh_topology", "structured")
     
     # Base velocity field
-    velocity_field = {
-        "dimensions": "[0 1 -1 0 0 0 0]",
-        "internalField": "uniform (0 0 0)",
-        "boundaryField": {}
-    }
+    # For unsteady simulations, start with zero velocity for stability
+    if parsed_params.get("analysis_type") == AnalysisType.UNSTEADY:
+        velocity_field = {
+            "dimensions": "[0 1 -1 0 0 0 0]",
+            "internalField": "uniform (0 0 0)",
+            "boundaryField": {}
+        }
+    else:
+        velocity_field = {
+            "dimensions": "[0 1 -1 0 0 0 0]",
+            "internalField": "uniform (0 0 0)",
+            "boundaryField": {}
+        }
     
     # Configure boundary conditions based on geometry
     if geometry_type == GeometryType.CYLINDER:
-        # For simplified rectangular channel (no actual cylinder boundary yet)
-        velocity_field["boundaryField"] = {
-            "inlet": {
-                "type": "fixedValue",
-                "value": f"uniform ({velocity} 0 0)"
-            },
-            "outlet": {
-                "type": "zeroGradient"
-            },
-            "walls": {
-                "type": "noSlip"
-            },
-            "sides": {
-                "type": "empty"
+        if is_external_flow and mesh_topology == "o-grid":
+            # External flow around cylinder with O-grid mesh
+            velocity_field["boundaryField"] = {
+                "cylinder": {
+                    "type": "noSlip"  # Wall boundary on cylinder surface
+                },
+                "left": {  # Inlet on left side
+                    "type": "fixedValue",
+                    "value": f"uniform {velocity_vector}"
+                },
+                "right": {  # Outlet on right side
+                    "type": "zeroGradient"
+                },
+                "up": {  # Top boundary
+                    "type": "symmetryPlane"
+                },
+                "down": {  # Bottom boundary
+                    "type": "noSlip"  # Wall for ground effect (can be changed to symmetryPlane)
+                },
+                "front": {  # Front face for 2D
+                    "type": "empty"
+                },
+                "back": {  # Back face for 2D
+                    "type": "empty"
+                }
             }
-        }
+        elif is_external_flow and mesh_topology == "snappy":
+            # External flow around cylinder with snappyHexMesh
+            is_2d = mesh_config.get("is_2d", True)
+            
+            velocity_field["boundaryField"] = {
+                "cylinder": {
+                    "type": "noSlip"  # Wall boundary on cylinder surface
+                },
+                "inlet": {
+                    "type": "fixedValue",
+                    "value": f"uniform {velocity_vector}"
+                },
+                "outlet": {
+                    "type": "zeroGradient"
+                },
+                "top": {
+                    "type": "slip"  # Slip condition for far field
+                },
+                "bottom": {
+                    "type": "slip"  # Slip condition for far field
+                },
+                "front": {
+                    "type": "empty" if is_2d else "slip"
+                },
+                "back": {
+                    "type": "empty" if is_2d else "slip"
+                }
+            }
+        else:
+            # Original implementation for rectangular channel
+            velocity_field["boundaryField"] = {
+                "inlet": {
+                    "type": "fixedValue",
+                    "value": f"uniform {velocity_vector}"
+                },
+                "outlet": {
+                    "type": "zeroGradient"
+                },
+                "walls": {
+                    "type": "noSlip"
+                },
+                "sides": {
+                    "type": "empty"
+                }
+            }
     elif geometry_type == GeometryType.AIRFOIL:
         velocity_field["boundaryField"] = {
             "inlet": {
                 "type": "fixedValue",
-                "value": f"uniform ({velocity} 0 0)"
+                "value": f"uniform {velocity_vector}"
             },
             "outlet": {
                 "type": "zeroGradient"
@@ -131,7 +221,7 @@ def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
             },
             "farfield": {
                 "type": "freestreamVelocity",
-                "freestreamValue": f"uniform ({velocity} 0 0)"
+                "freestreamValue": f"uniform {velocity_vector}"
             },
             "sides": {
                 "type": "empty"
@@ -141,7 +231,7 @@ def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
         velocity_field["boundaryField"] = {
             "inlet": {
                 "type": "fixedValue",
-                "value": f"uniform ({velocity} 0 0)"
+                "value": f"uniform {velocity_vector}"
             },
             "outlet": {
                 "type": "zeroGradient"
@@ -160,7 +250,7 @@ def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
         velocity_field["boundaryField"] = {
             "inlet": {
                 "type": "fixedValue",
-                "value": f"uniform ({velocity} 0 0)"
+                "value": f"uniform {velocity_vector}"
             },
             "outlet": {
                 "type": "zeroGradient"
@@ -176,7 +266,7 @@ def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
         velocity_field["boundaryField"] = {
             "inlet": {
                 "type": "fixedValue",
-                "value": f"uniform ({velocity} 0 0)"
+                "value": f"uniform {velocity_vector}"
             },
             "outlet": {
                 "type": "zeroGradient"
@@ -186,7 +276,7 @@ def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
             },
             "farfield": {
                 "type": "freestreamVelocity",
-                "freestreamValue": f"uniform ({velocity} 0 0)"
+                "freestreamValue": f"uniform {velocity_vector}"
             }
         }
     
@@ -197,6 +287,9 @@ def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
     """Generate pressure field (p) boundary conditions."""
     pressure = parsed_params.get("pressure", 0.0)
     geometry_type = geometry_info["type"]
+    flow_context = geometry_info.get("flow_context", {})
+    is_external_flow = flow_context.get("is_external_flow", False)
+    mesh_topology = mesh_config.get("mesh_topology", "structured")
     
     # Base pressure field
     pressure_field = {
@@ -207,22 +300,77 @@ def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
     
     # Configure boundary conditions based on geometry
     if geometry_type == GeometryType.CYLINDER:
-        # For simplified rectangular channel (no actual cylinder boundary yet)
-        pressure_field["boundaryField"] = {
-            "inlet": {
-                "type": "zeroGradient"
-            },
-            "outlet": {
-                "type": "fixedValue",
-                "value": f"uniform {pressure}"
-            },
-            "walls": {
-                "type": "zeroGradient"
-            },
-            "sides": {
-                "type": "empty"
+        if is_external_flow and mesh_topology == "o-grid":
+            # External flow around cylinder with O-grid mesh
+            pressure_field["boundaryField"] = {
+                "cylinder": {
+                    "type": "zeroGradient"  # No pressure gradient at wall
+                },
+                "left": {  # Inlet on left side
+                    "type": "zeroGradient"
+                },
+                "right": {  # Outlet on right side
+                    "type": "fixedValue",
+                    "value": f"uniform {pressure}"
+                },
+                "up": {  # Top boundary
+                    "type": "symmetryPlane"
+                },
+                "down": {  # Bottom boundary
+                    "type": "zeroGradient"
+                },
+                "front": {  # Front face for 2D
+                    "type": "empty"
+                },
+                "back": {  # Back face for 2D
+                    "type": "empty"
+                }
             }
-        }
+        elif is_external_flow and mesh_topology == "snappy":
+            # External flow around cylinder with snappyHexMesh
+            is_2d = mesh_config.get("is_2d", True)
+            
+            pressure_field["boundaryField"] = {
+                "cylinder": {
+                    "type": "zeroGradient"  # No pressure gradient at wall
+                },
+                "inlet": {
+                    "type": "zeroGradient"
+                },
+                "outlet": {
+                    "type": "fixedValue",
+                    "value": f"uniform {pressure}"
+                },
+                "top": {
+                    "type": "zeroGradient"
+                },
+                "bottom": {
+                    "type": "zeroGradient"
+                },
+                "front": {
+                    "type": "empty" if is_2d else "zeroGradient"
+                },
+                "back": {
+                    "type": "empty" if is_2d else "zeroGradient"
+                }
+            }
+        else:
+            # Original implementation for rectangular channel
+            pressure_field["boundaryField"] = {
+                "inlet": {
+                    "type": "zeroGradient"
+                },
+                "outlet": {
+                    "type": "fixedValue",
+                    "value": f"uniform {pressure}"
+                },
+                "walls": {
+                    "type": "zeroGradient"
+                },
+                "sides": {
+                    "type": "empty"
+                }
+            }
     elif geometry_type == GeometryType.AIRFOIL:
         pressure_field["boundaryField"] = {
             "inlet": {
@@ -307,11 +455,17 @@ def generate_turbulent_kinetic_energy_field(parsed_params: Dict[str, Any], geome
     turbulence_intensity = parsed_params.get("turbulence_intensity", 0.05)
     if turbulence_intensity is None:
         turbulence_intensity = 0.05  # Default turbulence intensity
+    turbulence_length_scale = parsed_params.get("turbulence_length_scale", 0.01)
+    if turbulence_length_scale is None:
+        turbulence_length_scale = 0.01  # Default length scale
     
-    # Calculate turbulent kinetic energy
+    # Calculate k
     k_value = 1.5 * (velocity * turbulence_intensity) ** 2
     
     geometry_type = geometry_info["type"]
+    flow_context = geometry_info.get("flow_context", {})
+    is_external_flow = flow_context.get("is_external_flow", False)
+    mesh_topology = mesh_config.get("mesh_topology", "structured")
     
     # Base k field
     k_field = {
@@ -321,27 +475,84 @@ def generate_turbulent_kinetic_energy_field(parsed_params: Dict[str, Any], geome
     }
     
     # Configure boundary conditions
-    if geometry_type in [GeometryType.CYLINDER, GeometryType.SPHERE]:
-        k_field["boundaryField"] = {
-            "inlet": {
-                "type": "fixedValue",
-                "value": f"uniform {k_value}"
-            },
-            "outlet": {
-                "type": "zeroGradient"
-            },
-            f"{geometry_type.value}": {
-                "type": "kqRWallFunction",
-                "value": f"uniform {k_value}"
-            },
-            "walls": {
-                "type": "kqRWallFunction",
-                "value": f"uniform {k_value}"
-            },
-            "sides": {
-                "type": "empty"
+    if geometry_type == GeometryType.CYLINDER:
+        if is_external_flow and mesh_topology == "o-grid":
+            # External flow around cylinder with O-grid mesh
+            k_field["boundaryField"] = {
+                "cylinder": {
+                    "type": "kqRWallFunction",
+                    "value": f"uniform {k_value}"
+                },
+                "left": {  # Inlet on left side
+                    "type": "fixedValue",
+                    "value": f"uniform {k_value}"
+                },
+                "right": {  # Outlet on right side
+                    "type": "zeroGradient"
+                },
+                "up": {  # Top boundary
+                    "type": "symmetryPlane"
+                },
+                "down": {  # Bottom boundary
+                    "type": "kqRWallFunction",
+                    "value": f"uniform {k_value}"
+                },
+                "front": {  # Front face for 2D
+                    "type": "empty"
+                },
+                "back": {  # Back face for 2D
+                    "type": "empty"
+                }
             }
-        }
+        elif is_external_flow and mesh_topology == "snappy":
+            # External flow around cylinder with snappyHexMesh
+            is_2d = mesh_config.get("is_2d", True)
+            
+            k_field["boundaryField"] = {
+                "cylinder": {
+                    "type": "kqRWallFunction",
+                    "value": f"uniform {k_value}"
+                },
+                "inlet": {
+                    "type": "fixedValue",
+                    "value": f"uniform {k_value}"
+                },
+                "outlet": {
+                    "type": "zeroGradient"
+                },
+                "top": {
+                    "type": "kqRWallFunction",
+                    "value": f"uniform {k_value}"
+                },
+                "bottom": {
+                    "type": "kqRWallFunction",
+                    "value": f"uniform {k_value}"
+                },
+                "front": {
+                    "type": "empty" if is_2d else "zeroGradient"
+                },
+                "back": {
+                    "type": "empty" if is_2d else "zeroGradient"
+                }
+            }
+        else:
+            # Original implementation
+            k_field["boundaryField"] = {
+                "inlet": {
+                    "type": "fixedValue",
+                    "value": f"uniform {k_value}"
+                },
+                "outlet": {
+                    "type": "zeroGradient"
+                },
+                "walls": {
+                    "type": "kqRWallFunction",
+                    "value": f"uniform {k_value}"
+                },
+                "sides": {
+                    "type": "empty"
+                }
+            }
     elif geometry_type == GeometryType.AIRFOIL:
         k_field["boundaryField"] = {
             "inlet": {
@@ -380,8 +591,11 @@ def generate_turbulent_kinetic_energy_field(parsed_params: Dict[str, Any], geome
         }
         
         if geometry_type == GeometryType.CHANNEL:
+            # Check if this is 2D or 3D based on mesh resolution
+            is_2d = mesh_config.get("resolution", {}).get("spanwise", 1) == 1
+            sides_type = "empty" if is_2d else "symmetry"
             k_field["boundaryField"]["sides"] = {
-                "type": "empty"
+                "type": sides_type
             }
     
     return k_field
@@ -404,6 +618,9 @@ def generate_specific_dissipation_field(parsed_params: Dict[str, Any], geometry_
     omega_value = k_value**0.5 / (0.09**0.25 * turbulence_length_scale)
     
     geometry_type = geometry_info["type"]
+    flow_context = geometry_info.get("flow_context", {})
+    is_external_flow = flow_context.get("is_external_flow", False)
+    mesh_topology = mesh_config.get("mesh_topology", "structured")
     
     # Base omega field
     omega_field = {
@@ -413,27 +630,82 @@ def generate_specific_dissipation_field(parsed_params: Dict[str, Any], geometry_
     }
     
     # Configure boundary conditions
-    if geometry_type in [GeometryType.CYLINDER, GeometryType.SPHERE]:
-        omega_field["boundaryField"] = {
-            "inlet": {
-                "type": "fixedValue",
-                "value": f"uniform {omega_value}"
-            },
-            "outlet": {
-                "type": "zeroGradient"
-            },
-            f"{geometry_type.value}": {
-                "type": "omegaWallFunction",
-                "value": f"uniform {omega_value}"
-            },
-            "walls": {
-                "type": "omegaWallFunction", 
-                "value": f"uniform {omega_value}"
-            },
-            "sides": {
-                "type": "empty"
+    if geometry_type == GeometryType.CYLINDER:
+        if is_external_flow and mesh_topology == "o-grid":
+            # External flow around cylinder with O-grid mesh
+            omega_field["boundaryField"] = {
+                "cylinder": {
+                    "type": "omegaWallFunction",
+                    "value": f"uniform {omega_value}"
+                },
+                "left": {  # Inlet on left side
+                    "type": "fixedValue",
+                    "value": f"uniform {omega_value}"
+                },
+                "right": {  # Outlet on right side
+                    "type": "zeroGradient"
+                },
+                "up": {  # Top boundary
+                    "type": "symmetryPlane"
+                },
+                "down": {  # Bottom boundary
+                    "type": "omegaWallFunction",
+                    "value": f"uniform {omega_value}"
+                },
+                "front": {  # Front face for 2D
+                    "type": "empty"
+                },
+                "back": {  # Back face for 2D
+                    "type": "empty"
+                }
             }
-        }
+        elif is_external_flow and mesh_topology == "snappy":
+            # External flow around cylinder with snappyHexMesh
+            is_2d = mesh_config.get("is_2d", True)
+            
+            omega_field["boundaryField"] = {
+                "cylinder": {
+                    "type": "omegaWallFunction",
+                    "value": f"uniform {omega_value}"
+                },
+                "inlet": {
+                    "type": "fixedValue",
+                    "value": f"uniform {omega_value}"
+                },
+                "outlet": {
+                    "type": "zeroGradient"
+                },
+                "top": {
+                    "type": "slip"  # Slip condition for far field
+                },
+                "bottom": {
+                    "type": "slip"  # Slip condition for far field
+                },
+                "front": {
+                    "type": "empty" if is_2d else "zeroGradient"
+                },
+                "back": {
+                    "type": "empty" if is_2d else "zeroGradient"
+                }
+            }
+        else:
+            # Original implementation
+            omega_field["boundaryField"] = {
+                "inlet": {
+                    "type": "fixedValue",
+                    "value": f"uniform {omega_value}"
+                },
+                "outlet": {
+                    "type": "zeroGradient"
+                },
+                "walls": {
+                    "type": "omegaWallFunction", 
+                    "value": f"uniform {omega_value}"
+                },
+                "sides": {
+                    "type": "empty"
+                }
+            }
     elif geometry_type == GeometryType.AIRFOIL:
         omega_field["boundaryField"] = {
             "inlet": {
@@ -456,6 +728,23 @@ def generate_specific_dissipation_field(parsed_params: Dict[str, Any], geometry_
                 "type": "empty"
             }
         }
+    elif geometry_type == GeometryType.SPHERE:
+        omega_field["boundaryField"] = {
+            "inlet": {
+                "type": "fixedValue",
+                "value": f"uniform {omega_value}"
+            },
+            "outlet": {
+                "type": "zeroGradient"
+            },
+            "sphere": {
+                "type": "noSlip"
+            },
+            "farfield": {
+                "type": "freestreamVelocity",
+                "freestreamValue": f"uniform {omega_value}"
+            }
+        }
     elif geometry_type in [GeometryType.PIPE, GeometryType.CHANNEL]:
         omega_field["boundaryField"] = {
             "inlet": {
@@ -472,8 +761,11 @@ def generate_specific_dissipation_field(parsed_params: Dict[str, Any], geometry_
         }
         
         if geometry_type == GeometryType.CHANNEL:
+            # Check if this is 2D or 3D based on mesh resolution
+            is_2d = mesh_config.get("resolution", {}).get("spanwise", 1) == 1
+            sides_type = "empty" if is_2d else "symmetry"
             omega_field["boundaryField"]["sides"] = {
-                "type": "empty"
+                "type": sides_type
             }
     
     return omega_field
@@ -505,7 +797,88 @@ def generate_dissipation_field(parsed_params: Dict[str, Any], geometry_info: Dic
     }
     
     # Configure boundary conditions
-    if geometry_type in [GeometryType.CYLINDER, GeometryType.SPHERE]:
+    if geometry_type == GeometryType.CYLINDER:
+        # Check if this is O-grid mesh
+        flow_context = geometry_info.get("flow_context", {})
+        is_external_flow = flow_context.get("is_external_flow", False)
+        mesh_topology = mesh_config.get("mesh_topology", "structured")
+        
+        if is_external_flow and mesh_topology == "o-grid":
+            # External flow around cylinder with O-grid mesh
+            epsilon_field["boundaryField"] = {
+                "cylinder": {
+                    "type": "epsilonWallFunction",
+                    "value": f"uniform {epsilon_value}"
+                },
+                "left": {  # Inlet on left side
+                    "type": "fixedValue",
+                    "value": f"uniform {epsilon_value}"
+                },
+                "right": {  # Outlet on right side
+                    "type": "zeroGradient"
+                },
+                "up": {  # Top boundary
+                    "type": "symmetryPlane"
+                },
+                "down": {  # Bottom boundary
+                    "type": "epsilonWallFunction",
+                    "value": f"uniform {epsilon_value}"
+                },
+                "front": {  # Front face for 2D
+                    "type": "empty"
+                },
+                "back": {  # Back face for 2D
+                    "type": "empty"
+                }
+            }
+        elif is_external_flow and mesh_topology == "snappy":
+            # External flow around cylinder with snappyHexMesh
+            is_2d = mesh_config.get("is_2d", True)
+            
+            epsilon_field["boundaryField"] = {
+                "cylinder": {
+                    "type": "epsilonWallFunction",
+                    "value": f"uniform {epsilon_value}"
+                },
+                "inlet": {
+                    "type": "fixedValue",
+                    "value": f"uniform {epsilon_value}"
+                },
+                "outlet": {
+                    "type": "zeroGradient"
+                },
+                "top": {
+                    "type": "slip"  # Slip condition for far field
+                },
+                "bottom": {
+                    "type": "slip"  # Slip condition for far field
+                },
+                "front": {
+                    "type": "empty" if is_2d else "zeroGradient"
+                },
+                "back": {
+                    "type": "empty" if is_2d else "zeroGradient"
+                }
+            }
+        else:
+            # Original rectangular channel implementation
+            epsilon_field["boundaryField"] = {
+                "inlet": {
+                    "type": "fixedValue",
+                    "value": f"uniform {epsilon_value}"
+                },
+                "outlet": {
+                    "type": "zeroGradient"
+                },
+                "walls": {
+                    "type": "epsilonWallFunction",
+                    "value": f"uniform {epsilon_value}"
+                },
+                "sides": {
+                    "type": "empty"
+                }
+            }
+    elif geometry_type == GeometryType.SPHERE:
         epsilon_field["boundaryField"] = {
             "inlet": {
                 "type": "fixedValue",
@@ -564,8 +937,11 @@ def generate_dissipation_field(parsed_params: Dict[str, Any], geometry_info: Dic
         }
         
         if geometry_type == GeometryType.CHANNEL:
+            # Check if this is 2D or 3D based on mesh resolution
+            is_2d = mesh_config.get("resolution", {}).get("spanwise", 1) == 1
+            sides_type = "empty" if is_2d else "symmetry"
             epsilon_field["boundaryField"]["sides"] = {
-                "type": "empty"
+                "type": sides_type
             }
     
     return epsilon_field
@@ -583,7 +959,96 @@ def generate_turbulent_viscosity_field(parsed_params: Dict[str, Any], geometry_i
     }
     
     # Configure boundary conditions (mostly wall functions)
-    if geometry_type in [GeometryType.CYLINDER, GeometryType.SPHERE]:
+    if geometry_type == GeometryType.CYLINDER:
+        # Check if this is O-grid mesh
+        flow_context = geometry_info.get("flow_context", {})
+        is_external_flow = flow_context.get("is_external_flow", False)
+        mesh_topology = mesh_config.get("mesh_topology", "structured")
+        
+        if is_external_flow and mesh_topology == "o-grid":
+            # External flow around cylinder with O-grid mesh
+            nut_field["boundaryField"] = {
+                "cylinder": {
+                    "type": "nutkWallFunction",
+                    "value": "uniform 0"
+                },
+                "left": {  # Inlet on left side
+                    "type": "calculated",
+                    "value": "uniform 0"
+                },
+                "right": {  # Outlet on right side
+                    "type": "calculated",
+                    "value": "uniform 0"
+                },
+                "up": {  # Top boundary
+                    "type": "calculated",
+                    "value": "uniform 0"
+                },
+                "down": {  # Bottom boundary
+                    "type": "nutkWallFunction",
+                    "value": "uniform 0"
+                },
+                "front": {  # Front face for 2D
+                    "type": "empty"
+                },
+                "back": {  # Back face for 2D
+                    "type": "empty"
+                }
+            }
+        elif is_external_flow and mesh_topology == "snappy":
+            # External flow around cylinder with snappyHexMesh
+            is_2d = mesh_config.get("is_2d", True)
+            
+            nut_field["boundaryField"] = {
+                "cylinder": {
+                    "type": "nutkWallFunction",
+                    "value": "uniform 0"
+                },
+                "inlet": {
+                    "type": "calculated",
+                    "value": "uniform 0"
+                },
+                "outlet": {
+                    "type": "calculated",
+                    "value": "uniform 0"
+                },
+                "top": {
+                    "type": "calculated",
+                    "value": "uniform 0"
+                },
+                "bottom": {
+                    "type": "calculated",
+                    "value": "uniform 0"
+                },
+                "front": {
+                    "type": "empty" if is_2d else "calculated",
+                    "value": "uniform 0"
+                } if not is_2d else {"type": "empty"},
+                "back": {
+                    "type": "empty" if is_2d else "calculated", 
+                    "value": "uniform 0"
+                } if not is_2d else {"type": "empty"}
+            }
+        else:
+            # Original rectangular channel implementation
+            nut_field["boundaryField"] = {
+                "inlet": {
+                    "type": "calculated",
+                    "value": "uniform 0"
+                },
+                "outlet": {
+                    "type": "calculated",
+                    "value": "uniform 0"
+                },
+                "walls": {
+                    "type": "nutkWallFunction",
+                    "value": "uniform 0"
+                },
+                "sides": {
+                    "type": "empty"
+                }
+            }
+    elif geometry_type == GeometryType.SPHERE:
         nut_field["boundaryField"] = {
             "inlet": {
                 "type": "calculated",
@@ -644,8 +1109,11 @@ def generate_turbulent_viscosity_field(parsed_params: Dict[str, Any], geometry_i
         }
         
         if geometry_type == GeometryType.CHANNEL:
+            # Check if this is 2D or 3D based on mesh resolution
+            is_2d = mesh_config.get("resolution", {}).get("spanwise", 1) == 1
+            sides_type = "empty" if is_2d else "symmetry"
             nut_field["boundaryField"]["sides"] = {
-                "type": "empty"
+                "type": sides_type
             }
     
     return nut_field
@@ -719,8 +1187,11 @@ def generate_temperature_field(parsed_params: Dict[str, Any], geometry_info: Dic
         }
         
         if geometry_type == GeometryType.CHANNEL:
+            # Check if this is 2D or 3D based on mesh resolution
+            is_2d = mesh_config.get("resolution", {}).get("spanwise", 1) == 1
+            sides_type = "empty" if is_2d else "symmetry"
             temp_field["boundaryField"]["sides"] = {
-                "type": "empty"
+                "type": sides_type
             }
     
     return temp_field

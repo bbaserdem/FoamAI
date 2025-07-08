@@ -19,10 +19,10 @@ def cli():
 @cli.command()
 @click.argument('prompt', type=str)
 @click.option('--output-format', default='images', help='Output format (images, paraview, data)')
-@click.option('--export-images', is_flag=True, help='Export visualization images')
+@click.option('--no-export-images', is_flag=True, help='Disable visualization image export')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
 @click.option('--max-retries', default=3, help='Maximum retry attempts')
-def solve(prompt: str, output_format: str, export_images: bool, verbose: bool, max_retries: int):
+def solve(prompt: str, output_format: str, no_export_images: bool, verbose: bool, max_retries: int):
     """Solve a CFD problem from natural language description."""
     
     # Import here to avoid circular imports and startup time
@@ -35,6 +35,7 @@ def solve(prompt: str, output_format: str, export_images: bool, verbose: bool, m
         return
     
     # Display initial problem setup
+    export_images = not no_export_images  # Convert negative flag to positive
     console.print(
         Panel(
             f"[bold blue]FoamAI CFD Solver[/bold blue]\n\n"
@@ -169,7 +170,7 @@ def create_summary_table(final_state, verbose: bool):
         table.add_row("Solver", str(solver_settings.get("solver", "N/A")))
     
     # Simulation results
-    convergence_metrics = final_state.get("convergence_metrics", {})
+    convergence_metrics = final_state.get("convergence_metrics")
     if convergence_metrics:
         converged = convergence_metrics.get("converged", False)
         table.add_row("Converged", "✅ Yes" if converged else "❌ No")
@@ -218,8 +219,8 @@ def display_output_locations(final_state):
                     console.print(f"    • {pv_file.name}")
     
     # Recommendations
-    convergence_metrics = final_state.get("convergence_metrics", {})
-    recommendations = convergence_metrics.get("recommendations", [])
+    convergence_metrics = final_state.get("convergence_metrics")
+    recommendations = convergence_metrics.get("recommendations", []) if convergence_metrics else []
     if recommendations:
         console.print("\n[bold]💡 Recommendations:[/bold]")
         for rec in recommendations:

@@ -95,32 +95,50 @@ def create_case_directory(state: CFDState) -> Path:
 def write_mesh_files(case_directory: Path, state: CFDState) -> None:
     """Write mesh configuration files."""
     mesh_config = state["mesh_config"]
+    mesh_type = mesh_config.get("type", "blockMesh")
     
-    # Write blockMeshDict
-    blockmesh_dict = generate_blockmesh_dict(mesh_config, state)
-    write_foam_dict(case_directory / "system" / "blockMeshDict", blockmesh_dict)
-    
-    # Write topoSet and createPatch files if needed
-    if mesh_config.get("use_toposet") and mesh_config.get("geometry_type") == "cylinder":
-        # Generate topoSetDict
-        cylinder_info = {
-            "center": mesh_config.get("cylinder_center", [1.0, 0.5, 0.05]),
-            "radius": mesh_config.get("cylinder_radius", 0.05),
-            "height": mesh_config.get("dimensions", {}).get("cylinder_length", 0.1)
-        }
+    if mesh_type == "snappyHexMesh":
+        # For snappyHexMesh, we need to:
+        # 1. Write a background blockMeshDict
+        # 2. Write snappyHexMeshDict
         
-        toposet_dict = generate_toposet_dict(cylinder_info)
-        write_foam_dict(case_directory / "system" / "topoSetDict", toposet_dict)
+        # Write background mesh
+        background_mesh = mesh_config.get("background_mesh", {})
+        blockmesh_dict = generate_background_blockmesh_dict(background_mesh)
+        write_foam_dict(case_directory / "system" / "blockMeshDict", blockmesh_dict)
         
-        # Generate createPatchDict
-        createpatch_dict = generate_createpatch_dict(cylinder_info)
-        write_foam_dict(case_directory / "system" / "createPatchDict", createpatch_dict)
+        # Write snappyHexMeshDict
+        snappy_dict = generate_snappyhexmesh_dict(mesh_config, state)
+        write_foam_dict(case_directory / "system" / "snappyHexMeshDict", snappy_dict)
         
         if state["verbose"]:
-            logger.info("Case Writer: Wrote topoSetDict and createPatchDict for cylinder geometry")
-    
-    if state["verbose"]:
-        logger.info("Case Writer: Wrote blockMeshDict")
+            logger.info("Case Writer: Wrote blockMeshDict (background) and snappyHexMeshDict")
+    else:
+        # Original blockMesh approach
+        blockmesh_dict = generate_blockmesh_dict(mesh_config, state)
+        write_foam_dict(case_directory / "system" / "blockMeshDict", blockmesh_dict)
+        
+        # Write topoSet and createPatch files if needed
+        if mesh_config.get("use_toposet") and mesh_config.get("geometry_type") == "cylinder":
+            # Generate topoSetDict
+            cylinder_info = {
+                "center": mesh_config.get("cylinder_center", [1.0, 0.5, 0.05]),
+                "radius": mesh_config.get("cylinder_radius", 0.05),
+                "height": mesh_config.get("dimensions", {}).get("cylinder_length", 0.1)
+            }
+            
+            toposet_dict = generate_toposet_dict(cylinder_info)
+            write_foam_dict(case_directory / "system" / "topoSetDict", toposet_dict)
+            
+            # Generate createPatchDict
+            createpatch_dict = generate_createpatch_dict(cylinder_info)
+            write_foam_dict(case_directory / "system" / "createPatchDict", createpatch_dict)
+            
+            if state["verbose"]:
+                logger.info("Case Writer: Wrote topoSetDict and createPatchDict for cylinder geometry")
+        
+        if state["verbose"]:
+            logger.info("Case Writer: Wrote blockMeshDict")
 
 
 def generate_blockmesh_dict(mesh_config: Dict[str, Any], state: CFDState) -> Dict[str, Any]:
@@ -159,7 +177,7 @@ def generate_blockmesh_dict(mesh_config: Dict[str, Any], state: CFDState) -> Dic
         resolution = get_resolution_for_geometry(geometry_type, resolution_data)
     
     if geometry_type == "cylinder":
-        return generate_cylinder_blockmesh_dict(dimensions, resolution)
+        return generate_cylinder_blockmesh_dict(dimensions, resolution, mesh_config)
     elif geometry_type == "airfoil":
         return generate_airfoil_blockmesh_dict(dimensions, resolution)
     elif geometry_type == "pipe":
@@ -172,25 +190,247 @@ def generate_blockmesh_dict(mesh_config: Dict[str, Any], state: CFDState) -> Dic
         raise ValueError(f"Unsupported geometry type for blockMesh: {geometry_type}")
 
 
-def generate_cylinder_blockmesh_dict(dimensions: Dict[str, float], resolution: Dict[str, int]) -> Dict[str, Any]:
+def generate_cylinder_blockmesh_dict(dimensions: Dict[str, float], resolution: Dict[str, int], 
+                                   mesh_config: Dict[str, Any]) -> Dict[str, Any]:
     """Generate blockMeshDict for cylinder geometry."""
     # Handle both mesh generator format (cylinder_diameter) and case writer format (diameter)
     diameter = dimensions.get("diameter") or dimensions.get("cylinder_diameter", 0.1)
     thickness = dimensions.get("cylinder_length", 0.1)  # Use cylinder_length as thickness for 2D
     
-    # Create rectangular domain that will contain the cylinder
-    radius = diameter / 2.0
-    domain_length = diameter * 20  # 20x cylinder upstream/downstream
-    domain_height = diameter * 10  # 10x cylinder height
+    # Check if this is external flow (O-grid) or internal flow
+    is_external_flow = mesh_config.get("is_external_flow", False)
+    mesh_topology = mesh_config.get("mesh_topology", "structured")
     
-    # Store cylinder info for later use by topoSet
-    cylinder_info = {
-        "center": [domain_length * 0.3, domain_height * 0.5, thickness * 0.5],
-        "radius": radius,
-        "height": thickness
+    if is_external_flow and mesh_topology == "o-grid":
+        # Generate O-grid mesh for external flow around cylinder
+        return generate_cylinder_ogrid_blockmesh_dict(dimensions, resolution, mesh_config)
+    else:
+        # Original rectangular channel implementation (for backward compatibility)
+        return generate_cylinder_channel_blockmesh_dict(dimensions, resolution)
+
+
+def generate_cylinder_ogrid_blockmesh_dict(dimensions: Dict[str, float], resolution: Dict[str, int], 
+                                          mesh_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate O-grid blockMeshDict for external flow around cylinder based on OpenFOAM tutorial."""
+    import math
+    
+    # Extract dimensions
+    diameter = dimensions.get("cylinder_diameter", 0.1)
+    radius = diameter / 2.0
+    thickness = dimensions.get("cylinder_length", 0.1)
+    
+    # Domain dimensions
+    domain_size = dimensions.get("domain_length", diameter * 20) / 2  # Half domain size
+    
+    # Scale factor to adjust from tutorial's unit cylinder (r=0.5) to our radius
+    scale = radius / 0.5
+    
+    # Define vertices based on OpenFOAM tutorial geometry
+    # These are the key points for the O-grid structure
+    # Inner ring (on cylinder surface)
+    r_inner = radius
+    # Intermediate ring
+    r_mid = 2 * radius  # 2x cylinder radius
+    # Outer boundary
+    r_outer = domain_size
+    
+    # Key angles for the O-grid (45 degrees)
+    cos45 = 0.707107
+    sin45 = 0.707107
+    
+    # Vertices on the back plane (z = 0)
+    vertices = []
+    
+    # Based on the tutorial's vertex numbering
+    # Right side vertices
+    vertices.append(f"({r_inner} 0 0)")                              # 0 - on cylinder
+    vertices.append(f"({r_mid} 0 0)")                                # 1 - intermediate
+    vertices.append(f"({r_outer} 0 0)")                              # 2 - outer boundary
+    vertices.append(f"({r_outer} {r_outer*cos45} 0)")               # 3 - outer corner
+    vertices.append(f"({r_mid*cos45} {r_mid*sin45} 0)")             # 4 - intermediate diagonal
+    vertices.append(f"({r_inner*cos45} {r_inner*sin45} 0)")         # 5 - on cylinder diagonal
+    
+    # Top vertices
+    vertices.append(f"({r_outer} {r_outer} 0)")                      # 6 - top right corner
+    vertices.append(f"({r_mid*cos45} {r_outer} 0)")                 # 7 - top intermediate
+    vertices.append(f"(0 {r_outer} 0)")                              # 8 - top center
+    vertices.append(f"(0 {r_mid} 0)")                                # 9 - intermediate top
+    vertices.append(f"(0 {r_inner} 0)")                              # 10 - on cylinder top
+    
+    # Left side vertices
+    vertices.append(f"(-{r_inner} 0 0)")                             # 11 - on cylinder
+    vertices.append(f"(-{r_mid} 0 0)")                               # 12 - intermediate
+    vertices.append(f"(-{r_outer} 0 0)")                             # 13 - outer boundary
+    vertices.append(f"(-{r_outer} {r_outer*cos45} 0)")              # 14 - outer corner
+    vertices.append(f"(-{r_mid*cos45} {r_mid*sin45} 0)")            # 15 - intermediate diagonal
+    vertices.append(f"(-{r_inner*cos45} {r_inner*sin45} 0)")        # 16 - on cylinder diagonal
+    vertices.append(f"(-{r_outer} {r_outer} 0)")                     # 17 - top left corner
+    vertices.append(f"(-{r_mid*cos45} {r_outer} 0)")                # 18 - top intermediate
+    
+    # Duplicate all vertices for the front plane (z = thickness)
+    num_vertices = len(vertices)
+    for i in range(num_vertices):
+        coords = vertices[i].strip("()").split()
+        vertices.append(f"({coords[0]} {coords[1]} {thickness})")
+    
+    # Resolution
+    n_tangential = resolution.get("circumferential", 80) // 8  # Cells per block in tangential direction
+    n_radial = resolution.get("radial", 32) // 2  # Cells in radial direction (2 layers)
+    n_axial = 1  # Single cell in z-direction for 2D
+    
+    # Grading
+    radial_grading = mesh_config.get("grading", {}).get("radial", 10.0)
+    
+    # Define the 10 blocks based on the tutorial
+    blocks = []
+    
+    # Block 0 (bottom right inner)
+    blocks.append(f"hex (5 4 9 10 {5+19} {4+19} {9+19} {10+19}) ({n_tangential} {n_radial} {n_axial}) simpleGrading (1 {radial_grading} 1)")
+    
+    # Block 1 (bottom center inner)
+    blocks.append(f"hex (0 1 4 5 {0+19} {1+19} {4+19} {5+19}) ({n_tangential} {n_radial} {n_axial}) simpleGrading (1 {radial_grading} 1)")
+    
+    # Block 2 (bottom inner)
+    blocks.append(f"hex (1 2 3 4 {1+19} {2+19} {3+19} {4+19}) ({n_tangential} {n_radial} {n_axial}) simpleGrading (1 {radial_grading} 1)")
+    
+    # Block 3 (right inner)
+    blocks.append(f"hex (4 3 6 7 {4+19} {3+19} {6+19} {7+19}) ({n_tangential} {n_radial} {n_axial}) simpleGrading (1 {radial_grading} 1)")
+    
+    # Block 4 (top right inner)
+    blocks.append(f"hex (9 4 7 8 {9+19} {4+19} {7+19} {8+19}) ({n_tangential} {n_radial} {n_axial}) simpleGrading (1 {radial_grading} 1)")
+    
+    # Block 5 (top left inner)
+    blocks.append(f"hex (15 16 10 9 {15+19} {16+19} {10+19} {9+19}) ({n_tangential} {n_radial} {n_axial}) simpleGrading (1 {radial_grading} 1)")
+    
+    # Block 6 (top inner)
+    blocks.append(f"hex (18 15 9 8 {18+19} {15+19} {9+19} {8+19}) ({n_tangential} {n_radial} {n_axial}) simpleGrading (1 {radial_grading} 1)")
+    
+    # Block 7 (left inner)
+    blocks.append(f"hex (17 18 15 14 {17+19} {18+19} {15+19} {14+19}) ({n_tangential} {n_radial} {n_axial}) simpleGrading (1 {radial_grading} 1)")
+    
+    # Block 8 (bottom left inner)
+    blocks.append(f"hex (14 15 12 13 {14+19} {15+19} {12+19} {13+19}) ({n_tangential} {n_radial} {n_axial}) simpleGrading (1 {radial_grading} 1)")
+    
+    # Block 9 (bottom center left inner)
+    blocks.append(f"hex (16 15 12 11 {16+19} {15+19} {12+19} {11+19}) ({n_tangential} {n_radial} {n_axial}) simpleGrading (1 {radial_grading} 1)")
+    
+    # Define edges - circular arcs for cylinder surface
+    edges = []
+    
+    # Cylinder surface arcs (inner ring) - correct midpoints for 90-degree arcs
+    # Arc from point (r,0) to point (r*cos45, r*sin45), midpoint at 22.5 degrees
+    cos225 = 0.92388  # cos(22.5 degrees)
+    sin225 = 0.38268  # sin(22.5 degrees)
+    cos675 = 0.38268  # cos(67.5 degrees)
+    sin675 = 0.92388  # sin(67.5 degrees)
+    
+    # Back face arcs
+    edges.append(f"arc 0 5 ({r_inner*cos225} {r_inner*sin225} 0)")       # Right to diagonal (0° to 45°)
+    edges.append(f"arc 5 10 ({r_inner*cos675} {r_inner*sin675} 0)")      # Diagonal to top (45° to 90°)
+    edges.append(f"arc 10 16 (-{r_inner*cos675} {r_inner*sin675} 0)")    # Top to diagonal (90° to 135°)
+    edges.append(f"arc 16 11 (-{r_inner*cos225} {r_inner*sin225} 0)")    # Diagonal to left (135° to 180°)
+    
+    # Front face arcs (same pattern at z=thickness)
+    edges.append(f"arc {0+19} {5+19} ({r_inner*cos225} {r_inner*sin225} {thickness})")
+    edges.append(f"arc {5+19} {10+19} ({r_inner*cos675} {r_inner*sin675} {thickness})")
+    edges.append(f"arc {10+19} {16+19} (-{r_inner*cos675} {r_inner*sin675} {thickness})")
+    edges.append(f"arc {16+19} {11+19} (-{r_inner*cos225} {r_inner*sin225} {thickness})")
+    
+    # Define boundary patches
+    boundary = {
+        "cylinder": {
+            "type": "wall",
+            "faces": [
+                "(0 5 24 19)",    # Right to diagonal
+                "(5 10 29 24)",   # Diagonal to top
+                "(10 16 35 29)",  # Top to diagonal
+                "(16 11 30 35)"   # Diagonal to left
+            ]
+        },
+        "left": {
+            "type": "patch",
+            "faces": [
+                "(13 14 33 32)",  # Bottom section
+                "(14 17 36 33)"   # Top section
+            ]
+        },
+        "right": {
+            "type": "patch",
+            "faces": [
+                "(2 3 22 21)",    # Bottom section
+                "(3 6 25 22)"     # Top section
+            ]
+        },
+        "down": {
+            "type": "wall",
+            "faces": [
+                "(11 30 31 12)",  # Left section
+                "(12 31 32 13)",  # Left outer
+                "(0 19 20 1)",    # Right inner
+                "(1 20 21 2)"     # Right outer
+            ]
+        },
+        "up": {
+            "type": "symmetryPlane",
+            "faces": [
+                "(6 7 26 25)",    # Right section
+                "(7 8 27 26)",    # Center section
+                "(8 18 37 27)",   # Left section
+                "(18 17 36 37)"   # Left outer
+            ]
+        },
+        "front": {
+            "type": "empty",
+            "faces": [
+                "(19 20 23 24)",  # Block 1 front
+                "(24 23 28 29)",  # Block 0 front
+                "(20 21 22 23)",  # Block 2 front
+                "(23 22 25 26)",  # Block 3 front
+                "(28 23 26 27)",  # Block 4 front
+                "(34 35 29 28)",  # Block 5 front
+                "(37 34 28 27)",  # Block 6 front
+                "(36 37 34 33)",  # Block 7 front
+                "(33 34 31 32)",  # Block 8 front
+                "(35 34 31 30)"   # Block 9 front
+            ]
+        },
+        "back": {
+            "type": "empty",
+            "faces": [
+                "(0 1 4 5)",      # Block 1 back
+                "(5 4 9 10)",     # Block 0 back
+                "(1 2 3 4)",      # Block 2 back
+                "(4 3 6 7)",      # Block 3 back
+                "(9 4 7 8)",      # Block 4 back
+                "(15 16 10 9)",   # Block 5 back
+                "(18 15 9 8)",    # Block 6 back
+                "(17 18 15 14)",  # Block 7 back
+                "(14 15 12 13)",  # Block 8 back
+                "(16 15 12 11)"   # Block 9 back
+            ]
+        }
     }
     
-    # Simple rectangular channel - we'll add cylinder via topoSet later
+    return {
+        "convertToMeters": 1,
+        "vertices": vertices,
+        "blocks": blocks,
+        "edges": edges,
+        "boundary": boundary,
+        "mergePatchPairs": []
+    }
+
+
+def generate_cylinder_channel_blockmesh_dict(dimensions: Dict[str, float], resolution: Dict[str, int]) -> Dict[str, Any]:
+    """Generate simple rectangular channel blockMeshDict (original implementation)."""
+    # Original implementation for backward compatibility
+    diameter = dimensions.get("diameter") or dimensions.get("cylinder_diameter", 0.1)
+    thickness = dimensions.get("cylinder_length", 0.1)
+    
+    radius = diameter / 2.0
+    domain_length = diameter * 20
+    domain_height = diameter * 10
+    
     return {
         "scale": 1,
         "vertices": [
@@ -235,8 +475,7 @@ def generate_cylinder_blockmesh_dict(dimensions: Dict[str, float], resolution: D
                 ]
             }
         },
-        "mergePatchPairs": [],
-        "_cylinder_info": cylinder_info  # Internal use for topoSet
+        "mergePatchPairs": []
     }
 
 
@@ -523,10 +762,28 @@ def write_foam_dict(file_path: Path, content: Dict[str, Any]) -> None:
 
 def format_foam_dict(content: Dict[str, Any], file_name: str) -> str:
     """Format dictionary content as OpenFOAM file."""
+    # Get OpenFOAM variant to determine version format
+    try:
+        import sys
+        sys.path.append('src')
+        from foamai.config import get_settings
+        settings = get_settings()
+        variant = settings.openfoam_variant
+        version = settings.openfoam_version
+        
+        # Format version string based on variant
+        if variant == "Foundation":
+            version_str = version  # Foundation uses plain numbers like "12"
+        else:
+            version_str = f"v{version}"  # ESI uses "v2312" format
+    except:
+        # Default to ESI format if can't determine
+        version_str = "v2312"
+    
     header = f"""/*--------------------------------*- C++ -*----------------------------------*\\
 | =========                 |                                                 |
 | \\\\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
-|  \\\\    /   O peration     | Version:  v2312                                 |
+|  \\\\    /   O peration     | Version:  {version_str}                                 |
 |   \\\\  /    A nd           | Web:      www.OpenFOAM.org                      |
 |    \\\\/     M anipulation  |                                                 |
 \\*---------------------------------------------------------------------------*/
@@ -588,7 +845,7 @@ def format_dict_content(content: Any, indent_level: int = 0) -> str:
                     result += f"{indent}{key}\n{indent}{{\n"
                     result += format_dict_content(value, indent_level + 1)
                     result += f"{indent}}}\n\n"
-            elif isinstance(value, list):
+            elif isinstance(value, (list, tuple)):
                 if key == "actions":
                     # Special handling for topoSet actions
                     result += f"{indent}{key}\n{indent}(\n"
@@ -611,8 +868,12 @@ def format_dict_content(content: Any, indent_level: int = 0) -> str:
                 else:
                     result += f"{indent}{key}\n{indent}(\n"
                     for item in value:
+                        # Handle tuples (format as space-separated values in parentheses)
+                        if isinstance(item, tuple):
+                            tuple_str = " ".join(str(v) for v in item)
+                            result += f"{indent}    ({tuple_str})\n"
                         # Handle dictionary items in arrays (like patches)
-                        if isinstance(item, dict):
+                        elif isinstance(item, dict):
                             result += f"{indent}    {{\n"
                             for item_key, item_value in item.items():
                                 if isinstance(item_value, dict):
@@ -633,6 +894,9 @@ def format_dict_content(content: Any, indent_level: int = 0) -> str:
                 # Convert enum values to strings if needed
                 if hasattr(value, 'value'):
                     value = value.value
+                # Convert Python boolean to OpenFOAM format
+                if isinstance(value, bool):
+                    value = str(value).lower()
                 result += f"{indent}{key}    {value};\n"
         return result
     else:
@@ -711,9 +975,9 @@ def generate_toposet_dict(cylinder_info: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def generate_createpatch_dict(cylinder_info: Dict[str, Any]) -> Dict[str, Any]:
-    """Generate createPatchDict for creating cylinder boundary."""
+    """Generate createPatchDict for creating cylinder boundary patches."""
     return {
-        "pointSync": "false",
+        "pointSync": False,
         "patches": [
             {
                 "name": "cylinder",
@@ -721,8 +985,199 @@ def generate_createpatch_dict(cylinder_info: Dict[str, Any]) -> Dict[str, Any]:
                     "type": "wall"
                 },
                 "constructFrom": "set",
-                "set": "cylinderFaces"
+                "set": "cylinderPatch"
             }
+        ]
+    }
+
+
+def generate_background_blockmesh_dict(background_mesh: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate simple background blockMeshDict for snappyHexMesh."""
+    # Extract dimensions
+    length = background_mesh.get("domain_length", 2.0)
+    height = background_mesh.get("domain_height", 1.0)
+    width = background_mesh.get("domain_width", 0.1)
+    
+    # Cell counts
+    nx = background_mesh.get("n_cells_x", 60)
+    ny = background_mesh.get("n_cells_y", 30)
+    nz = background_mesh.get("n_cells_z", 1)
+    
+    # Check if this is 2D or 3D
+    is_2d = nz == 1
+    
+    # Domain bounds - centered at origin for simplicity
+    x_min = 0
+    x_max = length
+    y_min = 0
+    y_max = height
+    z_min = 0
+    z_max = width
+    
+    return {
+        "convertToMeters": 1.0,
+        "vertices": [
+            f"({x_min} {y_min} {z_min})",
+            f"({x_max} {y_min} {z_min})",
+            f"({x_max} {y_max} {z_min})",
+            f"({x_min} {y_max} {z_min})",
+            f"({x_min} {y_min} {z_max})",
+            f"({x_max} {y_min} {z_max})",
+            f"({x_max} {y_max} {z_max})",
+            f"({x_min} {y_max} {z_max})"
         ],
-        "removeEmptyPatches": "true"
-    } 
+        "blocks": [
+            f"hex (0 1 2 3 4 5 6 7) ({nx} {ny} {nz}) simpleGrading (1 1 1)"
+        ],
+        "edges": [],
+        "boundary": {
+            "inlet": {
+                "type": "patch",
+                "faces": ["(0 4 7 3)"]
+            },
+            "outlet": {
+                "type": "patch",
+                "faces": ["(1 2 6 5)"]
+            },
+            "top": {
+                "type": "patch",
+                "faces": ["(3 7 6 2)"]
+            },
+            "bottom": {
+                "type": "patch",
+                "faces": ["(0 1 5 4)"]
+            },
+            "front": {
+                "type": "empty" if is_2d else "patch",
+                "faces": ["(0 3 2 1)"]
+            },
+            "back": {
+                "type": "empty" if is_2d else "patch",
+                "faces": ["(4 5 6 7)"]
+            }
+        },
+        "mergePatchPairs": []
+    }
+
+
+def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) -> Dict[str, Any]:
+    """Generate snappyHexMeshDict for mesh refinement around geometry."""
+    geometry = mesh_config.get("geometry", {})
+    snappy_settings = mesh_config.get("snappy_settings", {})
+    dimensions = mesh_config.get("dimensions", {})
+    
+    # Build geometry section
+    geometry_dict = {}
+    for geom_name, geom_data in geometry.items():
+        if geom_data["type"] == "cylinder":
+            geometry_dict[geom_name] = {
+                "type": "searchableCylinder",
+                "point1": geom_data["point1"],
+                "point2": geom_data["point2"],
+                "radius": geom_data["radius"]
+            }
+        # Can add more geometry types here (sphere, box, etc.)
+    
+    # Refinement region
+    refinement_region = snappy_settings.get("refinement_region", {})
+    
+    # Build the snappyHexMeshDict
+    snappy_dict = {
+        "castellatedMesh": snappy_settings.get("castellated_mesh", True),
+        "snap": snappy_settings.get("snap", True),
+        "addLayers": snappy_settings.get("add_layers", True),
+        "geometry": geometry_dict,
+        "castellatedMeshControls": {
+            "maxLocalCells": 1000000,
+            "maxGlobalCells": 20000000,
+            "minRefinementCells": 0,
+            "maxLoadUnbalance": 0.10,
+            "nCellsBetweenLevels": 3,
+            "features": [],  # Can add feature edge refinement here
+            "refinementSurfaces": {
+                "cylinder": {
+                    "level": [
+                        snappy_settings.get("refinement_levels", {}).get("min", 1),
+                        snappy_settings.get("refinement_levels", {}).get("max", 3)
+                    ],
+                    "patchInfo": {
+                        "type": "wall"
+                    }
+                }
+            },
+            "resolveFeatureAngle": 30,
+            "refinementRegions": {
+                "refinementBox": {
+                    "mode": "inside",
+                    "levels": [(1e15, snappy_settings.get("refinement_levels", {}).get("max", 3) - 1)]
+                }
+            },
+            "locationInMesh": [
+                dimensions.get("cylinder_center_x", 1.0) - dimensions.get("cylinder_diameter", 0.1),
+                dimensions.get("cylinder_center_y", 0.5),
+                dimensions.get("cylinder_length", 0.1) / 2
+            ],
+            "allowFreeStandingZoneFaces": True
+        },
+        "snapControls": {
+            "nSmoothPatch": 3,
+            "tolerance": 2.0,
+            "nSolveIter": 30,
+            "nRelaxIter": 5,
+            "nFeatureSnapIter": 10,
+            "implicitFeatureSnap": False,
+            "explicitFeatureSnap": True,
+            "multiRegionFeatureSnap": False
+        },
+        "addLayersControls": {
+            "relativeSizes": True,
+            "layers": {
+                "cylinder": {
+                    "nSurfaceLayers": snappy_settings.get("layers", {}).get("n_layers", 5)
+                }
+            },
+            "expansionRatio": snappy_settings.get("layers", {}).get("expansion_ratio", 1.3),
+            "finalLayerThickness": snappy_settings.get("layers", {}).get("final_layer_thickness", 0.7),
+            "minThickness": snappy_settings.get("layers", {}).get("min_thickness", 0.1),
+            "nGrow": 0,
+            "featureAngle": 60,
+            "slipFeatureAngle": 30,
+            "nRelaxIter": 3,
+            "nSmoothSurfaceNormals": 1,
+            "nSmoothNormals": 3,
+            "nSmoothThickness": 10,
+            "maxFaceThicknessRatio": 0.5,
+            "maxThicknessToMedialRatio": 0.3,
+            "minMedianAxisAngle": 90,
+            "nBufferCellsNoExtrude": 0,
+            "nLayerIter": 50
+        },
+        "meshQualityControls": {
+            "maxNonOrtho": 65,
+            "maxBoundarySkewness": 20,
+            "maxInternalSkewness": 4,
+            "maxConcave": 80,
+            "minVol": 1e-13,
+            "minTetQuality": 1e-30,
+            "minArea": -1,
+            "minTwist": 0.02,
+            "minDeterminant": 0.001,
+            "minFaceWeight": 0.02,
+            "minVolRatio": 0.01,
+            "minTriangleTwist": -1,
+            "nSmoothScale": 4,
+            "errorReduction": 0.75
+        },
+        "writeFlags": [],
+        "mergeTolerance": 1e-6
+    }
+    
+    # Add refinement box geometry if specified
+    if refinement_region.get("min") and refinement_region.get("max"):
+        geometry_dict["refinementBox"] = {
+            "type": "searchableBox",
+            "min": refinement_region["min"],
+            "max": refinement_region["max"]
+        }
+    
+    return snappy_dict 

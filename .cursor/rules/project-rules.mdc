@@ -1,0 +1,72 @@
+---
+description: A comprehensive guide to the project's structure, conventions, and coding standards.
+globs: 
+alwaysApply: false
+---
+
+# Project Rules
+
+## 1. Introduction
+
+We are building an AI-first codebase, which means it needs to be modular, scalable, and easy to understand.
+The file structure should be highly navigable, and the code should be well-organized and easy to read.
+
+This document outlines the directory structure, file naming conventions, and coding standards that all contributors must follow.
+These rules are designed to ensure consistency, maintainability, and compatibility with modern AI development tools.
+
+
+## 2. File Naming Conventions
+
+To maintain a clean and predictable file structure, all files and directories must follow these conventions:
+
+*   **Format**: `snake_case` (lowercase words connected by underscores).
+*   **Project Directories**: Named after the project they contain (e.g., `src/project/`).
+*   **File Suffixes**: File names should be descriptive and end with a suffix indicating their role.
+    *   Screens: `screen.py` (e.g., `login_screen.py`)
+    *   Widgets: `widget.py` (e.g., `primary_button_widget.py`)
+    *   Repositories: `repository.py` (e.g., `auth_repository.py`)
+    *   Notifiers/Providers: `notifier.py` or `provider.py` (e.g., `auth_state_notifier.py`)
+    *   Models: `model.py` (e.g., `user_model.py`)
+
+---
+
+## 3. Coding Standards
+
+These standards ensure our code is clean, consistent, and easy for both humans and AI to parse.
+
+### 3.1. General Principles
+
+*   **Concise and Technical**: Write code that is direct and efficient.
+*   **Functional Patterns**: Use object oriented programming patterns.
+*   **Error Handling**: Throw specific, descriptive errors instead of returning `None` or fallback values.
+*   **Variable Naming**: Use descriptive names with auxiliary verbs for booleans (e.g., `isLoading`, `hasCompleted`).
+*   **PEP8**: Whenever possible, use PEP8 conventions for naming.
+*   **Type Hints**: Use type annotations as detailed in PEP 484 when writing functions.
+
+### 3.2. Documentation and Comments
+
+*   **File Headers**: Every `.py` file must begin with a comment explaining its contents and purpose.
+*   **Function Documentation**: All public functions and classes must have `dartdoc` comments (`///`). Document the function's purpose, its parameters (`@param`), and what it returns (`@return`).
+*   **Implementation Comments**: Use `//` for comments within functions to explain complex, non-obvious logic.
+
+### 3.3. Code Health
+
+*   **Testing**: ALL tests MUST be run through `nix flake check` - NEVER run tests directly with python/pytest.
+*   **Linting**: All code must pass analysis by the linter (`ruff`).
+*   **Formatting**: All code must be formatted with `ruff`. This should be automated with a pre-commit hook if possible.
+*   **File Size**: To maximize compatibility with modern AI tools, files should not exceed 500 lines.
+    Refactor large files into smaller, more focused components.
+
+---
+
+## 4. Commit Message Format
+
+Commit messages must follow the **Conventional Commits** specification. This creates an explicit and easily readable commit history.
+
+**Format**: `<type>(<scope>): <subject>`
+
+*   **`type`**: `feat` (new feature), `fix` (bug fix), `docs` (documentation), `style` (formatting), `refactor`, `test`, `chore`.
+*   **`scope`** (optional): The part of the codebase affected (e.g., `auth`, `camera`, `chat`).
+*   **`subject`**: A concise description of the change.
+
+**Example**: `feat(auth): implement user sign-up screen` 

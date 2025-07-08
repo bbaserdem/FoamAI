@@ -59,39 +59,40 @@ def solver_selector_agent(state: CFDState) -> CFDState:
 def select_solver(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any]) -> Dict[str, Any]:
     """Select appropriate OpenFOAM solver based on flow conditions."""
     flow_type = parsed_params.get("flow_type", FlowType.LAMINAR)
-    analysis_type = parsed_params.get("analysis_type", AnalysisType.STEADY)
+    # Default to transient (UNSTEADY) analysis unless explicitly specified as steady
+    analysis_type = parsed_params.get("analysis_type", AnalysisType.UNSTEADY)
+    compressible = parsed_params.get("compressible", False)
+    heat_transfer = parsed_params.get("heat_transfer", False)
     reynolds_number = parsed_params.get("reynolds_number", 0)
     mach_number = parsed_params.get("mach_number", 0)
     
-    # Decision logic for solver selection
+    # For turbulent flows, consider using transient solver for better visualization
+    # unless explicitly requested as steady
+    if flow_type == FlowType.TURBULENT and geometry_info["type"] == GeometryType.CHANNEL:
+        if analysis_type == AnalysisType.UNSTEADY:
+            logger.info("Using transient solver for turbulent channel flow to capture unsteady features")
+    
+    # Determine solver name based on flow conditions
+    if compressible:
+        if flow_type == FlowType.TURBULENT:
+            solver_name = "rhoPimpleFoam" if analysis_type == AnalysisType.UNSTEADY else "rhoSimpleFoam"
+        else:
+            solver_name = "rhoPimpleFoam" if analysis_type == AnalysisType.UNSTEADY else "rhoSimpleFoam"
+    else:
+        if flow_type == FlowType.TURBULENT:
+            solver_name = "pimpleFoam" if analysis_type == AnalysisType.UNSTEADY else "simpleFoam"
+        else:
+            solver_name = "pimpleFoam" if analysis_type == AnalysisType.UNSTEADY else "simpleFoam"
+    
+    # Build complete solver settings dictionary
     solver_settings = {
+        "solver": solver_name,
         "flow_type": flow_type,
         "analysis_type": analysis_type,
         "reynolds_number": reynolds_number,
-        "mach_number": mach_number
+        "mach_number": mach_number,
+        "compressible": compressible
     }
-    
-    # Compressible vs incompressible
-    if mach_number is not None and mach_number > 0.3:
-        # Compressible flow
-        if analysis_type == AnalysisType.STEADY:
-            solver_settings["solver"] = "rhoSimpleFoam"
-        else:
-            solver_settings["solver"] = "rhoPimpleFoam"
-        solver_settings["compressible"] = True
-    else:
-        # Incompressible flow
-        if analysis_type == AnalysisType.STEADY:
-            if flow_type == FlowType.LAMINAR:
-                solver_settings["solver"] = "simpleFoam"
-            else:
-                solver_settings["solver"] = "simpleFoam"  # Can handle turbulent steady
-        else:
-            if flow_type == FlowType.LAMINAR:
-                solver_settings["solver"] = "pimpleFoam"
-            else:
-                solver_settings["solver"] = "pimpleFoam"  # Can handle turbulent transient
-        solver_settings["compressible"] = False
     
     # Turbulence model selection
     if flow_type == FlowType.TURBULENT:
@@ -112,71 +113,178 @@ def generate_solver_config(solver_settings: Dict[str, Any], parsed_params: Dict[
     """Generate complete solver configuration."""
     solver_config = {
         "solver": solver_settings["solver"],
-        "controlDict": generate_control_dict(solver_settings, parsed_params),
+        "controlDict": generate_control_dict(solver_settings["solver"], solver_settings["analysis_type"], parsed_params, geometry_info),
         "fvSchemes": generate_fv_schemes(solver_settings, parsed_params),
         "fvSolution": generate_fv_solution(solver_settings, parsed_params),
         "turbulenceProperties": generate_turbulence_properties(solver_settings, parsed_params),
-        "transportProperties": generate_transport_properties(solver_settings, parsed_params)
+        "transportProperties": generate_transport_properties(solver_settings, parsed_params),
+        "analysis_type": solver_settings["analysis_type"],
+        "flow_type": solver_settings["flow_type"]
     }
     
     return solver_config
 
 
-def generate_control_dict(solver_settings: Dict[str, Any], parsed_params: Dict[str, Any]) -> Dict[str, Any]:
-    """Generate controlDict file."""
-    analysis_type = solver_settings.get("analysis_type", AnalysisType.STEADY)
-    
-    # Base control settings
-    control_dict = {
-        "application": solver_settings["solver"],
-        "startFrom": "startTime",
-        "startTime": 0,
-        "stopAt": "endTime",
-        "writeControl": "timeStep",
-        "writeInterval": 100,
-        "purgeWrite": 0,
-        "writeFormat": "ascii",
-        "writePrecision": 6,
-        "writeCompression": "off",
-        "timeFormat": "general",
-        "timePrecision": 6,
-        "runTimeModifiable": "true"
-    }
-    
-    if analysis_type == AnalysisType.STEADY:
-        # Steady state simulation
-        control_dict.update({
-            "endTime": 1000,  # Number of iterations
-            "deltaT": 1,
-            "writeControl": "runTime",
-            "writeInterval": 100
-        })
-    else:
-        # Transient simulation
-        end_time = parsed_params.get("end_time", 1.0)
-        time_step = parsed_params.get("time_step", 0.001)
+def generate_control_dict(solver: str, analysis_type: AnalysisType, parsed_params: Dict[str, Any], geometry_info: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate controlDict configuration."""
+    # For transient simulations, use smaller time steps and more frequent output
+    if analysis_type == AnalysisType.UNSTEADY or "pimple" in solver.lower():
+        # Calculate appropriate time step based on flow parameters
+        velocity = parsed_params.get("velocity", 1.0)
         
-        # Handle None values
+        # Ensure velocity is valid
+        if velocity is None or velocity <= 0:
+            logger.warning(f"Invalid velocity ({velocity}), using default 1.0 m/s")
+            velocity = 1.0
+        
+        # Get characteristic length from geometry
+        characteristic_length = None
+        
+        # First try parsed parameters
+        if "characteristic_length" in parsed_params and parsed_params["characteristic_length"] > 0:
+            characteristic_length = parsed_params["characteristic_length"]
+            logger.info(f"Using characteristic length from parsed params: {characteristic_length} m")
+        
+        # Then try geometry dimensions
+        if characteristic_length is None and geometry_info:
+            dimensions = geometry_info.get("dimensions", {})
+            if dimensions:
+                # Try diameter-like dimensions first
+                diameter_keys = ['diameter', 'cylinder_diameter', 'sphere_diameter', 'pipe_diameter']
+                for key in diameter_keys:
+                    if key in dimensions and dimensions[key] is not None and dimensions[key] > 0:
+                        characteristic_length = dimensions[key]
+                        logger.info(f"Using {key} as characteristic length: {characteristic_length} m")
+                        break
+                
+                # If no diameter found, use height/width for channels
+                if characteristic_length is None:
+                    for key in ['height', 'width']:
+                        if key in dimensions and dimensions[key] is not None and dimensions[key] > 0:
+                            characteristic_length = dimensions[key]
+                            logger.info(f"Using {key} as characteristic length: {characteristic_length} m")
+                            break
+                
+                # Last resort - use any valid dimension
+                if characteristic_length is None:
+                    valid_dims = [(k, v) for k, v in dimensions.items() 
+                                  if v is not None and isinstance(v, (int, float)) and v > 0]
+                    if valid_dims:
+                        key, value = min(valid_dims, key=lambda x: x[1])
+                        characteristic_length = value
+                        logger.info(f"Using {key} as characteristic length: {characteristic_length} m")
+        
+        # Final fallback with appropriate default based on geometry type
+        if characteristic_length is None:
+            geometry_type = geometry_info.get("type", "unknown")
+            # Convert enum to string if needed
+            if hasattr(geometry_type, 'value'):
+                geometry_type_str = geometry_type.value
+            else:
+                geometry_type_str = str(geometry_type).lower()
+                
+            if "cylinder" in geometry_type_str:
+                characteristic_length = 0.01  # 1cm cylinder
+            elif "channel" in geometry_type_str:
+                characteristic_length = 0.02  # 2cm channel height
+            elif "pipe" in geometry_type_str:
+                characteristic_length = 0.05  # 5cm pipe diameter
+            else:
+                characteristic_length = 0.1   # 10cm default
+            logger.warning(f"No valid dimensions found, using default characteristic length for {geometry_type_str}: {characteristic_length} m")
+        
+        # Calculate time step with Courant number consideration
+        target_courant = 0.5
+        # Estimate cell size (assuming ~20-40 cells across characteristic length)
+        mesh_resolution = parsed_params.get("mesh_resolution", "medium")
+        cells_per_length = {"coarse": 20, "medium": 30, "fine": 40}.get(mesh_resolution, 30)
+        cell_size = characteristic_length / cells_per_length
+        
+        # Calculate time step
+        estimated_dt = target_courant * cell_size / velocity
+        
+        # Apply reasonable bounds
+        min_dt = 1e-6  # Minimum time step
+        max_dt = 0.01  # Maximum time step for transient flows
+        
+        if estimated_dt < min_dt:
+            logger.warning(f"Calculated deltaT ({estimated_dt:.2e}) too small, using minimum {min_dt}")
+            estimated_dt = min_dt
+        elif estimated_dt > max_dt:
+            logger.info(f"Calculated deltaT ({estimated_dt:.2e}) limited to maximum {max_dt}")
+            estimated_dt = max_dt
+        
+        # Log final deltaT calculation
+        logger.info(f"Calculated deltaT: {estimated_dt:.6f} s (velocity={velocity} m/s, characteristic_length={characteristic_length} m, cell_size={cell_size:.6f} m)")
+        
+        # Time settings with user control
+        # Default to 1 second for quick demonstrations
+        end_time = parsed_params.get("simulation_time", 1.0)
         if end_time is None:
             end_time = 1.0
-        if time_step is None:
-            time_step = 0.001
+        # Write 10 snapshots or every 0.1s, whichever is smaller
+        write_interval = min(0.1, end_time / 10.0)
         
-        control_dict.update({
+        # Check if user wants fixed time stepping
+        # Support both time_step and fixed_time_step parameter names
+        fixed_dt = parsed_params.get("fixed_time_step") or parsed_params.get("time_step")
+        use_adaptive = fixed_dt is None  # Adaptive by default unless user specifies fixed dt
+        
+        control_dict = {
+            "application": solver,
+            "startFrom": "startTime",
+            "startTime": 0,
+            "stopAt": "endTime",
             "endTime": end_time,
-            "deltaT": time_step,
-            "writeControl": "adjustableRunTime",
-            "writeInterval": end_time / 100,  # 100 output files
-            "adjustTimeStep": "true",
-            "maxCo": 0.5
-        })
-    
-    return control_dict
+            "deltaT": fixed_dt if fixed_dt else estimated_dt,
+            "writeControl": "adjustableRunTime" if use_adaptive else "runTime",
+            "writeInterval": write_interval,
+            "purgeWrite": 0,
+            "writeFormat": "ascii",
+            "writePrecision": 6,
+            "writeCompression": "off",
+            "timeFormat": "general",
+            "timePrecision": 6,
+            "runTimeModifiable": "true"
+        }
+        
+        # Add adaptive time stepping controls if not using fixed time step
+        if use_adaptive:
+            control_dict.update({
+                "adjustTimeStep": "yes",
+                "maxCo": 0.9,  # Maximum Courant number
+                "maxDeltaT": min(0.01, estimated_dt * 10)  # Cap at 10x initial estimate
+            })
+            logger.info(f"Using adaptive time stepping with maxCo=0.9, initial deltaT={estimated_dt:.6f}")
+        else:
+            control_dict["adjustTimeStep"] = "no"
+            logger.info(f"Using fixed time step: deltaT={fixed_dt}")
+        
+        return control_dict
+    else:
+        # Steady state configuration
+        return {
+            "application": solver,
+            "startFrom": "startTime",
+            "startTime": 0,
+            "stopAt": "endTime",
+            "endTime": 1000,
+            "deltaT": 1,
+            "writeControl": "runTime",
+            "writeInterval": 100,
+            "purgeWrite": 0,
+            "writeFormat": "ascii",
+            "writePrecision": 6,
+            "writeCompression": "off",
+            "timeFormat": "general",
+            "timePrecision": 6,
+            "runTimeModifiable": "true"
+        }
 
 
 def generate_fv_schemes(solver_settings: Dict[str, Any], parsed_params: Dict[str, Any]) -> Dict[str, Any]:
     """Generate fvSchemes file."""
-    analysis_type = solver_settings.get("analysis_type", AnalysisType.STEADY)
+    analysis_type = solver_settings.get("analysis_type", AnalysisType.UNSTEADY)
     flow_type = solver_settings.get("flow_type", FlowType.LAMINAR)
     
     # Base schemes
@@ -211,7 +319,7 @@ def generate_fv_schemes(solver_settings: Dict[str, Any], parsed_params: Dict[str
     if analysis_type == AnalysisType.STEADY:
         fv_schemes["ddtSchemes"]["default"] = "steadyState"
     else:
-        fv_schemes["ddtSchemes"]["default"] = "Euler"
+        fv_schemes["ddtSchemes"]["default"] = "backward"
     
     # Divergence schemes
     if flow_type == FlowType.LAMINAR:
@@ -234,7 +342,7 @@ def generate_fv_schemes(solver_settings: Dict[str, Any], parsed_params: Dict[str
 
 def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[str, Any]) -> Dict[str, Any]:
     """Generate fvSolution file."""
-    analysis_type = solver_settings.get("analysis_type", AnalysisType.STEADY)
+    analysis_type = solver_settings.get("analysis_type", AnalysisType.UNSTEADY)
     flow_type = solver_settings.get("flow_type", FlowType.LAMINAR)
     
     # Base solution settings
@@ -268,6 +376,27 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
         "relTol": 0.1
     }
     
+    # For PIMPLE, we need UFinal as well
+    if analysis_type == AnalysisType.UNSTEADY:
+        fv_solution["solvers"]["UFinal"] = {
+            "solver": "smoothSolver",
+            "smoother": "GaussSeidel",
+            "tolerance": 1e-06,
+            "relTol": 0
+        }
+        fv_solution["solvers"]["pFinal"] = {
+            "solver": "GAMG",
+            "tolerance": 1e-06,
+            "relTol": 0,
+            "smoother": "GaussSeidel",
+            "nPreSweeps": 0,
+            "nPostSweeps": 2,
+            "cacheAgglomeration": "true",
+            "nCellsInCoarsestLevel": 10,
+            "agglomerator": "faceAreaPair",
+            "mergeLevels": 1
+        }
+    
     # Turbulence field solvers
     if flow_type == FlowType.TURBULENT:
         turbulence_solver = {
@@ -279,6 +408,18 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
         fv_solution["solvers"]["k"] = turbulence_solver.copy()
         fv_solution["solvers"]["omega"] = turbulence_solver.copy()
         fv_solution["solvers"]["epsilon"] = turbulence_solver.copy()
+        
+        # For PIMPLE, we need final versions as well
+        if analysis_type == AnalysisType.UNSTEADY:
+            turbulence_solver_final = {
+                "solver": "smoothSolver",
+                "smoother": "GaussSeidel",
+                "tolerance": 1e-06,
+                "relTol": 0
+            }
+            fv_solution["solvers"]["kFinal"] = turbulence_solver_final.copy()
+            fv_solution["solvers"]["omegaFinal"] = turbulence_solver_final.copy()
+            fv_solution["solvers"]["epsilonFinal"] = turbulence_solver_final.copy()
     
     # Algorithm settings
     if analysis_type == AnalysisType.STEADY:
@@ -312,23 +453,12 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
             })
     
     else:
-        # Transient PIMPLE settings
+        # Transient PIMPLE settings - simplified for better stability
         fv_solution["PIMPLE"] = {
             "nOuterCorrectors": 1,
             "nCorrectors": 2,
-            "nNonOrthogonalCorrectors": 1,
-            "residualControl": {
-                "p": 1e-02,
-                "U": 1e-03
-            }
+            "nNonOrthogonalCorrectors": 1
         }
-        
-        if flow_type == FlowType.TURBULENT:
-            fv_solution["PIMPLE"]["residualControl"].update({
-                "k": 1e-03,
-                "omega": 1e-03,
-                "epsilon": 1e-03
-            })
     
     return fv_solution
 
@@ -424,7 +554,7 @@ def get_solver_recommendations(solver_settings: Dict[str, Any], parsed_params: D
     
     reynolds_number = parsed_params.get("reynolds_number", 0)
     flow_type = solver_settings.get("flow_type", FlowType.LAMINAR)
-    analysis_type = solver_settings.get("analysis_type", AnalysisType.STEADY)
+    analysis_type = solver_settings.get("analysis_type", AnalysisType.UNSTEADY)
     
     # Reynolds number based recommendations
     if reynolds_number is not None and reynolds_number > 100000:

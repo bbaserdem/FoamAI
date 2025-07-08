@@ -24,6 +24,7 @@ class FoamAISettings(BaseSettings):
     # OpenFOAM Configuration
     openfoam_path: Optional[str] = Field(None, description="Path to OpenFOAM installation")
     openfoam_version: str = Field("2312", description="OpenFOAM version")
+    openfoam_variant: str = Field("ESI", description="OpenFOAM variant: ESI or Foundation")
     openfoam_source_script: Optional[str] = Field(None, description="Path to the script to source to activate the OpenFOAM environment")
 
     # ParaView Configuration
@@ -71,8 +72,16 @@ class FoamAISettings(BaseSettings):
         env = os.environ.copy()
         
         if self.openfoam_path:
+            # Determine platform directory based on variant
+            if self.openfoam_variant == "Foundation":
+                # Foundation version typically uses linux64GccDPOpt
+                platform_dir = "linux64GccDPOpt"
+            else:
+                # ESI version uses linux64GccDPInt32Opt
+                platform_dir = "linux64GccDPInt32Opt"
+            
             # Add OpenFOAM paths
-            foam_bin = Path(self.openfoam_path) / "platforms" / "linux64GccDPInt32Opt" / "bin"
+            foam_bin = Path(self.openfoam_path) / "platforms" / platform_dir / "bin"
             if foam_bin.exists():
                 env["PATH"] = f"{foam_bin}:{env.get('PATH', '')}"
             

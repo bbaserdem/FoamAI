@@ -1,7 +1,8 @@
 """Natural Language Interpreter Agent - Parses user prompts into CFD parameters."""
 
 import json
-from typing import Dict, Any, Optional
+import re
+from typing import Dict, Any, Optional, Tuple, List
 from loguru import logger
 
 from langchain_openai import ChatOpenAI
@@ -12,12 +13,26 @@ from pydantic import BaseModel, Field
 from .state import CFDState, CFDStep, GeometryType, FlowType, AnalysisType
 
 
+class FlowContext(BaseModel):
+    """Context of the flow problem."""
+    is_external_flow: bool = Field(description="True if flow around object (external), False if flow through object (internal)")
+    domain_type: str = Field(description="Type of domain: 'unbounded' for external flow, 'channel' for bounded flow")
+    domain_size_multiplier: float = Field(description="Multiplier for domain size relative to object size (e.g., 20 for 20x object diameter)")
+
+
 class CFDParameters(BaseModel):
-    """Structured CFD parameters extracted from natural language."""
+    """Structured CFD parameters extracted from natural language.
+    
+    Note: Analysis type defaults to UNSTEADY (transient) unless explicitly 
+    specified as steady/steady-state in the user prompt.
+    """
     
     # Geometry information
     geometry_type: GeometryType = Field(description="Type of geometry (cylinder, airfoil, etc.)")
     geometry_dimensions: Dict[str, float] = Field(description="Geometry dimensions (diameter, length, etc.)")
+    
+    # Flow context
+    flow_context: FlowContext = Field(description="Context of the flow (external/internal, domain type)")
     
     # Flow conditions
     flow_type: FlowType = Field(description="Flow type (laminar, turbulent, transitional)")
@@ -44,14 +59,204 @@ class CFDParameters(BaseModel):
     turbulence_model: Optional[str] = Field(None, description="Turbulence model (k-epsilon, k-omega, etc.)")
     
     # Simulation settings
-    end_time: Optional[float] = Field(None, description="End time for transient simulations")
-    time_step: Optional[float] = Field(None, description="Time step")
+    end_time: Optional[float] = Field(None, description="End time for transient simulations (in seconds)")
+    time_step: Optional[float] = Field(None, description="Fixed time step (if specified by user)")
+    simulation_time: Optional[float] = Field(None, description="Total simulation time in seconds")
     
     # Mesh preferences
     mesh_resolution: Optional[str] = Field(None, description="Mesh resolution (coarse, medium, fine)")
     
     # Additional parameters
     additional_info: Dict[str, Any] = Field(default_factory=dict, description="Additional extracted information")
+
+
+def extract_dimensions_from_text(text: str, geometry_type: GeometryType) -> Dict[str, float]:
+    """Extract dimensions from natural language text using regex patterns."""
+    dimensions = {}
+    
+    # Common patterns for dimension extraction
+    patterns = {
+        # Diameter patterns
+        'diameter': [
+            r'(\d+\.?\d*)\s*(?:m|meter|metre)?\s*diameter',
+            r'diameter\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre)?',
+            r'd\s*=\s*(\d+\.?\d*)\s*(?:m|meter|metre)?',
+            r'(\d+\.?\d*)\s*(?:mm|cm|inch|inches)\s*diameter'
+        ],
+        # Length patterns
+        'length': [
+            r'(\d+\.?\d*)\s*(?:m|meter|metre)?\s*long',
+            r'length\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre)?',
+            r'l\s*=\s*(\d+\.?\d*)\s*(?:m|meter|metre)?'
+        ],
+        # Chord patterns (for airfoils)
+        'chord': [
+            r'(\d+\.?\d*)\s*(?:m|meter|metre)?\s*chord',
+            r'chord\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre)?',
+            r'c\s*=\s*(\d+\.?\d*)\s*(?:m|meter|metre)?'
+        ],
+        # Width/height patterns
+        'width': [
+            r'(\d+\.?\d*)\s*(?:m|meter|metre)?\s*wide',
+            r'width\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre)?'
+        ],
+        'height': [
+            r'(\d+\.?\d*)\s*(?:m|meter|metre)?\s*(?:high|tall)',
+            r'height\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre)?'
+        ],
+        # Angle of attack
+        'angle_of_attack': [
+            r'(\d+\.?\d*)\s*(?:deg|degree)?\s*(?:angle\s*of\s*attack|aoa)',
+            r'(?:angle\s*of\s*attack|aoa)\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:deg|degree)?'
+        ]
+    }
+    
+    # Unit conversion factors to meters
+    unit_conversions = {
+        'mm': 0.001,
+        'cm': 0.01,
+        'inch': 0.0254,
+        'inches': 0.0254,
+        'ft': 0.3048,
+        'feet': 0.3048
+    }
+    
+    text_lower = text.lower()
+    
+    # Extract dimensions based on patterns
+    for dim_name, dim_patterns in patterns.items():
+        for pattern in dim_patterns:
+            match = re.search(pattern, text_lower)
+            if match:
+                value = float(match.group(1))
+                
+                # Check for unit conversion
+                for unit, factor in unit_conversions.items():
+                    if unit in match.group(0):
+                        value *= factor
+                        break
+                
+                dimensions[dim_name] = value
+                break
+    
+    # Apply geometry-specific dimension extraction
+    if geometry_type == GeometryType.CYLINDER:
+        # For cylinders, if only one dimension given, assume it's diameter
+        if not dimensions.get('diameter') and any(word in text_lower for word in ['radius', 'r=']):
+            radius_match = re.search(r'(\d+\.?\d*)\s*(?:m|meter|metre)?\s*radius', text_lower)
+            if radius_match:
+                dimensions['diameter'] = float(radius_match.group(1)) * 2
+    
+    return dimensions
+
+
+def infer_flow_context(text: str, geometry_type: GeometryType) -> FlowContext:
+    """Infer whether flow is external (around object) or internal (through object)."""
+    text_lower = text.lower()
+    
+    # Keywords indicating external flow
+    external_keywords = ['around', 'over', 'past', 'across', 'external', 'bluff body', 
+                        'drag', 'lift', 'wake', 'vortex shedding', 'aerodynamic']
+    
+    # Keywords indicating internal flow
+    internal_keywords = ['through', 'in', 'inside', 'internal', 'pipe flow', 'channel flow',
+                        'duct', 'pressure drop', 'friction']
+    
+    # Count keyword matches
+    external_score = sum(1 for keyword in external_keywords if keyword in text_lower)
+    internal_score = sum(1 for keyword in internal_keywords if keyword in text_lower)
+    
+    # Geometry-specific defaults
+    if external_score > internal_score:
+        is_external = True
+    elif internal_score > external_score:
+        is_external = False
+    else:
+        # Use geometry-based defaults
+        if geometry_type in [GeometryType.CYLINDER, GeometryType.SPHERE, GeometryType.AIRFOIL]:
+            is_external = True  # Default to external flow for these geometries
+        else:
+            is_external = False  # Default to internal flow for pipes/channels
+    
+    # Determine domain type and size
+    if is_external:
+        domain_type = "unbounded"
+        # Domain size based on geometry type
+        if geometry_type == GeometryType.CYLINDER:
+            domain_size_multiplier = 20.0  # 20x diameter typical for cylinder
+        elif geometry_type == GeometryType.AIRFOIL:
+            domain_size_multiplier = 30.0  # 30x chord for airfoil
+        elif geometry_type == GeometryType.SPHERE:
+            domain_size_multiplier = 20.0  # 20x diameter for sphere
+        else:
+            domain_size_multiplier = 10.0  # Default
+    else:
+        domain_type = "channel"
+        domain_size_multiplier = 1.0  # No expansion for internal flow
+    
+    return FlowContext(
+        is_external_flow=is_external,
+        domain_type=domain_type,
+        domain_size_multiplier=domain_size_multiplier
+    )
+
+
+def apply_intelligent_defaults(geometry_type: GeometryType, dimensions: Dict[str, float], 
+                             flow_context: FlowContext, reynolds_number: Optional[float]) -> Dict[str, float]:
+    """Apply intelligent defaults for missing dimensions based on geometry and flow type."""
+    
+    # Geometry-specific intelligent defaults
+    if geometry_type == GeometryType.CYLINDER:
+        if 'diameter' not in dimensions:
+            if reynolds_number and reynolds_number < 1000:
+                dimensions['diameter'] = 0.01  # Small cylinder for low Re
+            elif reynolds_number and reynolds_number > 100000:
+                dimensions['diameter'] = 1.0   # Large cylinder for high Re
+            else:
+                dimensions['diameter'] = 0.1   # Default 10cm
+        
+        if 'length' not in dimensions:
+            if flow_context.is_external_flow:
+                # For 2D external flow, use thin slice
+                dimensions['length'] = dimensions['diameter'] * 0.1
+            else:
+                # For internal flow (unlikely for cylinder), use longer length
+                dimensions['length'] = dimensions['diameter'] * 10
+    
+    elif geometry_type == GeometryType.AIRFOIL:
+        if 'chord' not in dimensions:
+            dimensions['chord'] = 0.1  # Default 10cm chord
+        if 'span' not in dimensions:
+            # For 2D simulation, use thin span
+            dimensions['span'] = dimensions['chord'] * 0.1
+        if 'thickness' not in dimensions:
+            # Typical airfoil thickness ratio
+            dimensions['thickness'] = dimensions['chord'] * 0.12
+    
+    elif geometry_type == GeometryType.PIPE:
+        if 'diameter' not in dimensions:
+            dimensions['diameter'] = 0.05  # Default 5cm pipe
+        if 'length' not in dimensions:
+            # Ensure sufficient length for flow development
+            dimensions['length'] = max(dimensions['diameter'] * 20, 1.0)
+    
+    elif geometry_type == GeometryType.CHANNEL:
+        if 'height' not in dimensions:
+            dimensions['height'] = 0.1  # Default 10cm height
+        if 'width' not in dimensions:
+            # Aspect ratio considerations
+            if 'height' in dimensions:
+                dimensions['width'] = dimensions['height'] * 2  # 2:1 aspect ratio
+            else:
+                dimensions['width'] = 0.2
+        if 'length' not in dimensions:
+            dimensions['length'] = max(dimensions.get('height', 0.1) * 10, 1.0)
+    
+    elif geometry_type == GeometryType.SPHERE:
+        if 'diameter' not in dimensions:
+            dimensions['diameter'] = 0.1  # Default 10cm sphere
+    
+    return dimensions
 
 
 def nl_interpreter_agent(state: CFDState) -> CFDState:
@@ -82,12 +287,13 @@ def nl_interpreter_agent(state: CFDState) -> CFDState:
         # Create output parser
         parser = PydanticOutputParser(pydantic_object=CFDParameters)
         
-        # Create prompt template
+        # Create prompt template with enhanced instructions
         prompt = ChatPromptTemplate.from_template("""
 You are an expert CFD engineer. Parse the following natural language description of a fluid dynamics problem into structured parameters.
 
 Extract all relevant information including:
-- Geometry type and dimensions
+- Geometry type and dimensions (extract numerical values with units)
+- Flow context (is it flow AROUND an object or THROUGH a channel/pipe?)
 - Flow conditions (velocity, pressure, temperature)
 - Fluid properties (density, viscosity)
 - Boundary conditions
@@ -95,16 +301,41 @@ Extract all relevant information including:
 - Solver preferences
 - Mesh preferences
 
+IMPORTANT RULES:
+1. For "flow around" objects (cylinder, sphere, airfoil), set is_external_flow=true and domain_type="unbounded"
+2. For "flow through" or "flow in" objects (pipe, channel), set is_external_flow=false and domain_type="channel"
+3. If neither is specified, use these defaults:
+   - Cylinder, Sphere, Airfoil → external flow (around object)
+   - Pipe, Channel → internal flow (through object)
+4. Extract ALL numerical dimensions mentioned (with unit conversion to meters)
+5. For external flow, set domain_size_multiplier appropriately (typically 20-30x object size)
+6. DEFAULT TO UNSTEADY (TRANSIENT) ANALYSIS unless the user explicitly mentions "steady", "steady-state", or "stationary"
+
 Problem Description: {user_prompt}
 
-IMPORTANT: If specific values are not provided, use reasonable defaults for the geometry type or leave as null.
-For Reynolds number, calculate if velocity and characteristic length are available.
-For common geometries, suggest appropriate dimensions if not specified.
+Examples of dimension extraction:
+- "10mm diameter cylinder" → diameter: 0.01 (converted to meters)
+- "5 inch pipe" → diameter: 0.127 (converted to meters)
+- "flow around a cylinder" → is_external_flow: true, domain_type: "unbounded"
+- "flow through a pipe" → is_external_flow: false, domain_type: "channel"
 
-Examples of common setups:
-- Cylinder: diameter=0.1m, length=1m, velocity=1-10 m/s
-- Airfoil: chord=0.1m, angle of attack=5-10°, velocity=10-100 m/s
-- Pipe: diameter=0.05m, length=1m, velocity=0.1-5 m/s
+Examples of analysis type extraction:
+- "flow around a cylinder" → analysis_type: UNSTEADY (default)
+- "steady flow around a cylinder" → analysis_type: STEADY (explicitly mentioned)
+- "steady-state simulation" → analysis_type: STEADY (explicitly mentioned)
+- "turbulent flow" → analysis_type: UNSTEADY (default)
+- "transient flow" → analysis_type: UNSTEADY (explicitly mentioned)
+
+Examples of simulation time extraction:
+- "simulate for 5 seconds" → simulation_time: 5.0
+- "run for 0.5s" → simulation_time: 0.5
+- "10 second simulation" → simulation_time: 10.0
+- No time specified → simulation_time: null (will default to 1.0s)
+
+Examples of mesh resolution:
+- "coarse mesh" → mesh_resolution: "coarse"
+- "fine resolution" → mesh_resolution: "fine"
+- No mesh specified → mesh_resolution: null (will default to "medium")
 
 {format_instructions}
 
@@ -123,16 +354,38 @@ Return valid JSON that matches the schema exactly.
         # Convert to dictionary
         parsed_params = result.dict()
         
-        # Extract geometry information
+        # Extract dimensions from text (as backup/enhancement)
+        text_dimensions = extract_dimensions_from_text(state["user_prompt"], parsed_params["geometry_type"])
+        
+        # Merge extracted dimensions with LLM-parsed dimensions
+        for key, value in text_dimensions.items():
+            if key not in parsed_params["geometry_dimensions"] or parsed_params["geometry_dimensions"][key] is None:
+                parsed_params["geometry_dimensions"][key] = value
+        
+        # Infer flow context if not properly set
+        if "flow_context" not in parsed_params or parsed_params["flow_context"] is None:
+            parsed_params["flow_context"] = infer_flow_context(state["user_prompt"], parsed_params["geometry_type"]).dict()
+        
+        # Apply intelligent defaults for missing dimensions
+        parsed_params["geometry_dimensions"] = apply_intelligent_defaults(
+            parsed_params["geometry_type"],
+            parsed_params["geometry_dimensions"],
+            FlowContext(**parsed_params["flow_context"]),
+            parsed_params.get("reynolds_number")
+        )
+        
+        # Extract geometry information with flow context
         geometry_info = {
             "type": parsed_params["geometry_type"],
             "dimensions": parsed_params["geometry_dimensions"],
-            "mesh_resolution": parsed_params.get("mesh_resolution", "medium")
+            "mesh_resolution": parsed_params.get("mesh_resolution", "medium"),
+            "flow_context": parsed_params["flow_context"]
         }
         
         # Log results if verbose
         if state["verbose"]:
             logger.info(f"NL Interpreter: Extracted geometry: {geometry_info}")
+            logger.info(f"NL Interpreter: Flow context: {parsed_params['flow_context']}")
             logger.info(f"NL Interpreter: Flow type: {parsed_params['flow_type']}")
             logger.info(f"NL Interpreter: Analysis type: {parsed_params['analysis_type']}")
         

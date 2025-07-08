@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 from loguru import logger
 
-from .state import CFDState, CFDStep
+from .state import CFDState, CFDStep, GeometryType
 
 
 def _get_docker_command(case_directory: Path, command: str, settings: "FoamAISettings") -> List[str]:
@@ -114,6 +114,9 @@ def execute_simulation_pipeline(case_directory: Path, state: CFDState) -> Dict[s
         # Step 1: Generate mesh
         if state["verbose"]:
             logger.info("Running blockMesh...")
+            mesh_cells = state.get("mesh_config", {}).get("total_cells", 0)
+            if mesh_cells and mesh_cells > 100000:
+                logger.warning(f"Large mesh with {mesh_cells} cells - mesh generation may take a moment")
         
         mesh_result = run_blockmesh(case_directory, state)
         results["steps"]["mesh_generation"] = mesh_result
@@ -122,6 +125,30 @@ def execute_simulation_pipeline(case_directory: Path, state: CFDState) -> Dict[s
         if not mesh_result["success"]:
             results["error"] = f"Mesh generation failed: {mesh_result['error']}"
             return results
+        
+        if state["verbose"]:
+            mesh_info = mesh_result.get("mesh_info", {})
+            logger.info(f"Mesh generated successfully: {mesh_info.get('total_cells', 'unknown')} cells")
+        
+        # Step 1b: Run snappyHexMesh if needed
+        mesh_type = state.get("mesh_config", {}).get("type", "blockMesh")
+        if mesh_type == "snappyHexMesh":
+            if state["verbose"]:
+                logger.info("Running snappyHexMesh to refine mesh around geometry...")
+            
+            snappy_result = run_snappyhexmesh(case_directory, state)
+            results["steps"]["snappyHexMesh"] = snappy_result
+            results["log_files"]["snappyHexMesh"] = snappy_result.get("log_file")
+            
+            if not snappy_result["success"]:
+                results["error"] = f"snappyHexMesh failed: {snappy_result['error']}"
+                return results
+            
+            if state["verbose"]:
+                logger.info("snappyHexMesh completed successfully")
+                
+            # Copy the latest mesh to constant/polyMesh
+            copy_latest_mesh(case_directory)
         
         # Step 1.5: Create cylinder geometry if needed
         toposet_dict = case_directory / "system" / "topoSetDict"
@@ -162,10 +189,21 @@ def execute_simulation_pipeline(case_directory: Path, state: CFDState) -> Dict[s
             results["error"] = f"Mesh check failed: {mesh_check_result['error']}"
             return results
         
+        if state["verbose"]:
+            mesh_quality = mesh_check_result.get("mesh_quality", {})
+            if mesh_quality.get("mesh_ok", False):
+                logger.info("Mesh quality check passed")
+            else:
+                logger.warning("Mesh quality issues detected - simulation may have convergence problems")
+        
         # Step 3: Run solver
         solver = state["solver_settings"]["solver"]
         if state["verbose"]:
             logger.info(f"Running {solver}...")
+            velocity = state.get("parsed_parameters", {}).get("velocity", 1.0)
+            if velocity and velocity > 100:
+                logger.info(f"Note: High velocity ({velocity} m/s) simulations require small time steps for stability")
+                logger.info("The solver may appear to pause but is actually computing many small time steps")
         
         solver_result = run_solver(case_directory, solver, state)
         results["steps"]["solver"] = solver_result
@@ -175,8 +213,19 @@ def execute_simulation_pipeline(case_directory: Path, state: CFDState) -> Dict[s
             results["error"] = f"Solver execution failed: {solver_result['error']}"
             return results
         
+        if state["verbose"]:
+            solver_info = solver_result.get("solver_info", {})
+            exec_time = solver_info.get("execution_time", 0)
+            if exec_time > 0:
+                logger.info(f"Solver completed successfully in {exec_time:.1f} seconds")
+            else:
+                logger.info("Solver completed successfully")
+        
         results["success"] = True
         results["total_time"] = time.time() - start_time
+        
+        if state["verbose"]:
+            logger.info(f"Total simulation pipeline time: {results['total_time']:.1f} seconds")
         
     except Exception as e:
         results["error"] = str(e)
@@ -327,6 +376,67 @@ def run_solver(case_directory: Path, solver: str, state: CFDState) -> Dict[str, 
     """Run the OpenFOAM solver."""
     log_file = case_directory / f"log.{solver}"
     
+    # Calculate expected runtime and steps for all flows when verbose
+    if state["verbose"]:
+        # Get simulation parameters
+        control_dict = state.get("solver_settings", {}).get("controlDict", {})
+        parsed_params = state.get("parsed_parameters", {})
+        geometry_info = state.get("geometry_info", {})
+        
+        # Extract key parameters
+        velocity = parsed_params.get("velocity", 1.0)
+        start_time_sim = control_dict.get("startTime", 0.0)
+        end_time = control_dict.get("endTime", 10.0)
+        delta_t = control_dict.get("deltaT", 0.001)
+        write_interval = control_dict.get("writeInterval", 1.0)
+        
+        # Calculate total simulation time and steps
+        total_sim_time = end_time - start_time_sim
+        total_steps = int(total_sim_time / delta_t) if delta_t and delta_t > 0 else None
+        write_steps = int(total_sim_time / write_interval) if write_interval and write_interval > 0 else None
+        
+        logger.info("=" * 60)
+        logger.info("SIMULATION PARAMETERS:")
+        logger.info(f"  Solver: {solver}")
+        logger.info(f"  Start Time: {start_time_sim} s")
+        logger.info(f"  End Time: {end_time} s")
+        logger.info(f"  Time Step (deltaT): {delta_t} s")
+        logger.info(f"  Total Simulation Time: {total_sim_time} s")
+        logger.info(f"  Total Time Steps: {total_steps if total_steps else 'Unknown'}")
+        logger.info(f"  Write Interval: {write_interval} s")
+        logger.info(f"  Output Time Steps: {write_steps if write_steps else 'Unknown'}")
+        
+        # Additional info for transient simulations
+        if "pimple" in solver.lower() or "ico" in solver.lower():
+            logger.info(f"  Velocity: {velocity} m/s")
+            
+            # Estimate CFL number if possible
+            if geometry_info and delta_t and delta_t > 0:
+                characteristic_length = get_characteristic_length_from_geometry(geometry_info)
+                mesh_cells = state.get("mesh_config", {}).get("total_cells", 10000)
+                approx_cell_size = characteristic_length / (mesh_cells ** (1/3))
+                cfl_estimate = velocity * delta_t / approx_cell_size
+                logger.info(f"  Estimated CFL number: {cfl_estimate:.2f}")
+                
+                if cfl_estimate > 1.0:
+                    logger.warning(f"  ⚠️  CFL > 1.0 - Simulation may be unstable!")
+                    recommended_dt = 0.5 * approx_cell_size / velocity
+                    logger.warning(f"  Recommended deltaT: {recommended_dt:.6f} s")
+        
+        # Estimate runtime
+        if total_steps and total_steps > 1000:
+            estimated_runtime_min = total_steps * 0.01 / 60
+            logger.info(f"  Estimated Runtime: {estimated_runtime_min:.1f} - {estimated_runtime_min*3:.1f} minutes")
+            if total_steps > 10000:
+                logger.warning(f"  ⚠️  Large number of steps ({total_steps}) - this may take a while!")
+        
+        logger.info("=" * 60)
+    
+    # Special warning for very high velocity flows
+    velocity = state.get("parsed_parameters", {}).get("velocity", 1.0)
+    if velocity and velocity > 50:
+        logger.warning(f"High velocity ({velocity} m/s) detected - simulation may take longer due to small time steps required for stability")
+    
     try:
         # Get settings
         import sys
@@ -341,47 +451,123 @@ def run_solver(case_directory: Path, solver: str, state: CFDState) -> Dict[str, 
         if settings.use_docker:
             cmd = _get_docker_command(case_directory, solver, settings)
         elif settings.openfoam_path and settings.openfoam_path.startswith("/"):
-            # WSL path - run through WSL
             wsl_case_dir = str(case_directory).replace("\\", "/").replace("C:", "/mnt/c")
             cmd = ["wsl", "-e", "bash", "-c", 
                    f"cd '{wsl_case_dir}' && source {settings.openfoam_path}/etc/bashrc && {solver}"]
         else:
-            # Windows/Native path - run directly
             cmd = [solver]
         
+        if state["verbose"]:
+            logger.info(f"Starting {solver} solver...")
+            logger.info(f"Log file: {log_file}")
+        
+        start_time_exec = time.time()
+        
         with open(log_file, "w") as f:
-            exec_params = {
-                "stdout": f,
+            popen_params = {
+                "stdout": subprocess.PIPE,
                 "stderr": subprocess.STDOUT,
-                "timeout": state.get("max_simulation_time", 3600)
+                "universal_newlines": True,
+                "bufsize": 1
             }
 
             if settings.use_docker or (settings.openfoam_path and settings.openfoam_path.startswith("/")):
-                # Docker or WSL, no cwd or env
-                result = subprocess.run(cmd, **exec_params)
+                process = subprocess.Popen(cmd, **popen_params)
             else:
-                # For native, run in case directory with env
-                result = subprocess.run(cmd, cwd=case_directory, env=env, **exec_params)
+                process = subprocess.Popen(cmd, cwd=case_directory, env=env, **popen_params)
+
+            # Monitor progress in verbose mode
+            last_time_reported = 0
+            time_step_count = 0
+            
+            control_dict = state.get("solver_settings", {}).get("controlDict", {})
+            start_time_sim = control_dict.get("startTime", 0.0)
+            end_time = control_dict.get("endTime", 10.0)
+            total_sim_time = end_time - start_time_sim
+
+            for line in process.stdout:
+                f.write(line)
+                f.flush()
+                
+                if state["verbose"]:
+                    time_match = re.search(r"Time = ([\d.e-]+)", line)
+                    if time_match:
+                        current_time = float(time_match.group(1))
+                        time_step_count += 1
+                        if time.time() - last_time_reported > 10 or time_step_count % 100 == 0:
+                            elapsed = time.time() - start_time_exec
+                            
+                            if total_sim_time > 0:
+                                time_progress_pct = (current_time - start_time_sim) / total_sim_time * 100
+                                time_progress_pct = min(time_progress_pct, 100.0)
+                                
+                                time_per_sim_second = elapsed / (current_time - start_time_sim) if current_time > start_time_sim else 0
+                                remaining_sim_time = max(0, end_time - current_time)
+                                eta_seconds = remaining_sim_time * time_per_sim_second if time_per_sim_second > 0 else 0
+                                eta_minutes = eta_seconds / 60
+                                
+                                step_progress = f"Step {time_step_count}"
+                                
+                                logger.info(
+                                    f"Solver progress: Sim Time = {current_time:.3f}/{end_time:.1f} s ({time_progress_pct:.1f}%), "
+                                    f"{step_progress}, "
+                                    f"Real Time: {elapsed:.1f} s, "
+                                    f"ETA: {eta_minutes:.1f} min"
+                                )
+                            else:
+                                logger.info(f"Solver progress: Time = {current_time:.3f} s, Step {time_step_count}, Elapsed: {elapsed:.1f} s")
+                            last_time_reported = time.time()
+                    
+                    co_match = re.search(r"Courant Number mean: ([\d.e-]+) max: ([\d.e-]+)", line)
+                    if co_match and time_step_count % 50 == 0:
+                        co_max = float(co_match.group(2))
+                        if co_max > 1.0:
+                            logger.warning(f"High Courant number detected: max = {co_max:.3f} (should be < 1)")
+                    
+                    if "FOAM Warning" in line:
+                        logger.warning(f"Solver warning: {line.strip()}")
+                    if "time step continuity errors" in line and "sum local" in line:
+                        error_match = re.search(r"sum local = ([\d.e-]+)", line)
+                        if error_match:
+                            error = float(error_match.group(1))
+                            if error > 1e-5:
+                                logger.warning(f"High continuity error: {error:.2e}")
+            
+            timeout = state.get("max_simulation_time", 3600)
+            try:
+                return_code = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                return {
+                    "success": False,
+                    "return_code": -1,
+                    "log_file": str(log_file),
+                    "solver_info": {},
+                    "error": f"{solver} timed out after {timeout} seconds"
+                }
+        
+        if state["verbose"]:
+            elapsed_time = time.time() - start_time_exec
+            logger.info("=" * 60)
+            logger.info(f"SIMULATION COMPLETED:")
+            logger.info(f"  Total Runtime: {elapsed_time:.1f} seconds ({elapsed_time/60:.1f} minutes)")
+            if time_step_count > 0:
+                logger.info(f"  Total Time Steps Executed: {time_step_count}")
+                time_per_step = elapsed_time / time_step_count
+                logger.info(f"  Average Time per Step: {time_per_step:.3f} seconds")
+            logger.info("=" * 60)
         
         # Parse solver output
         solver_info = parse_solver_output(log_file, solver)
         
         return {
-            "success": result.returncode == 0,
-            "return_code": result.returncode,
+            "success": return_code == 0,
+            "return_code": return_code,
             "log_file": str(log_file),
             "solver_info": solver_info,
-            "error": None if result.returncode == 0 else f"{solver} failed with code {result.returncode}"
+            "error": None if return_code == 0 else f"{solver} failed with code {return_code}"
         }
         
-    except subprocess.TimeoutExpired:
-        return {
-            "success": False,
-            "return_code": -1,
-            "log_file": str(log_file),
-            "solver_info": {},
-            "error": f"{solver} timed out"
-        }
     except Exception as e:
         return {
             "success": False,
@@ -407,8 +593,16 @@ def prepare_openfoam_env() -> Dict[str, str]:
         env["FOAM_INSTALL_DIR"] = settings.openfoam_path
         env["WM_PROJECT_VERSION"] = settings.openfoam_version
         
+        # Determine platform directory based on variant
+        if settings.openfoam_variant == "Foundation":
+            # Foundation version typically uses linux64GccDPOpt
+            platform_dir = "linux64GccDPOpt"
+        else:
+            # ESI version uses linux64GccDPInt32Opt
+            platform_dir = "linux64GccDPInt32Opt"
+        
         # Add binary path
-        bin_path = f"{settings.openfoam_path}/platforms/linux64GccDPInt32Opt/bin"
+        bin_path = f"{settings.openfoam_path}/platforms/{platform_dir}/bin"
         if "PATH" in env:
             env["PATH"] = f"{bin_path}:{env['PATH']}"
         else:
@@ -447,10 +641,10 @@ def parse_blockmesh_output(log_file: Path) -> Dict[str, Any]:
         
         # Extract warnings and errors
         warnings = re.findall(r"Warning.*", content)
-        mesh_info["warnings"] = warnings[:10]  # Limit to first 10
+        mesh_info["warnings"] = warnings[:10]
         
         errors = re.findall(r"Error.*", content)
-        mesh_info["errors"] = errors[:10]  # Limit to first 10
+        mesh_info["errors"] = errors[:10]
         
     except Exception as e:
         logger.warning(f"Could not parse blockMesh output: {e}")
@@ -529,16 +723,14 @@ def parse_solver_output(log_file: Path, solver: str) -> Dict[str, Any]:
         for field, pattern in residual_patterns.items():
             matches = re.findall(pattern, content)
             if matches:
-                solver_info["final_residuals"][field] = float(matches[-1])  # Take last value
+                solver_info["final_residuals"][field] = float(matches[-1])
         
-        # Check convergence - more robust detection
+        # Check convergence
         if "SIMPLE solution converged" in content or "PIMPLE: converged" in content:
             solver_info["converged"] = True
         elif "FOAM exiting" not in content and solver_info["final_residuals"]:
-            # If solver completed without fatal errors and has final residuals, consider it converged
             solver_info["converged"] = True
         elif "ExecutionTime" in content and solver_info["final_residuals"]:
-            # If execution time is reported and we have residuals, solver likely completed successfully
             solver_info["converged"] = True
         
         # Extract execution time
@@ -734,4 +926,169 @@ def run_createpatch(case_directory: Path, state: CFDState) -> Dict[str, Any]:
             "return_code": -1,
             "log_file": str(log_file),
             "error": str(e)
-        } 
+        }
+
+
+def get_characteristic_length_from_geometry(geometry_info: Dict[str, Any]) -> float:
+    """Get characteristic length from geometry info."""
+    dimensions = geometry_info.get("dimensions", {})
+    geometry_type = geometry_info.get("type")
+    
+    # Try to get characteristic length based on geometry type
+    if geometry_type == GeometryType.CYLINDER:
+        return dimensions.get("diameter", dimensions.get("cylinder_diameter", 0.1))
+    elif geometry_type == GeometryType.SPHERE:
+        return dimensions.get("diameter", 0.1)
+    elif geometry_type == GeometryType.AIRFOIL:
+        return dimensions.get("chord", 0.1)
+    elif geometry_type == GeometryType.PIPE:
+        return dimensions.get("diameter", 0.05)
+    elif geometry_type == GeometryType.CHANNEL:
+        return dimensions.get("height", 0.02)
+    else:
+        # Try to find any dimension
+        for key in ["diameter", "length", "width", "height", "chord"]:
+            if key in dimensions and dimensions[key] > 0:
+                return dimensions[key]
+    
+    # Default
+    return 0.1
+
+
+def run_snappyhexmesh(case_directory: Path, state: CFDState) -> Dict[str, Any]:
+    """Run snappyHexMesh to refine mesh around geometry."""
+    log_file = case_directory / "log.snappyHexMesh"
+    
+    try:
+        # Get settings to check if we need WSL
+        import sys
+        sys.path.append('src')
+        from foamai.config import get_settings
+        settings = get_settings()
+        
+        # Prepare environment
+        env = prepare_openfoam_env()
+        
+        # Determine if we need to use WSL
+        if settings.openfoam_path and settings.openfoam_path.startswith("/"):
+            # WSL path - run through WSL
+            wsl_case_dir = str(case_directory).replace("\\", "/").replace("C:", "/mnt/c")
+            cmd = ["wsl", "-e", "bash", "-c", 
+                   f"cd '{wsl_case_dir}' && source {settings.openfoam_path}/etc/bashrc && snappyHexMesh -overwrite"]
+        else:
+            # Windows path - run directly
+            cmd = ["snappyHexMesh", "-overwrite"]
+        
+        with open(log_file, "w") as f:
+            if settings.openfoam_path and settings.openfoam_path.startswith("/"):
+                # For WSL, don't change working directory since we're using cd in the command
+                result = subprocess.run(
+                    cmd,
+                    stdout=f,
+                    stderr=subprocess.STDOUT,
+                    timeout=600  # 10 minute timeout
+                )
+            else:
+                result = subprocess.run(
+                    cmd,
+                    cwd=case_directory,
+                    stdout=f,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                    timeout=600  # 10 minute timeout
+                )
+        
+        # Parse snappyHexMesh output
+        snappy_info = parse_snappyhexmesh_output(log_file)
+        
+        return {
+            "success": result.returncode == 0,
+            "return_code": result.returncode,
+            "log_file": str(log_file),
+            "snappy_info": snappy_info,
+            "error": None if result.returncode == 0 else f"snappyHexMesh failed with code {result.returncode}"
+        }
+        
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "return_code": -1,
+            "log_file": str(log_file),
+            "snappy_info": {},
+            "error": "snappyHexMesh timed out"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "return_code": -1,
+            "log_file": str(log_file),
+            "snappy_info": {},
+            "error": str(e)
+        }
+
+
+def copy_latest_mesh(case_directory: Path) -> None:
+    """Copy the latest mesh from time directory to constant/polyMesh."""
+    import shutil
+    
+    # Find the latest time directory with a polyMesh
+    time_dirs = []
+    for item in case_directory.iterdir():
+        if item.is_dir() and item.name.replace(".", "").replace("-", "").isdigit():
+            if (item / "polyMesh").exists():
+                try:
+                    time_value = float(item.name)
+                    time_dirs.append((time_value, item))
+                except ValueError:
+                    pass
+    
+    if time_dirs:
+        # Sort by time value and get the latest
+        time_dirs.sort(key=lambda x: x[0])
+        latest_time, latest_dir = time_dirs[-1]
+        
+        # Copy to constant/polyMesh
+        source = latest_dir / "polyMesh"
+        dest = case_directory / "constant" / "polyMesh"
+        
+        # Remove existing polyMesh if it exists
+        if dest.exists():
+            shutil.rmtree(dest)
+        
+        # Copy the new mesh
+        shutil.copytree(source, dest)
+        
+        logger.info(f"Copied mesh from {latest_dir.name}/polyMesh to constant/polyMesh")
+
+
+def parse_snappyhexmesh_output(log_file: Path) -> Dict[str, Any]:
+    """Parse snappyHexMesh log file for mesh information."""
+    info = {
+        "cells_added": 0,
+        "final_cells": 0,
+        "layers_added": False,
+        "snapping_iterations": 0
+    }
+    
+    try:
+        with open(log_file, "r") as f:
+            content = f.read()
+            
+            # Look for final mesh statistics
+            final_cells_match = re.search(r"Mesh\s+:\s+cells:(\d+)", content)
+            if final_cells_match:
+                info["final_cells"] = int(final_cells_match.group(1))
+            
+            # Check if layers were added
+            if "Layer addition iteration" in content:
+                info["layers_added"] = True
+            
+            # Count snapping iterations
+            snap_matches = re.findall(r"Morph iteration (\d+)", content)
+            if snap_matches:
+                info["snapping_iterations"] = len(snap_matches)
+    
+    except Exception as e:
+        logger.warning(f"Failed to parse snappyHexMesh output: {e}")
+    
+    return info 

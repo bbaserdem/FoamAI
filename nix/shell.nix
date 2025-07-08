@@ -65,8 +65,10 @@ in {
               ];
             };
 
-            # Hatchling (build system) has a dependency on the editables package when building editables
-            # In normal python flows this dependency is dynamically handled, in PEP660
+            # Hatchling (build system) has a dependency on the editables package
+            # when building editables
+            # In normal python flows this dependency is dynamically handled,
+            # in PEP660
             # With Nix, the dependency needs to be explicitly declared
             nativeBuildInputs =
               old.nativeBuildInputs

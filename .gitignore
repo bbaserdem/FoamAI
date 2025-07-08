@@ -59,6 +59,11 @@ dev-debug.log
 
 # OS specific
 
+# Dependency directories
+node_modules/
+# Environment variables
+.env
+
 # Task files
 # tasks.json
 # tasks/ 

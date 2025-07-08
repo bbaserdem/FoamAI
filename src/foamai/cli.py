@@ -327,19 +327,34 @@ def status():
                     console.print("  ✅ ParaView (WSL)")
                     paraview_found = True
         
-        # If not found and no WSL check, try direct commands
+        # If not found and no WSL check, try direct commands or configured path
         if not paraview_found:
-            paraview_commands = ["pvpython", "paraview"]
-            for cmd in paraview_commands:
-                try:
-                    result = subprocess.run([cmd, "--version"], 
-                                          capture_output=True, text=True, timeout=5)
-                    if result.returncode == 0:
-                        console.print(f"  ✅ ParaView ({cmd})")
-                        paraview_found = True
-                        break
-                except (FileNotFoundError, subprocess.TimeoutExpired):
-                    continue
+            # First try configured path if it's a Windows path
+            if not settings.paraview_path.startswith("/"):
+                import os
+                paraview_exe = os.path.join(settings.paraview_path, "bin", "paraview.exe")
+                pvpython_exe = os.path.join(settings.paraview_path, "bin", "pvpython.exe")
+                
+                if os.path.exists(paraview_exe):
+                    console.print(f"  ✅ ParaView ({settings.paraview_path})")
+                    paraview_found = True
+                elif os.path.exists(pvpython_exe):
+                    console.print(f"  ✅ ParaView/pvpython ({settings.paraview_path})")
+                    paraview_found = True
+            
+            # If still not found, try direct commands
+            if not paraview_found:
+                paraview_commands = ["pvpython", "paraview"]
+                for cmd in paraview_commands:
+                    try:
+                        result = subprocess.run([cmd, "--version"], 
+                                              capture_output=True, text=True, timeout=5)
+                        if result.returncode == 0:
+                            console.print(f"  ✅ ParaView ({cmd})")
+                            paraview_found = True
+                            break
+                    except (FileNotFoundError, subprocess.TimeoutExpired):
+                        continue
     except Exception:
         pass
     

@@ -85,6 +85,8 @@ def generate_boundary_conditions(parsed_params: Dict[str, Any], geometry_info: D
 def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any], mesh_config: Dict[str, Any]) -> Dict[str, Any]:
     """Generate velocity field (U) boundary conditions."""
     velocity = parsed_params.get("velocity", 1.0)
+    if velocity is None:
+        velocity = 1.0  # Default velocity
     geometry_type = geometry_info["type"]
     
     # Get boundary patches from mesh config
@@ -99,6 +101,7 @@ def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
     
     # Configure boundary conditions based on geometry
     if geometry_type == GeometryType.CYLINDER:
+        # For simplified rectangular channel (no actual cylinder boundary yet)
         velocity_field["boundaryField"] = {
             "inlet": {
                 "type": "fixedValue",
@@ -107,11 +110,8 @@ def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
             "outlet": {
                 "type": "zeroGradient"
             },
-            "cylinder": {
-                "type": "noSlip"
-            },
             "walls": {
-                "type": "slip"
+                "type": "noSlip"
             },
             "sides": {
                 "type": "empty"
@@ -151,6 +151,12 @@ def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
             }
         }
     elif geometry_type == GeometryType.CHANNEL:
+        # Check if this is a 2D or 3D case
+        is_2d = False
+        if mesh_config and "resolution" in mesh_config:
+            spanwise_cells = mesh_config.get("resolution", {}).get("spanwise", 1)
+            is_2d = spanwise_cells == 1
+        
         velocity_field["boundaryField"] = {
             "inlet": {
                 "type": "fixedValue",
@@ -163,7 +169,7 @@ def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
                 "type": "noSlip"
             },
             "sides": {
-                "type": "symmetryPlane"
+                "type": "empty" if is_2d else "symmetry"
             }
         }
     elif geometry_type == GeometryType.SPHERE:
@@ -201,6 +207,7 @@ def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
     
     # Configure boundary conditions based on geometry
     if geometry_type == GeometryType.CYLINDER:
+        # For simplified rectangular channel (no actual cylinder boundary yet)
         pressure_field["boundaryField"] = {
             "inlet": {
                 "type": "zeroGradient"
@@ -208,9 +215,6 @@ def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
             "outlet": {
                 "type": "fixedValue",
                 "value": f"uniform {pressure}"
-            },
-            "cylinder": {
-                "type": "zeroGradient"
             },
             "walls": {
                 "type": "zeroGradient"
@@ -253,6 +257,12 @@ def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
             }
         }
     elif geometry_type == GeometryType.CHANNEL:
+        # Check if this is a 2D or 3D case
+        is_2d = False
+        if mesh_config and "resolution" in mesh_config:
+            spanwise_cells = mesh_config.get("resolution", {}).get("spanwise", 1)
+            is_2d = spanwise_cells == 1
+        
         pressure_field["boundaryField"] = {
             "inlet": {
                 "type": "zeroGradient"
@@ -265,7 +275,7 @@ def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
                 "type": "zeroGradient"
             },
             "sides": {
-                "type": "symmetryPlane"
+                "type": "empty" if is_2d else "symmetry"
             }
         }
     elif geometry_type == GeometryType.SPHERE:
@@ -292,7 +302,11 @@ def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
 def generate_turbulent_kinetic_energy_field(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any], mesh_config: Dict[str, Any]) -> Dict[str, Any]:
     """Generate turbulent kinetic energy field (k)."""
     velocity = parsed_params.get("velocity", 1.0)
+    if velocity is None:
+        velocity = 1.0  # Default velocity
     turbulence_intensity = parsed_params.get("turbulence_intensity", 0.05)
+    if turbulence_intensity is None:
+        turbulence_intensity = 0.05  # Default turbulence intensity
     
     # Calculate turbulent kinetic energy
     k_value = 1.5 * (velocity * turbulence_intensity) ** 2
@@ -367,7 +381,7 @@ def generate_turbulent_kinetic_energy_field(parsed_params: Dict[str, Any], geome
         
         if geometry_type == GeometryType.CHANNEL:
             k_field["boundaryField"]["sides"] = {
-                "type": "symmetryPlane"
+                "type": "empty"
             }
     
     return k_field
@@ -376,8 +390,14 @@ def generate_turbulent_kinetic_energy_field(parsed_params: Dict[str, Any], geome
 def generate_specific_dissipation_field(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any], mesh_config: Dict[str, Any]) -> Dict[str, Any]:
     """Generate specific dissipation rate field (omega)."""
     velocity = parsed_params.get("velocity", 1.0)
+    if velocity is None:
+        velocity = 1.0  # Default velocity
     turbulence_intensity = parsed_params.get("turbulence_intensity", 0.05)
+    if turbulence_intensity is None:
+        turbulence_intensity = 0.05  # Default turbulence intensity
     turbulence_length_scale = parsed_params.get("turbulence_length_scale", 0.01)
+    if turbulence_length_scale is None:
+        turbulence_length_scale = 0.01  # Default length scale
     
     # Calculate omega
     k_value = 1.5 * (velocity * turbulence_intensity) ** 2
@@ -453,7 +473,7 @@ def generate_specific_dissipation_field(parsed_params: Dict[str, Any], geometry_
         
         if geometry_type == GeometryType.CHANNEL:
             omega_field["boundaryField"]["sides"] = {
-                "type": "symmetryPlane"
+                "type": "empty"
             }
     
     return omega_field
@@ -462,8 +482,14 @@ def generate_specific_dissipation_field(parsed_params: Dict[str, Any], geometry_
 def generate_dissipation_field(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any], mesh_config: Dict[str, Any]) -> Dict[str, Any]:
     """Generate dissipation rate field (epsilon)."""
     velocity = parsed_params.get("velocity", 1.0)
+    if velocity is None:
+        velocity = 1.0  # Default velocity
     turbulence_intensity = parsed_params.get("turbulence_intensity", 0.05)
+    if turbulence_intensity is None:
+        turbulence_intensity = 0.05  # Default turbulence intensity
     turbulence_length_scale = parsed_params.get("turbulence_length_scale", 0.01)
+    if turbulence_length_scale is None:
+        turbulence_length_scale = 0.01  # Default length scale
     
     # Calculate epsilon
     k_value = 1.5 * (velocity * turbulence_intensity) ** 2
@@ -539,7 +565,7 @@ def generate_dissipation_field(parsed_params: Dict[str, Any], geometry_info: Dic
         
         if geometry_type == GeometryType.CHANNEL:
             epsilon_field["boundaryField"]["sides"] = {
-                "type": "symmetryPlane"
+                "type": "empty"
             }
     
     return epsilon_field
@@ -619,7 +645,7 @@ def generate_turbulent_viscosity_field(parsed_params: Dict[str, Any], geometry_i
         
         if geometry_type == GeometryType.CHANNEL:
             nut_field["boundaryField"]["sides"] = {
-                "type": "symmetryPlane"
+                "type": "empty"
             }
     
     return nut_field
@@ -694,7 +720,7 @@ def generate_temperature_field(parsed_params: Dict[str, Any], geometry_info: Dic
         
         if geometry_type == GeometryType.CHANNEL:
             temp_field["boundaryField"]["sides"] = {
-                "type": "symmetryPlane"
+                "type": "empty"
             }
     
     return temp_field
@@ -721,16 +747,83 @@ def validate_boundary_conditions(boundary_conditions: Dict[str, Any], parsed_par
     
     # Check velocity magnitude
     velocity = parsed_params.get("velocity", 0)
-    if velocity <= 0:
+    if velocity is not None and velocity <= 0:
         warnings.append("Zero or negative velocity specified")
     
     # Check Reynolds number
     reynolds_number = parsed_params.get("reynolds_number", 0)
-    if reynolds_number > 2300 and flow_type == FlowType.LAMINAR:
+    if reynolds_number is not None and reynolds_number > 2300 and flow_type == FlowType.LAMINAR:
         warnings.append(f"High Reynolds number ({reynolds_number}) for laminar flow")
     
     return {
         "valid": len(errors) == 0,
         "errors": errors,
         "warnings": warnings
-    } 
+    }
+
+
+def generate_boundary_conditions_cylinder(state: CFDState) -> Dict[str, Any]:
+    """Generate boundary conditions for cylinder geometry."""
+    # For simple rectangular channel (no cylinder boundary for now)
+    boundary_conditions = {
+        "inlet": {
+            "U": {"type": "fixedValue", "value": f"uniform ({state.velocity or 1.0} 0 0)"},
+            "p": {"type": "zeroGradient"}
+        },
+        "outlet": {
+            "U": {"type": "zeroGradient"},
+            "p": {"type": "fixedValue", "value": "uniform 0"}
+        },
+        "walls": {
+            "U": {"type": "noSlip"},
+            "p": {"type": "zeroGradient"}
+        },
+        "sides": {
+            "U": {"type": "empty"},
+            "p": {"type": "empty"}
+        }
+    }
+    
+    # Add turbulence fields if needed
+    if state.flow_type == FlowType.TURBULENT:
+        for boundary, conditions in boundary_conditions.items():
+            if boundary == "inlet":
+                conditions.update({
+                    "k": {"type": "fixedValue", "value": "uniform 0.1"},
+                    "omega": {"type": "fixedValue", "value": "uniform 1.0"},
+                    "epsilon": {"type": "fixedValue", "value": "uniform 0.1"},
+                    "nut": {"type": "calculated", "value": "uniform 0"}
+                })
+            elif boundary == "walls":
+                conditions.update({
+                    "k": {"type": "kqRWallFunction", "value": "uniform 0.1"},
+                    "omega": {"type": "omegaWallFunction", "value": "uniform 1.0"},
+                    "epsilon": {"type": "epsilonWallFunction", "value": "uniform 0.1"},
+                    "nut": {"type": "nutkWallFunction", "value": "uniform 0"}
+                })
+            elif boundary == "sides":
+                conditions.update({
+                    "k": {"type": "empty"},
+                    "omega": {"type": "empty"},
+                    "epsilon": {"type": "empty"},
+                    "nut": {"type": "empty"}
+                })
+            else:  # outlet
+                conditions.update({
+                    "k": {"type": "zeroGradient"},
+                    "omega": {"type": "zeroGradient"},
+                    "epsilon": {"type": "zeroGradient"},
+                    "nut": {"type": "calculated", "value": "uniform 0"}
+                })
+    
+    # Add temperature field if needed
+    if state.temperature is not None:
+        for boundary, conditions in boundary_conditions.items():
+            if boundary == "inlet":
+                conditions["T"] = {"type": "fixedValue", "value": f"uniform {state.temperature}"}
+            elif boundary == "sides":
+                conditions["T"] = {"type": "empty"}
+            else:
+                conditions["T"] = {"type": "zeroGradient"}
+    
+    return boundary_conditions 

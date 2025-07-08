@@ -69,7 +69,7 @@ def generate_mesh_config(geometry_info: Dict[str, Any], parsed_params: Dict[str,
     resolution_multiplier = get_resolution_multiplier(mesh_resolution)
     
     if geometry_type == GeometryType.CYLINDER:
-        return generate_cylinder_mesh(dimensions, resolution_multiplier, parsed_params)
+        return generate_cylinder_mesh(dimensions, mesh_resolution)
     elif geometry_type == GeometryType.AIRFOIL:
         return generate_airfoil_mesh(dimensions, resolution_multiplier, parsed_params)
     elif geometry_type == GeometryType.PIPE:
@@ -93,48 +93,56 @@ def get_resolution_multiplier(mesh_resolution: str) -> float:
     return resolution_map.get(mesh_resolution, 1.0)
 
 
-def generate_cylinder_mesh(dimensions: Dict[str, float], resolution_multiplier: float, params: Dict[str, Any]) -> Dict[str, Any]:
+def generate_cylinder_mesh(dimensions: Dict[str, float], resolution: str = "medium") -> Dict[str, Any]:
     """Generate mesh configuration for cylinder geometry."""
-    diameter = dimensions.get("diameter", 0.1)
-    length = dimensions.get("length", 1.0)
+    diameter = dimensions.get("diameter", 0.1)  # Default 0.1m diameter
+    length = dimensions.get("length", 1.0)  # Default 1m length
     
-    # Domain dimensions (should be large enough to avoid boundary effects)
-    domain_width = max(diameter * 20, 2.0)
-    domain_height = max(diameter * 20, 2.0)
+    # For 2D cylinder flow, we use a thin slice
+    cylinder_length = 0.1  # Changed from 1.0 to 0.1 for 2D
     
-    # Base mesh resolution
-    base_resolution = int(40 * resolution_multiplier)
+    # Domain size (typically 20D x 10D for cylinder flow)
+    domain_length = diameter * 20
+    domain_height = diameter * 10
     
-    # Mesh configuration
-    mesh_config = {
+    # Get resolution count
+    base_resolution = {"coarse": 20, "medium": 40, "fine": 80}.get(resolution, 40)
+    
+    # Calculate mesh resolution
+    circumferential_cells = base_resolution
+    radial_cells = max(int(base_resolution * 0.5), 10)
+    axial_cells = 1  # Force 1 cell for 2D
+    
+    # Total cells estimate (rectangular domain for now)
+    total_cells = circumferential_cells * radial_cells * axial_cells
+    
+    # Quality metrics
+    aspect_ratio = max(domain_length/circumferential_cells, domain_height/radial_cells) / min(domain_length/circumferential_cells, domain_height/radial_cells)
+    quality_score = 1.0 / (1.0 + aspect_ratio - 1.0)  # Simple quality metric
+    
+    return {
         "type": "blockMesh",
         "geometry_type": "cylinder",
         "dimensions": {
             "cylinder_diameter": diameter,
-            "cylinder_length": length,
-            "domain_width": domain_width,
+            "cylinder_length": cylinder_length,
+            "domain_length": domain_length,
             "domain_height": domain_height
         },
         "resolution": {
-            "circumferential": max(int(base_resolution * 0.8), 16),
-            "radial": max(int(base_resolution * 0.5), 10),
-            "axial": max(int(base_resolution * 0.6), 12)
+            "circumferential": circumferential_cells,
+            "radial": radial_cells,
+            "axial": axial_cells
         },
-        "blocks": generate_cylinder_blocks(diameter, domain_width, domain_height, base_resolution),
-        "total_cells": 0,  # Will be calculated
-        "boundary_patches": {
-            "inlet": "patch",
-            "outlet": "patch", 
-            "walls": "wall",
-            "cylinder": "wall",
-            "sides": "symmetryPlane"
-        }
+        "total_cells": total_cells,
+        "quality_metrics": {
+            "aspect_ratio": aspect_ratio,
+            "quality_score": quality_score
+        },
+        "cylinder_center": [domain_length * 0.3, domain_height * 0.5, cylinder_length * 0.5],
+        "cylinder_radius": diameter / 2.0,
+        "use_toposet": False  # Disabled - createPatch can't create internal boundaries
     }
-    
-    # Calculate total cells
-    mesh_config["total_cells"] = calculate_total_cells(mesh_config)
-    
-    return mesh_config
 
 
 def generate_airfoil_mesh(dimensions: Dict[str, float], resolution_multiplier: float, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -241,7 +249,7 @@ def generate_channel_mesh(dimensions: Dict[str, float], resolution_multiplier: f
             "inlet": "patch",
             "outlet": "patch",
             "walls": "wall",
-            "sides": "symmetryPlane"
+            "sides": "empty"
         }
     }
     

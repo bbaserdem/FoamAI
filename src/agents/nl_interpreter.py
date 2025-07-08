@@ -168,13 +168,19 @@ def calculate_reynolds_number(params: Dict[str, Any], geometry_info: Dict[str, A
         density = params.get("density", 1.225)  # Air at sea level
         viscosity = params.get("viscosity", 1.81e-5)  # Air at 20°C
         
-        if not velocity:
+        # Handle None values
+        if density is None:
+            density = 1.225
+        if viscosity is None:
+            viscosity = 1.81e-5
+        
+        if not velocity or velocity is None:
             return None
         
         # Get characteristic length based on geometry type
         characteristic_length = get_characteristic_length(geometry_info)
         
-        if characteristic_length:
+        if characteristic_length and characteristic_length > 0:
             reynolds_number = (density * velocity * characteristic_length) / viscosity
             logger.info(f"Calculated Reynolds number: {reynolds_number:.0f}")
             return reynolds_number
@@ -215,7 +221,7 @@ def set_default_fluid_properties(params: Dict[str, Any]) -> Dict[str, Any]:
     }
     
     for key, value in defaults.items():
-        if not params.get(key):
+        if key not in params or params[key] is None:
             params[key] = value
     
     return params

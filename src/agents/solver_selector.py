@@ -72,7 +72,7 @@ def select_solver(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any]) 
     }
     
     # Compressible vs incompressible
-    if mach_number and mach_number > 0.3:
+    if mach_number is not None and mach_number > 0.3:
         # Compressible flow
         if analysis_type == AnalysisType.STEADY:
             solver_settings["solver"] = "rhoSimpleFoam"
@@ -95,10 +95,13 @@ def select_solver(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any]) 
     
     # Turbulence model selection
     if flow_type == FlowType.TURBULENT:
-        if reynolds_number < 10000:
+        if reynolds_number is not None and reynolds_number < 10000:
             solver_settings["turbulence_model"] = "kOmegaSST"
-        else:
+        elif reynolds_number is not None and reynolds_number >= 10000:
             solver_settings["turbulence_model"] = "kEpsilon"
+        else:
+            # Default for turbulent flow when Reynolds number is unknown
+            solver_settings["turbulence_model"] = "kOmegaSST"
     else:
         solver_settings["turbulence_model"] = "laminar"
     
@@ -152,6 +155,12 @@ def generate_control_dict(solver_settings: Dict[str, Any], parsed_params: Dict[s
         # Transient simulation
         end_time = parsed_params.get("end_time", 1.0)
         time_step = parsed_params.get("time_step", 0.001)
+        
+        # Handle None values
+        if end_time is None:
+            end_time = 1.0
+        if time_step is None:
+            time_step = 0.001
         
         control_dict.update({
             "endTime": end_time,
@@ -349,6 +358,16 @@ def generate_transport_properties(solver_settings: Dict[str, Any], parsed_params
     density = parsed_params.get("density", 1.225)
     viscosity = parsed_params.get("viscosity", 1.81e-5)
     
+    # Handle None values
+    if density is None:
+        density = 1.225
+    if viscosity is None:
+        viscosity = 1.81e-5
+    
+    # Ensure we don't divide by zero
+    if density == 0:
+        density = 1.225
+    
     return {
         "transportModel": "Newtonian",
         "nu": viscosity / density,  # Kinematic viscosity
@@ -376,10 +395,10 @@ def validate_solver_config(solver_config: Dict[str, Any], parsed_params: Dict[st
         warnings.append(f"Unknown solver: {solver}")
     
     # Check time step for transient simulations
-    if "pimple" in solver.lower():
+    if solver and "pimple" in solver.lower():
         control_dict = solver_config.get("controlDict", {})
         delta_t = control_dict.get("deltaT", 0)
-        if delta_t <= 0:
+        if delta_t is not None and delta_t <= 0:
             errors.append("Invalid time step for transient simulation")
     
     # Check Reynolds number vs turbulence model
@@ -387,9 +406,9 @@ def validate_solver_config(solver_config: Dict[str, Any], parsed_params: Dict[st
     turbulence_props = solver_config.get("turbulenceProperties", {})
     simulation_type = turbulence_props.get("simulationType", "")
     
-    if reynolds_number > 2300 and simulation_type == "laminar":
+    if reynolds_number is not None and reynolds_number > 2300 and simulation_type == "laminar":
         warnings.append("High Reynolds number with laminar simulation")
-    elif reynolds_number < 2300 and simulation_type == "RAS":
+    elif reynolds_number is not None and reynolds_number < 2300 and simulation_type == "RAS":
         warnings.append("Low Reynolds number with turbulent simulation")
     
     return {
@@ -408,14 +427,14 @@ def get_solver_recommendations(solver_settings: Dict[str, Any], parsed_params: D
     analysis_type = solver_settings.get("analysis_type", AnalysisType.STEADY)
     
     # Reynolds number based recommendations
-    if reynolds_number > 100000:
+    if reynolds_number is not None and reynolds_number > 100000:
         recommendations.append("Consider using wall functions for high Reynolds number")
     
     # Time step recommendations for transient flows
     if analysis_type == AnalysisType.UNSTEADY:
         geometry_info = parsed_params.get("geometry_info", {})
         velocity = parsed_params.get("velocity", 1.0)
-        if velocity > 10:
+        if velocity is not None and velocity > 10:
             recommendations.append("Use small time step for high velocity flows")
     
     # Turbulence model recommendations

@@ -34,9 +34,6 @@ def case_writer_agent(state: CFDState) -> CFDState:
         # Write solver configuration files
         write_solver_files(case_directory, state)
         
-        # Write additional system files
-        write_system_files(case_directory, state)
-        
         # Validate case completeness
         validation_result = validate_case_structure(case_directory)
         if not validation_result["valid"]:
@@ -103,6 +100,25 @@ def write_mesh_files(case_directory: Path, state: CFDState) -> None:
     blockmesh_dict = generate_blockmesh_dict(mesh_config, state)
     write_foam_dict(case_directory / "system" / "blockMeshDict", blockmesh_dict)
     
+    # Write topoSet and createPatch files if needed
+    if mesh_config.get("use_toposet") and mesh_config.get("geometry_type") == "cylinder":
+        # Generate topoSetDict
+        cylinder_info = {
+            "center": mesh_config.get("cylinder_center", [1.0, 0.5, 0.05]),
+            "radius": mesh_config.get("cylinder_radius", 0.05),
+            "height": mesh_config.get("dimensions", {}).get("cylinder_length", 0.1)
+        }
+        
+        toposet_dict = generate_toposet_dict(cylinder_info)
+        write_foam_dict(case_directory / "system" / "topoSetDict", toposet_dict)
+        
+        # Generate createPatchDict
+        createpatch_dict = generate_createpatch_dict(cylinder_info)
+        write_foam_dict(case_directory / "system" / "createPatchDict", createpatch_dict)
+        
+        if state["verbose"]:
+            logger.info("Case Writer: Wrote topoSetDict and createPatchDict for cylinder geometry")
+    
     if state["verbose"]:
         logger.info("Case Writer: Wrote blockMeshDict")
 
@@ -128,7 +144,7 @@ def generate_blockmesh_dict(mesh_config: Dict[str, Any], state: CFDState) -> Dic
             count = base_counts.get(res_str, 40)
             
             if geom_type == "cylinder":
-                return {"circumferential": count, "radial": count//2, "axial": count}
+                return {"circumferential": count, "radial": count//2, "axial": 1}  # 1 cell for 2D
             elif geom_type == "airfoil":
                 return {"chordwise": count, "normal": count//2, "spanwise": count//4}
             elif geom_type == "pipe":
@@ -160,16 +176,36 @@ def generate_cylinder_blockmesh_dict(dimensions: Dict[str, float], resolution: D
     """Generate blockMeshDict for cylinder geometry."""
     # Handle both mesh generator format (cylinder_diameter) and case writer format (diameter)
     diameter = dimensions.get("diameter") or dimensions.get("cylinder_diameter", 0.1)
-    length = dimensions.get("length") or dimensions.get("cylinder_length", 1.0)
-    # Calculate domain dimensions based on cylinder size
-    domain_width = dimensions.get("domain_width", diameter * 20)  # 20x diameter
-    domain_height = dimensions.get("domain_height", diameter * 10)  # 10x diameter
+    thickness = dimensions.get("cylinder_length", 0.1)  # Use cylinder_length as thickness for 2D
     
-    # Simplified cylinder blockMeshDict (in practice, this would be much more complex)
+    # Create rectangular domain that will contain the cylinder
+    radius = diameter / 2.0
+    domain_length = diameter * 20  # 20x cylinder upstream/downstream
+    domain_height = diameter * 10  # 10x cylinder height
+    
+    # Store cylinder info for later use by topoSet
+    cylinder_info = {
+        "center": [domain_length * 0.3, domain_height * 0.5, thickness * 0.5],
+        "radius": radius,
+        "height": thickness
+    }
+    
+    # Simple rectangular channel - we'll add cylinder via topoSet later
     return {
         "scale": 1,
-        "vertices": generate_cylinder_vertices(diameter, length, domain_width, domain_height),
-        "blocks": generate_cylinder_blocks_detailed(resolution),
+        "vertices": [
+            f"(0 0 0)",
+            f"({domain_length} 0 0)",
+            f"({domain_length} {domain_height} 0)",
+            f"(0 {domain_height} 0)",
+            f"(0 0 {thickness})",
+            f"({domain_length} 0 {thickness})",
+            f"({domain_length} {domain_height} {thickness})",
+            f"(0 {domain_height} {thickness})"
+        ],
+        "blocks": [
+            f"hex (0 1 2 3 4 5 6 7) ({resolution.get('circumferential', 32)} {resolution.get('radial', 20)} 1) simpleGrading (1 1 1)"
+        ],
         "edges": [],
         "boundary": {
             "inlet": {
@@ -187,19 +223,20 @@ def generate_cylinder_blockmesh_dict(dimensions: Dict[str, float], resolution: D
             "walls": {
                 "type": "wall",
                 "faces": [
-                    "(0 1 5 4)",
-                    "(3 7 6 2)"
+                    "(0 1 5 4)",  # bottom
+                    "(3 7 6 2)"   # top
                 ]
             },
             "sides": {
                 "type": "empty",
                 "faces": [
-                    "(0 3 2 1)",
-                    "(4 5 6 7)"
+                    "(0 3 2 1)",  # front
+                    "(4 5 6 7)"   # back
                 ]
             }
         },
-        "mergePatchPairs": []
+        "mergePatchPairs": [],
+        "_cylinder_info": cylinder_info  # Internal use for topoSet
     }
 
 
@@ -276,6 +313,14 @@ def generate_channel_blockmesh_dict(dimensions: Dict[str, float], resolution: Di
     height = dimensions["height"] 
     length = dimensions["length"]
     
+    # Determine if this is 2D or 3D based on spanwise resolution
+    is_2d = resolution.get('spanwise', 1) == 1
+    sides_type = "empty" if is_2d else "symmetry"
+    
+    # For channels, ensure Z-dimension (spanwise) is small for proper aspect ratio
+    # Use the smaller of width or 0.1m for the Z-dimension
+    z_dimension = min(width, 0.1)
+    
     return {
         "convertToMeters": 1,
         "vertices": [
@@ -283,10 +328,10 @@ def generate_channel_blockmesh_dict(dimensions: Dict[str, float], resolution: Di
             f"({length} 0 0)",
             f"({length} {height} 0)",
             f"(0 {height} 0)",
-            f"(0 0 {width})",
-            f"({length} 0 {width})",
-            f"({length} {height} {width})",
-            f"(0 {height} {width})"
+            f"(0 0 {z_dimension})",
+            f"({length} 0 {z_dimension})",
+            f"({length} {height} {z_dimension})",
+            f"(0 {height} {z_dimension})"
         ],
         "blocks": [
             f"hex (0 1 2 3 4 5 6 7) ({resolution['streamwise']} {resolution['normal']} {resolution['spanwise']}) simpleGrading (1 1 1)"
@@ -306,7 +351,7 @@ def generate_channel_blockmesh_dict(dimensions: Dict[str, float], resolution: Di
                 "faces": ["(0 1 5 4)", "(3 7 6 2)"]
             },
             "sides": {
-                "type": "symmetryPlane", 
+                "type": sides_type, 
                 "faces": ["(0 3 2 1)", "(4 5 6 7)"]
             }
         },
@@ -344,21 +389,6 @@ def generate_sphere_blockmesh_dict(dimensions: Dict[str, float], resolution: Dic
         },
         "mergePatchPairs": []
     }
-
-
-def generate_cylinder_vertices(diameter: float, length: float, domain_width: float, domain_height: float) -> list:
-    """Generate vertices for cylinder geometry (simplified)."""
-    # This is a simplified representation - actual implementation would be more complex
-    return [
-        f"(-{domain_width/2} -{domain_height/2} 0)",
-        f"({domain_width/2} -{domain_height/2} 0)",
-        f"({domain_width/2} {domain_height/2} 0)",
-        f"(-{domain_width/2} {domain_height/2} 0)",
-        f"(-{domain_width/2} -{domain_height/2} {length})",
-        f"({domain_width/2} -{domain_height/2} {length})",
-        f"({domain_width/2} {domain_height/2} {length})",
-        f"(-{domain_width/2} {domain_height/2} {length})"
-    ]
 
 
 def generate_airfoil_vertices(chord: float, span: float, domain_length: float, domain_height: float) -> list:
@@ -402,11 +432,6 @@ def generate_sphere_vertices(diameter: float, domain_size: float) -> list:
         f"({domain_size/2} {domain_size/2} {domain_size/2})",
         f"(-{domain_size/2} {domain_size/2} {domain_size/2})"
     ]
-
-
-def generate_cylinder_blocks_detailed(resolution: Dict[str, int]) -> list:
-    """Generate detailed blocks for cylinder geometry."""
-    return [f"hex (0 1 2 3 4 5 6 7) ({resolution['circumferential']} {resolution['radial']} {resolution['axial']}) simpleGrading (1 1 1)"]
 
 
 def generate_airfoil_blocks_detailed(resolution: Dict[str, int]) -> list:
@@ -457,34 +482,6 @@ def write_solver_files(case_directory: Path, state: CFDState) -> None:
     
     if state["verbose"]:
         logger.info("Case Writer: Wrote solver configuration files")
-
-
-def write_system_files(case_directory: Path, state: CFDState) -> None:
-    """Write additional system files."""
-    # Write decomposeParDict for parallel runs
-    decompose_dict = {
-        "numberOfSubdomains": 4,
-        "method": "simple",
-        "simpleCoeffs": {
-            "n": "(2 2 1)",
-            "delta": 0.001
-        },
-        "distributed": False,
-        "roots": []
-    }
-    write_foam_dict(case_directory / "system" / "decomposeParDict", decompose_dict)
-    
-    # Write Allrun script
-    allrun_script = generate_allrun_script(state)
-    with open(case_directory / "Allrun", "w") as f:
-        f.write(allrun_script)
-    
-    # Make Allrun executable (on Unix systems)
-    if os.name != 'nt':  # Not Windows
-        os.chmod(case_directory / "Allrun", 0o755)
-    
-    if state["verbose"]:
-        logger.info("Case Writer: Wrote system files")
 
 
 def generate_allrun_script(state: CFDState) -> str:
@@ -557,6 +554,10 @@ def format_dict_content(content: Any, indent_level: int = 0) -> str:
     if isinstance(content, dict):
         result = ""
         for key, value in content.items():
+            # Skip internal keys like _cylinder_info
+            if key.startswith("_"):
+                continue
+                
             # Convert enum keys to strings if needed
             if hasattr(key, 'value'):
                 key = key.value
@@ -567,18 +568,67 @@ def format_dict_content(content: Any, indent_level: int = 0) -> str:
                     result += f"{indent}{key}\n{indent}(\n"
                     result += format_dict_content(value, indent_level + 1)
                     result += f"{indent});\n\n"
+                # Special handling for nested dictionaries in topoSet actions
+                elif "sourceInfo" in value:
+                    result += f"{indent}{{\n"
+                    for sub_key, sub_value in value.items():
+                        if isinstance(sub_value, dict):
+                            result += f"{indent}    {sub_key}\n{indent}    {{\n"
+                            for info_key, info_value in sub_value.items():
+                                if isinstance(info_value, (list, tuple)) and len(info_value) == 3:
+                                    # Format as vector
+                                    result += f"{indent}        {info_key}    ({info_value[0]} {info_value[1]} {info_value[2]});\n"
+                                else:
+                                    result += f"{indent}        {info_key}    {info_value};\n"
+                            result += f"{indent}    }}\n"
+                        else:
+                            result += f"{indent}    {sub_key}    {sub_value};\n"
+                    result += f"{indent}}}\n"
                 else:
                     result += f"{indent}{key}\n{indent}{{\n"
                     result += format_dict_content(value, indent_level + 1)
                     result += f"{indent}}}\n\n"
             elif isinstance(value, list):
-                result += f"{indent}{key}\n{indent}(\n"
-                for item in value:
-                    # Convert enum values to strings if needed
-                    if hasattr(item, 'value'):
-                        item = item.value
-                    result += f"{indent}    {item}\n"
-                result += f"{indent});\n\n"
+                if key == "actions":
+                    # Special handling for topoSet actions
+                    result += f"{indent}{key}\n{indent}(\n"
+                    for action in value:
+                        result += f"{indent}    {{\n"
+                        for action_key, action_value in action.items():
+                            if isinstance(action_value, dict):
+                                result += f"{indent}        {action_key}\n{indent}        {{\n"
+                                for info_key, info_value in action_value.items():
+                                    if isinstance(info_value, str) and info_value.startswith("("):
+                                        # Already formatted as OpenFOAM vector
+                                        result += f"{indent}            {info_key}    {info_value};\n"
+                                    else:
+                                        result += f"{indent}            {info_key}    {info_value};\n"
+                                result += f"{indent}        }}\n"
+                            else:
+                                result += f"{indent}        {action_key}    {action_value};\n"
+                        result += f"{indent}    }}\n"
+                    result += f"{indent});\n\n"
+                else:
+                    result += f"{indent}{key}\n{indent}(\n"
+                    for item in value:
+                        # Handle dictionary items in arrays (like patches)
+                        if isinstance(item, dict):
+                            result += f"{indent}    {{\n"
+                            for item_key, item_value in item.items():
+                                if isinstance(item_value, dict):
+                                    result += f"{indent}        {item_key}\n{indent}        {{\n"
+                                    for sub_key, sub_value in item_value.items():
+                                        result += f"{indent}            {sub_key}    {sub_value};\n"
+                                    result += f"{indent}        }}\n"
+                                else:
+                                    result += f"{indent}        {item_key}    {item_value};\n"
+                            result += f"{indent}    }}\n"
+                        else:
+                            # Convert enum values to strings if needed
+                            if hasattr(item, 'value'):
+                                item = item.value
+                            result += f"{indent}    {item}\n"
+                    result += f"{indent});\n\n"
             else:
                 # Convert enum values to strings if needed
                 if hasattr(value, 'value'):
@@ -628,4 +678,51 @@ def validate_case_structure(case_directory: Path) -> Dict[str, Any]:
         "valid": len(errors) == 0,
         "errors": errors,
         "warnings": warnings
+    }
+
+
+def generate_toposet_dict(cylinder_info: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate topoSetDict for creating cylinder geometry."""
+    return {
+        "actions": [
+            {
+                "name": "cylinderCells",
+                "type": "cellSet",
+                "action": "new",
+                "source": "cylinderToCell",
+                "sourceInfo": {
+                    "p1": f"({cylinder_info['center'][0]} {cylinder_info['center'][1]} 0)",
+                    "p2": f"({cylinder_info['center'][0]} {cylinder_info['center'][1]} {cylinder_info['height']})",
+                    "radius": cylinder_info['radius']
+                }
+            },
+            {
+                "name": "cylinderFaces",
+                "type": "faceSet",
+                "action": "new",
+                "source": "cellToFace",
+                "sourceInfo": {
+                    "set": "cylinderCells",
+                    "option": "both"
+                }
+            }
+        ]
+    }
+
+
+def generate_createpatch_dict(cylinder_info: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate createPatchDict for creating cylinder boundary."""
+    return {
+        "pointSync": "false",
+        "patches": [
+            {
+                "name": "cylinder",
+                "patchInfo": {
+                    "type": "wall"
+                },
+                "constructFrom": "set",
+                "set": "cylinderFaces"
+            }
+        ],
+        "removeEmptyPatches": "true"
     } 

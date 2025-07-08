@@ -85,6 +85,33 @@ def execute_simulation_pipeline(case_directory: Path, state: CFDState) -> Dict[s
             results["error"] = f"Mesh generation failed: {mesh_result['error']}"
             return results
         
+        # Step 1.5: Create cylinder geometry if needed
+        toposet_dict = case_directory / "system" / "topoSetDict"
+        createpatch_dict = case_directory / "system" / "createPatchDict"
+        
+        if toposet_dict.exists() and createpatch_dict.exists():
+            if state["verbose"]:
+                logger.info("Running topoSet to create cylinder geometry...")
+            
+            toposet_result = run_toposet(case_directory, state)
+            results["steps"]["toposet"] = toposet_result
+            results["log_files"]["topoSet"] = toposet_result.get("log_file")
+            
+            if not toposet_result["success"]:
+                results["error"] = f"topoSet failed: {toposet_result['error']}"
+                return results
+            
+            if state["verbose"]:
+                logger.info("Running createPatch to create cylinder boundary...")
+            
+            createpatch_result = run_createpatch(case_directory, state)
+            results["steps"]["createpatch"] = createpatch_result
+            results["log_files"]["createPatch"] = createpatch_result.get("log_file")
+            
+            if not createpatch_result["success"]:
+                results["error"] = f"createPatch failed: {createpatch_result['error']}"
+                return results
+        
         # Step 2: Check mesh quality
         if state["verbose"]:
             logger.info("Running checkMesh...")
@@ -552,4 +579,136 @@ def parse_convergence_metrics(simulation_results: Dict[str, Any]) -> Dict[str, A
     
     convergence_metrics["recommendations"] = recommendations
     
-    return convergence_metrics 
+    return convergence_metrics
+
+
+def run_toposet(case_directory: Path, state: CFDState) -> Dict[str, Any]:
+    """Run topoSet to create cylinder cell and face sets."""
+    log_file = case_directory / "log.topoSet"
+    
+    try:
+        # Get settings to check if we need WSL
+        import sys
+        sys.path.append('src')
+        from foamai.config import get_settings
+        settings = get_settings()
+        
+        # Prepare environment
+        env = prepare_openfoam_env()
+        
+        # Determine if we need to use WSL
+        if settings.openfoam_path and settings.openfoam_path.startswith("/"):
+            # WSL path - run through WSL
+            wsl_case_dir = str(case_directory).replace("\\", "/").replace("C:", "/mnt/c")
+            cmd = ["wsl", "-e", "bash", "-c", 
+                   f"cd '{wsl_case_dir}' && source {settings.openfoam_path}/etc/bashrc && topoSet"]
+        else:
+            # Windows path - run directly
+            cmd = ["topoSet"]
+        
+        with open(log_file, "w") as f:
+            if settings.openfoam_path and settings.openfoam_path.startswith("/"):
+                # For WSL, don't change working directory since we're using cd in the command
+                result = subprocess.run(
+                    cmd,
+                    stdout=f,
+                    stderr=subprocess.STDOUT,
+                    timeout=120  # 2 minute timeout
+                )
+            else:
+                result = subprocess.run(
+                    cmd,
+                    cwd=case_directory,
+                    stdout=f,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                    timeout=120  # 2 minute timeout
+                )
+        
+        return {
+            "success": result.returncode == 0,
+            "return_code": result.returncode,
+            "log_file": str(log_file),
+            "error": None if result.returncode == 0 else f"topoSet failed with code {result.returncode}"
+        }
+        
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "return_code": -1,
+            "log_file": str(log_file),
+            "error": "topoSet timed out"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "return_code": -1,
+            "log_file": str(log_file),
+            "error": str(e)
+        }
+
+
+def run_createpatch(case_directory: Path, state: CFDState) -> Dict[str, Any]:
+    """Run createPatch to create cylinder boundary patch."""
+    log_file = case_directory / "log.createPatch"
+    
+    try:
+        # Get settings to check if we need WSL
+        import sys
+        sys.path.append('src')
+        from foamai.config import get_settings
+        settings = get_settings()
+        
+        # Prepare environment
+        env = prepare_openfoam_env()
+        
+        # Determine if we need to use WSL
+        if settings.openfoam_path and settings.openfoam_path.startswith("/"):
+            # WSL path - run through WSL
+            wsl_case_dir = str(case_directory).replace("\\", "/").replace("C:", "/mnt/c")
+            cmd = ["wsl", "-e", "bash", "-c", 
+                   f"cd '{wsl_case_dir}' && source {settings.openfoam_path}/etc/bashrc && createPatch -overwrite"]
+        else:
+            # Windows path - run directly
+            cmd = ["createPatch", "-overwrite"]
+        
+        with open(log_file, "w") as f:
+            if settings.openfoam_path and settings.openfoam_path.startswith("/"):
+                # For WSL, don't change working directory since we're using cd in the command
+                result = subprocess.run(
+                    cmd,
+                    stdout=f,
+                    stderr=subprocess.STDOUT,
+                    timeout=120  # 2 minute timeout
+                )
+            else:
+                result = subprocess.run(
+                    cmd,
+                    cwd=case_directory,
+                    stdout=f,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                    timeout=120  # 2 minute timeout
+                )
+        
+        return {
+            "success": result.returncode == 0,
+            "return_code": result.returncode,
+            "log_file": str(log_file),
+            "error": None if result.returncode == 0 else f"createPatch failed with code {result.returncode}"
+        }
+        
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "return_code": -1,
+            "log_file": str(log_file),
+            "error": "createPatch timed out"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "return_code": -1,
+            "log_file": str(log_file),
+            "error": str(e)
+        } 

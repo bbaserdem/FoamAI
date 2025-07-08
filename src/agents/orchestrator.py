@@ -36,11 +36,19 @@ def orchestrator_agent(state: CFDState) -> CFDState:
     # Handle successful completion
     if state["current_step"] == CFDStep.SIMULATION and state.get("convergence_metrics", {}).get("converged", False):
         logger.info("Simulation completed successfully - proceeding to completion")
-        return {
-            **state,
-            "current_step": CFDStep.COMPLETE,
-            "retry_count": 0
-        }
+        # Check if visualization is requested
+        if state.get("export_images", False):
+            return {
+                **state,
+                "current_step": CFDStep.VISUALIZATION,
+                "retry_count": 0
+            }
+        else:
+            return {
+                **state,
+                "current_step": CFDStep.COMPLETE,
+                "retry_count": 0
+            }
     
     # Handle quality checks and refinement (only if simulation hasn't already succeeded)
     if state["current_step"] != CFDStep.COMPLETE and needs_refinement(state):

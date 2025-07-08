@@ -52,6 +52,35 @@ def visualization_agent(state: CFDState) -> CFDState:
             logger.info(f"Visualization: Generated visualizations at {visualization_path}")
             logger.info(f"Visualization: Created {len(visualization_results.get('generated_files', []))} files")
         
+        # Auto-open in ParaView if successful
+        try:
+            import sys
+            import platform
+            import subprocess
+            
+            # Create .foam file if it doesn't exist
+            foam_file = Path(case_directory) / f"{Path(case_directory).name}.foam"
+            if not foam_file.exists():
+                foam_file.touch()
+            
+            # Get ParaView path from settings
+            sys.path.append('src')
+            from foamai.config import get_settings
+            settings = get_settings()
+            
+            if settings.paraview_path and Path(settings.paraview_path).exists():
+                if platform.system() == "Windows":
+                    paraview_exe = Path(settings.paraview_path) / "bin" / "paraview.exe"
+                else:
+                    paraview_exe = Path(settings.paraview_path) / "bin" / "paraview"
+                
+                if paraview_exe.exists():
+                    logger.info(f"Opening results in ParaView...")
+                    subprocess.Popen([str(paraview_exe), str(foam_file)])
+                    logger.info(f"ParaView launched with case: {foam_file}")
+        except Exception as e:
+            logger.warning(f"Could not auto-open ParaView: {e}")
+        
         return {
             **state,
             "visualization_path": str(visualization_path),
@@ -148,7 +177,7 @@ import paraview.simple as pv
 pv._DisableFirstRenderCameraReset()
 
 # Create OpenFOAM reader
-foam_case = pv.OpenFOAMReader(FileName="{case_directory}/{case_directory.name}.foam")
+foam_case = pv.OpenFOAMReader(FileName="{case_directory.as_posix()}/{case_directory.name}.foam")
 
 # Update pipeline to read data
 foam_case.UpdatePipeline()
@@ -167,8 +196,17 @@ render_view.Background = [1.0, 1.0, 1.0]  # White background
 # Display the mesh
 foam_display = pv.Show(foam_case, render_view)
 
+# Set animation scene to latest time
+animation_scene = pv.GetAnimationScene()
+animation_scene.UpdateAnimationUsingDataTimeSteps()
+if time_values:
+    animation_scene.AnimationTime = latest_time
+    
+# Update the pipeline to load data at the correct time
+pv.UpdatePipeline(time=latest_time, proxy=foam_case)
+
 # Generate pressure visualization
-if 'p' in [foam_case.PointArrayStatus[i] for i in range(foam_case.GetPointArrayStatus().GetNumberOfArrays())]:
+try:
     # Color by pressure
     pv.ColorBy(foam_display, ('POINTS', 'p'))
     
@@ -186,10 +224,12 @@ if 'p' in [foam_case.PointArrayStatus[i] for i in range(foam_case.GetPointArrayS
     pv.Render()
     
     # Save pressure image
-    pv.SaveScreenshot("{case_directory}/visualization/pressure_field.png")
+    pv.SaveScreenshot("{case_directory.as_posix()}/visualization/pressure_field.png")
+except:
+    print("Pressure field not available")
 
 # Generate velocity visualization
-if 'U' in [foam_case.PointArrayStatus[i] for i in range(foam_case.GetPointArrayStatus().GetNumberOfArrays())]:
+try:
     # Color by velocity magnitude
     calculator = pv.Calculator(Input=foam_case)
     calculator.ResultArrayName = 'U_magnitude'
@@ -213,48 +253,56 @@ if 'U' in [foam_case.PointArrayStatus[i] for i in range(foam_case.GetPointArrayS
     pv.Render()
     
     # Save velocity image
-    pv.SaveScreenshot("{case_directory}/visualization/velocity_field.png")
+    pv.SaveScreenshot("{case_directory.as_posix()}/visualization/velocity_field.png")
+except:
+    print("Velocity field not available")
 
 # Generate streamlines for external flows
-if "{geometry_type}" in ["cylinder", "airfoil", "sphere"]:
-    # Create streamline tracer
-    streamlines = pv.StreamTracer(Input=calculator)
-    streamlines.Vectors = ['POINTS', 'U']
-    streamlines.IntegrationDirection = 'FORWARD'
-    streamlines.MaximumStreamlineLength = {parsed_params.get("geometry_dimensions", {}).get("domain_width", 2.0)}
-    
-    # Position seed points upstream
-    streamlines.SeedType = 'Line'
-    streamlines.SeedType.Point1 = [-1.0, -0.5, 0.0]
-    streamlines.SeedType.Point2 = [-1.0, 0.5, 0.0]
-    streamlines.SeedType.Resolution = 20
-    
-    # Display streamlines
-    stream_display = pv.Show(streamlines, render_view)
-    stream_display.ColorArrayName = ['POINTS', 'U_magnitude']
-    
-    # Reset camera and render
-    render_view.ResetCamera()
-    pv.Render()
-    
-    # Save streamlines image
-    pv.SaveScreenshot("{case_directory}/visualization/streamlines.png")
+try:
+    if "{geometry_type}" in ["cylinder", "airfoil", "sphere"]:
+        # Create streamline tracer
+        streamlines = pv.StreamTracer(Input=calculator)
+        streamlines.Vectors = ['POINTS', 'U']
+        streamlines.IntegrationDirection = 'FORWARD'
+        streamlines.MaximumStreamlineLength = {parsed_params.get("geometry_dimensions", {}).get("domain_width", 2.0)}
+        
+        # Position seed points upstream
+        streamlines.SeedType = 'Line'
+        streamlines.SeedType.Point1 = [-1.0, -0.5, 0.0]
+        streamlines.SeedType.Point2 = [-1.0, 0.5, 0.0]
+        streamlines.SeedType.Resolution = 20
+        
+        # Display streamlines
+        stream_display = pv.Show(streamlines, render_view)
+        stream_display.ColorArrayName = ['POINTS', 'U_magnitude']
+        
+        # Reset camera and render
+        render_view.ResetCamera()
+        pv.Render()
+        
+        # Save streamlines image
+        pv.SaveScreenshot("{case_directory.as_posix()}/visualization/streamlines.png")
+except:
+    print("Streamlines not available")
 
 # Generate wall pressure distribution for bluff bodies
-if "{geometry_type}" in ["cylinder", "airfoil", "sphere"]:
-    # Extract surface
-    extract_surface = pv.ExtractSurface(Input=foam_case)
-    
-    # Display surface colored by pressure
-    surface_display = pv.Show(extract_surface, render_view)
-    pv.ColorBy(surface_display, ('POINTS', 'p'))
-    
-    # Reset camera and render
-    render_view.ResetCamera()
-    pv.Render()
-    
-    # Save surface pressure image
-    pv.SaveScreenshot("{case_directory}/visualization/surface_pressure.png")
+try:
+    if "{geometry_type}" in ["cylinder", "airfoil", "sphere"]:
+        # Extract surface
+        extract_surface = pv.ExtractSurface(Input=foam_case)
+        
+        # Display surface colored by pressure
+        surface_display = pv.Show(extract_surface, render_view)
+        pv.ColorBy(surface_display, ('POINTS', 'p'))
+        
+        # Reset camera and render
+        render_view.ResetCamera()
+        pv.Render()
+        
+        # Save surface pressure image
+        pv.SaveScreenshot("{case_directory.as_posix()}/visualization/surface_pressure.png")
+except:
+    print("Surface pressure not available")
 
 print("Visualization generation completed successfully")
 '''
@@ -268,12 +316,47 @@ def run_paraview_batch(script_path: Path, state: CFDState) -> bool:
         # Prepare environment
         env = prepare_paraview_env()
         
-        # Try different ParaView executable names
-        paraview_executables = ["pvpython", "paraview", "/usr/bin/pvpython"]
+        # Get ParaView path from settings
+        try:
+            from ..foamai.config import get_settings
+            settings = get_settings()
+        except ImportError:
+            # Fallback if import fails (e.g., when run from ParaView)
+            class MockSettings:
+                paraview_path = os.environ.get("PARAVIEW_PATH", "C:\\Program Files\\ParaView 6.0.0")
+            settings = MockSettings()
         
-        for executable in paraview_executables:
+        # Try configured ParaView path first
+        paraview_executables = []
+        
+        if settings.paraview_path:
+            if settings.paraview_path.startswith("/"):
+                # WSL path
+                paraview_executables.extend([
+                    ["wsl", "-e", "bash", "-c", f"cd '{script_path.parent}' && pvpython '{script_path}'"],
+                    ["wsl", "-e", "bash", "-c", f"cd '{script_path.parent}' && paraview --script '{script_path}'"]
+                ])
+            else:
+                # Windows path
+                paraview_exe = os.path.join(settings.paraview_path, "bin", "paraview.exe")
+                pvpython_exe = os.path.join(settings.paraview_path, "bin", "pvpython.exe")
+                
+                if os.path.exists(pvpython_exe):
+                    paraview_executables.append([pvpython_exe, str(script_path)])
+                if os.path.exists(paraview_exe):
+                    paraview_executables.append([paraview_exe, "--script", str(script_path)])
+        
+        # Fallback to system PATH
+        paraview_executables.extend([
+            ["pvpython", str(script_path)],
+            ["paraview", "--script", str(script_path)],
+            ["/usr/bin/pvpython", str(script_path)]
+        ])
+        
+        for cmd in paraview_executables:
             try:
-                cmd = [executable, "--script", str(script_path)]
+                if state["verbose"]:
+                    logger.info(f"Trying ParaView command: {' '.join(cmd)}")
                 
                 result = subprocess.run(
                     cmd,
@@ -286,15 +369,16 @@ def run_paraview_batch(script_path: Path, state: CFDState) -> bool:
                 
                 if result.returncode == 0:
                     if state["verbose"]:
-                        logger.info(f"ParaView visualization completed with {executable}")
+                        logger.info(f"ParaView visualization completed successfully")
+                        logger.info(f"Command: {' '.join(cmd)}")
                     return True
                 else:
-                    logger.warning(f"ParaView failed with {executable}: {result.stderr}")
+                    logger.warning(f"ParaView failed with command '{' '.join(cmd)}': {result.stderr}")
                     
             except FileNotFoundError:
                 continue
             except Exception as e:
-                logger.warning(f"Error running {executable}: {e}")
+                logger.warning(f"Error running ParaView command '{' '.join(cmd)}': {e}")
                 continue
         
         logger.error("Could not find working ParaView executable")
@@ -309,6 +393,15 @@ def prepare_paraview_env() -> Dict[str, str]:
     """Prepare ParaView environment variables."""
     env = os.environ.copy()
     
+    # Get configured ParaView path
+    try:
+        from ..foamai.config import get_settings
+        settings = get_settings()
+        configured_path = settings.paraview_path
+    except ImportError:
+        # Fallback if import fails (e.g., when run from ParaView)
+        configured_path = os.environ.get("PARAVIEW_PATH", "C:\\Program Files\\ParaView 6.0.0")
+    
     # Add common ParaView paths
     paraview_paths = [
         "/usr/bin",
@@ -317,15 +410,26 @@ def prepare_paraview_env() -> Dict[str, str]:
         "/Applications/ParaView.app/Contents/bin"  # macOS
     ]
     
+    # Add configured ParaView path if it exists
+    if configured_path and not configured_path.startswith("/"):
+        # Windows path - add bin directory
+        paraview_bin = os.path.join(configured_path, "bin")
+        if os.path.exists(paraview_bin):
+            paraview_paths.insert(0, paraview_bin)
+    
     current_path = env.get("PATH", "")
+    
+    # Use appropriate separator based on OS
+    path_separator = ";" if os.name == "nt" else ":"
+    
     for path in paraview_paths:
         if path not in current_path:
-            current_path = f"{path}:{current_path}"
+            current_path = f"{path}{path_separator}{current_path}"
     
     env["PATH"] = current_path
     
-    # Set display for headless rendering
-    if "DISPLAY" not in env:
+    # Set display for headless rendering (Linux/WSL)
+    if "DISPLAY" not in env and os.name != "nt":
         env["DISPLAY"] = ":0.0"
     
     return env

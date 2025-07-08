@@ -1,6 +1,7 @@
 #!/bin/bash
 # FoamAI EC2 Instance Startup Script
 # This script runs on first boot to setup Docker and FoamAI services
+# Updated to use AWS ECR instead of Docker Hub
 
 set -e  # Exit on any error
 
@@ -11,12 +12,12 @@ exec 2>&1
 
 echo "=== FoamAI Startup Script Started: $(date) ==="
 
-# Update system packages
+# Update system packages first
 echo "Updating system packages..."
 apt-get update -y
 apt-get upgrade -y
 
-# Install essential packages
+# Install essential packages BEFORE using them
 echo "Installing essential packages..."
 apt-get install -y \
     curl \
@@ -30,7 +31,15 @@ apt-get install -y \
     gnupg \
     lsb-release \
     software-properties-common \
-    apt-transport-https
+    apt-transport-https \
+    awscli
+
+# NOW we can safely get AWS region and account ID from instance metadata
+AWS_REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
+AWS_ACCOUNT_ID=$(curl -s http://169.254.169.254/latest/meta-data/identity-credentials/ec2/info | jq -r '.AccountId')
+
+echo "AWS Region: $AWS_REGION"
+echo "AWS Account: $AWS_ACCOUNT_ID"
 
 # Install Docker
 echo "Installing Docker..."
@@ -113,23 +122,30 @@ echo "Setting up application directories..."
 mkdir -p /opt/foamai
 chown ubuntu:ubuntu /opt/foamai
 
-# Clone the FoamAI repository (placeholder URL - will be updated)
+# Clone the FoamAI repository
 echo "Cloning FoamAI repository..."
 cd /opt
-git clone https://github.com/yourusername/FoamAI.git foamai
+git clone https://github.com/baserdemb/FoamAI.git foamai
 chown -R ubuntu:ubuntu /opt/foamai
 
-# Create environment file for Docker Compose
+# Create environment file for Docker Compose with ECR URLs
 echo "Creating environment configuration..."
-cat > /opt/foamai/.env << 'EOF'
+cat > /opt/foamai/.env << EOF
 # FoamAI Environment Configuration
 COMPOSE_PROJECT_NAME=foamai
 DATA_DIR=/data
 API_PORT=8000
 PARAVIEW_PORT=11111
 
-# Docker image settings
-DOCKER_REGISTRY=foamai
+# AWS ECR Configuration
+AWS_ACCOUNT_ID=${AWS_ACCOUNT_ID}
+AWS_REGION=${AWS_REGION}
+ECR_REGISTRY=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+# Docker image settings - Using ECR
+ECR_API_URL=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/foamai/api
+ECR_OPENFOAM_URL=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/foamai/openfoam
+ECR_PVSERVER_URL=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/foamai/pvserver
 IMAGE_TAG=latest
 
 # API Configuration
@@ -143,7 +159,25 @@ OPENFOAM_VERSION=10
 PARAVIEW_SERVER_PORT=11111
 EOF
 
-# Create systemd service for FoamAI
+# Create ECR login script
+echo "Creating ECR login script..."
+cat > /usr/local/bin/ecr-login << EOF
+#!/bin/bash
+# ECR Login Script for FoamAI
+echo "Logging into ECR..."
+aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+if [ \$? -eq 0 ]; then
+    echo "ECR login successful"
+else
+    echo "ECR login failed"
+    exit 1
+fi
+EOF
+
+chmod +x /usr/local/bin/ecr-login
+
+# Create systemd service for FoamAI with ECR support
 echo "Creating systemd service..."
 cat > /etc/systemd/system/foamai.service << 'EOF'
 [Unit]
@@ -155,11 +189,13 @@ Requires=docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/foamai
+ExecStartPre=/usr/local/bin/ecr-login
 ExecStart=/usr/local/bin/docker-compose up -d
 ExecStop=/usr/local/bin/docker-compose down
-TimeoutStartSec=0
+TimeoutStartSec=300
 User=ubuntu
 Group=ubuntu
+Environment=HOME=/home/ubuntu
 
 [Install]
 WantedBy=multi-user.target
@@ -213,13 +249,17 @@ EOF
 echo "Waiting for Docker to be ready..."
 sleep 10
 
-# Pre-pull Docker images to reduce startup time
-echo "Pre-pulling Docker images..."
-su - ubuntu -c "cd /opt/foamai && docker-compose pull" || echo "Docker images will be pulled on first start"
+# Login to ECR and pre-pull Docker images
+echo "Logging into ECR and pre-pulling Docker images..."
+su - ubuntu -c "/usr/local/bin/ecr-login" || echo "ECR login failed, will retry on service start"
+
+# Try to pull images (they may not exist yet during initial setup)
+echo "Attempting to pre-pull Docker images..."
+su - ubuntu -c "cd /opt/foamai && docker-compose pull" || echo "Docker images will be pulled when they become available"
 
 # Start FoamAI services
 echo "Starting FoamAI services..."
-su - ubuntu -c "cd /opt/foamai && docker-compose up -d" || echo "Services will start when docker-compose.yml is available"
+su - ubuntu -c "cd /opt/foamai && docker-compose up -d" || echo "Services will start when images are available"
 
 # Create status check script
 echo "Creating status check script..."
@@ -228,6 +268,9 @@ cat > /usr/local/bin/foamai-status << 'EOF'
 echo "=== FoamAI Status Check ==="
 echo "Docker status:"
 systemctl is-active docker
+
+echo -e "\nECR login status:"
+/usr/local/bin/ecr-login
 
 echo -e "\nRunning containers:"
 docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
@@ -256,6 +299,7 @@ echo "=== FoamAI Startup Script Completed: $(date) ==="
 echo "=== Final System Status ==="
 echo "Docker version: $(docker --version)"
 echo "Docker Compose version: $(docker-compose --version)"
+echo "AWS CLI version: $(aws --version)"
 echo "System uptime: $(uptime)"
 echo "Available disk space:"
 df -h /

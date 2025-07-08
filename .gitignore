@@ -23,6 +23,15 @@ service-account*.json
 terraform.tfvars
 !terraform.tfvars.example
 
+# SSH Keys (additional protection)
+id_rsa*
+id_ed25519*
+foamai-key*
+*_rsa*
+*_key.pub
+*.backup
+*.bak
+
 # =============================================================================
 # TERRAFORM
 # =============================================================================

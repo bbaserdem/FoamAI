@@ -43,7 +43,7 @@ This will:
    ```bash
    # Start API server
    cd /path/to/backend_api
-   python3 main.py &
+   uvicorn main:app --host 0.0.0.0 --port 8000 &
    
    # Start Celery worker
    celery -A celery_worker worker --loglevel=info &

@@ -11,5 +11,5 @@ foamCleanTutorials
 blockMesh
 foamRun
 
-# make sure the foam file is there
+# Make sure the foam file is there
 touch cavity.foam

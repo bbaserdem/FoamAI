@@ -1,69 +1,262 @@
-# Gitignore things
+# =============================================================================
+# FoamAI Project .gitignore
+# Comprehensive ignore patterns for Python/Docker/Terraform/AWS/NixOS development
+# =============================================================================
 
-# Large files
-*.webm
-
-# Secrets
+# =============================================================================
+# SECRETS & CREDENTIALS (CRITICAL - NEVER COMMIT)
+# =============================================================================
 .env*
+!.env.example
+!.env.template
 mcp.json
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets.json
+credentials.json
+service-account*.json
+.aws/credentials
+.aws/config
+terraform.tfvars
+!terraform.tfvars.example
 
-# Nix and direnv related files
+# =============================================================================
+# TERRAFORM
+# =============================================================================
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfplan.*
+.terraformrc
+terraform.rc
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# =============================================================================
+# PYTHON & UV
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# =============================================================================
+# DOCKER & CONTAINERS
+# =============================================================================
+.dockerignore
+docker-compose.override.yml
+docker-compose.local.yml
+docker-compose.*.yml
+!docker-compose.yml
+Dockerfile.local
+Dockerfile.dev
+.docker/
+
+# =============================================================================
+# NIX & DIRENV
+# =============================================================================
 !.envrc
 .direnv/
 result
 result-*
 manual_test_output/
+.nix-gc-roots
 
-# Python-generated files
-__pycache__/
-.pytest_cache/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
+# =============================================================================
+# AWS & CLOUD
+# =============================================================================
+.aws/
+*.pem
+.terraform.d/
+.pulumi/
 
-# UV Virtual environments
-.venv
-
-# Generic
-*.class
+# =============================================================================
+# LOGS & TEMPORARY FILES
+# =============================================================================
 *.log
-*.pyc
-*.swp
-.DS_Store
-.atom/
-.buildlog/
-.history
-.svn/
-migrate_working_dir/
-Thumbs.db
-*.tmp
-*.temp
-*.cache
-
-# Logs
-logs
+logs/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 dev-debug.log
-# Editor directories and files
-.idea
-.vscode
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+*.tmp
+*.temp
+*.cache
+*.pid
+*.seed
+*.pid.lock
 
-# OS specific
+# =============================================================================
+# IDE & EDITORS
+# =============================================================================
+# VSCode
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
 
-# Dependency directories
-node_modules/
-# Environment variables
-.env
+# IntelliJ / PyCharm
+.idea/
+*.iws
+*.iml
+*.ipr
 
-# Task files
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+# Vim
+*.swp
+*.swo
+*~
+.netrwhist
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# =============================================================================
+# OPERATING SYSTEM
+# =============================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# =============================================================================
+# LARGE FILES & MEDIA
+# =============================================================================
+*.webm
+*.mp4
+*.avi
+*.mov
+*.wmv
+*.flv
+*.iso
+*.dmg
+*.tar.gz
+*.zip
+*.rar
+*.7z
+
+# =============================================================================
+# TASKMASTER
+# =============================================================================
+# Uncomment these lines if you want to ignore taskmaster files
+# .taskmaster/
 # tasks.json
-# tasks/ 
+# tasks/
+
+# =============================================================================
+# PROJECT SPECIFIC
+# =============================================================================
+# OpenFOAM simulation outputs (if running locally)
+case/
+0*/
+constant/polyMesh/
+processor*/
+postProcessing/
+*.foam
+*.OpenFOAM
+
+# ParaView state files (if too large)
+*.pvsm
+*.vtu
+*.vtp
+*.vtk
+
+# CFD data files
+*.dat
+*.plt
+*.cgns
+*.med 

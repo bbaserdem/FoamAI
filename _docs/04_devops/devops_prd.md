@@ -1,0 +1,152 @@
+# 📘 Product Requirements Document (PRD) — DevOps Role  
+*CFD Assistant MVP – Week 1 Infrastructure Setup*
+
+---
+
+## 🧭 Overview
+
+This PRD defines the **requirements, responsibilities, and deliverables** for the **DevOps & Data Engineer** (Person 4) working on the LangGraph-powered OpenFOAM CFD assistant MVP.
+
+The DevOps engineer is responsible for provisioning infrastructure, containerizing services, enabling reproducible local development, and automating basic CI/CD.
+
+This PRD assumes **no prior DevOps experience** and uses tools suitable for fast iteration on **NixOS**.
+
+---
+
+## 🧱 Tech Stack (Explained for Beginners)
+
+| Layer | Tool | Purpose |
+|-------|------|---------|
+| **OS** | Ubuntu 22.04 (on cloud VM) | Stable, LTS base image with good OpenFOAM & Docker support. |
+| **Infrastructure as Code** | [Terraform](https://developer.hashicorp.com/terraform) | Declarative scripting language for provisioning AWS services. |
+| **Cloud Provider** | [AWS EC2](https://aws.amazon.com/ec2/) | Runs the backend code, OpenFOAM, and ParaView on a single virtual machine. |
+| **Containerization** | [Docker](https://www.docker.com/) | Encapsulates backend, OpenFOAM, and ParaView services for portability. |
+| **Orchestration** | [docker-compose](https://docs.docker.com/compose/) | Starts multiple services in one step on the VM. |
+| **CI/CD** | [GitHub Actions](https://docs.github.com/en/actions) | Builds Docker images and deploys them to Docker Hub when code is pushed. |
+| **Secrets & Credentials** | GitHub Secrets + AWS CLI | Manages API keys, passwords, and AWS access securely. |
+| **Development Environment** | NixOS + Flakes + Dev Shell | Reproducible, declarative environment with pinned versions of required tools. |
+
+---
+
+## 👨‍💻 Responsibilities (DevOps Role)
+
+1. Provision a single AWS EC2 instance using Terraform.
+2. Configure the instance to install Docker and run `docker-compose` at startup.
+3. Define `docker-compose.yml` to run three services:
+   - `api`: FastAPI backend
+   - `openfoam`: CFD solver
+   - `pvserver`: ParaView server for remote visualization
+4. Build and publish Docker images using GitHub Actions CI.
+5. Use GitHub Secrets to safely inject credentials into CI and the VM.
+6. Create a reproducible Nix-based development shell for local work.
+7. Provide clean documentation for teammates and future automation.
+
+---
+
+## 🧩 Functional Requirements
+
+### 1. Terraform Configuration
+- The `main.tf` file must:
+  - Create a `c7i.2xlarge` EC2 instance in `us-east-1`
+  - Assign a static public IP and open ports 22, 80, 443, 11111
+  - Create and attach a security group
+  - Accept `user_data.sh` for startup provisioning
+  - Output the public IP to the terminal after apply
+
+### 2. Startup Script (`user_data.sh`)
+- On first boot, the instance must:
+  - Install Docker and `docker-compose`
+  - Clone the GitHub repo (public or using token)
+  - Pull the latest Docker images from Docker Hub
+  - Run `docker-compose up -d`
+
+### 3. Docker Compose Stack
+- A valid `docker-compose.yml` must:
+  - Expose port 8000 for the API
+  - Expose port 11111 for `pvserver`
+  - Define a shared volume at `/data` for simulation files
+  - Pull images from `yourorg/cfd-api:latest`, `yourorg/openfoam:latest`, `yourorg/pvserver:latest`
+
+### 4. CI/CD Automation (GitHub Actions)
+- A `.github/workflows/docker.yml` file must:
+  - Build Docker images for each service on push to `main`
+  - Tag with both `latest` and Git commit SHA
+  - Push to Docker Hub using credentials from GitHub Secrets
+
+### 5. Nix Dev Environment
+- The `flake.nix` must:
+  - Define a `devShell` with:
+    - `terraform`
+    - `awscli2`
+    - `docker`, `docker-buildx`
+    - `openssh`, `jq`, `tflint`
+  - Export `TF_PLUGIN_CACHE_DIR` in the `shellHook`
+
+### 6. Documentation
+- Add markdown files:
+  - `docs/devops_workflow.md`: checklist of daily tasks
+  - `docs/terraform_setup.md`: how to run, apply, and destroy infrastructure
+  - `docs/nixos_devops_notes.md`: known issues & fixes for NixOS users
+
+---
+
+## ✅ MVP Acceptance Criteria
+
+| Requirement | Status Criteria |
+|-------------|-----------------|
+| Terraform bootstraps EC2 instance | `terraform apply` outputs working public IP |
+| Instance installs Docker & runs stack | `ssh ubuntu@<ip>` shows `docker ps` with 3 services |
+| CI builds & pushes images | Docker Hub repo contains tagged images |
+| API is reachable | `curl http://<ip>:8000/ping` returns `"pong"` |
+| ParaView server is live | Port `11111` open and responds to connection |
+| Dev shell works | `nix develop` provides CLI access to all tools |
+
+---
+
+## 📂 Folder Structure (Required Files)
+
+```text
+infra/
+  main.tf
+  variables.tf
+  outputs.tf
+  user_data.sh
+docker/
+  api/Dockerfile
+  openfoam/Dockerfile
+  pvserver/Dockerfile
+docker-compose.yml
+.github/
+  workflows/docker.yml
+flake.nix
+.env.template
+docs/
+  devops_workflow.md
+  terraform_setup.md
+  nixos_devops_notes.md
+```
+
+---
+
+## 🛠️ Daily Timeline (Suggested)
+
+| Day | Focus                                | Output                                          |
+| --- | ------------------------------------ | ----------------------------------------------- |
+| 1   | Set up AWS CLI, Terraform, SSH       | Working local terraform plan                    |
+| 2   | Write `main.tf`, create EC2          | `terraform apply` produces live VM              |
+| 3   | Write `user_data.sh`, install Docker | SSH into VM → Docker works                      |
+| 4   | Write `docker-compose.yml`           | 3 containers run on VM                          |
+| 5   | Write GitHub Actions CI              | Auto-build and push Docker images               |
+| 6   | Write `flake.nix` + docs             | Dev shell and documentation ready               |
+| 7   | Final test & handoff                 | IP reachable, API responds, ParaView accessible |
+
+---
+
+## 🧠 Notes for AI Coding Agents
+
+When using this PRD for LLM-assisted coding:
+
+* Focus on writing **Terraform**, **Docker**, and **Shell script** files from scratch
+* Use `flake.nix` and `docker-compose.yml` as stable entrypoints
+* Prioritize **repeatability**: every command should work after `nix develop`
+* Ask for **readable outputs** from Terraform (e.g., `output "public_ip"`)

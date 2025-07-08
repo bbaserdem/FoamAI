@@ -85,12 +85,11 @@ def test_pvserver_startup():
     case_path = '/home/ubuntu/cavity_tutorial'
     port = 11111
     
-    # Construct command
+    # Construct command (without --data parameter as it's not supported)
     cmd = [
         'pvserver',
         f'--server-port={port}',
-        '--disable-xdisplay-test',
-        f'--data={case_path}'
+        '--disable-xdisplay-test'
     ]
     
     print(f"📋 Command: {' '.join(cmd)}")

@@ -91,23 +91,19 @@ def start_pvserver(case_path: str, port: int) -> int:
     if not case_path.exists():
         raise PVServerError(f"Case directory does not exist: {case_path}")
     
-    # Start pvserver process
+    # Start pvserver process (without --data parameter as it's not supported in this version)
     cmd = [
         'pvserver',
         f'--server-port={port}',
         '--disable-xdisplay-test'
     ]
     
-    # Add data parameter if case exists and has data
-    if case_path.exists() and any(case_path.glob('*')):
-        cmd.append(f'--data={case_path}')
-    
     try:
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd=case_path
+            cwd=str(case_path)  # Start in the case directory
         )
         
         # Give it a moment to start

@@ -1,5 +1,7 @@
 import subprocess
 import sqlite3
+import os
+from pathlib import Path
 from celery import Celery
 
 # Configure Celery to use Redis as the message broker
@@ -28,6 +30,25 @@ def update_task_status(task_id, status, message, file_path=None):
     conn.commit()
     conn.close()
 
+def ensure_foam_file(case_path):
+    """
+    Ensure a .foam file exists in the case directory for ParaView.
+    Creates one if it doesn't exist.
+    """
+    case_path = Path(case_path)
+    case_name = case_path.name
+    foam_file_path = case_path / f"{case_name}.foam"
+    
+    # Create .foam file if it doesn't exist
+    if not foam_file_path.exists():
+        try:
+            foam_file_path.touch()
+            print(f"Created .foam file: {foam_file_path}")
+        except Exception as e:
+            print(f"Warning: Could not create .foam file: {e}")
+    
+    return str(foam_file_path)
+
 @celery_app.task
 def generate_mesh_task(task_id):
     """Task for generating the mesh."""
@@ -46,9 +67,12 @@ def generate_mesh_task(task_id):
             check=True
         )
         
-        update_task_status(task_id, 'waiting_approval', 'Mesh generated. Please approve.')
+        # Ensure .foam file exists after mesh generation
+        foam_file_path = ensure_foam_file(case_path)
         
-        return {"status": "SUCCESS", "message": "Mesh generated successfully", "output": result.stdout}
+        update_task_status(task_id, 'waiting_approval', 'Mesh generated. Please approve.', foam_file_path)
+        
+        return {"status": "SUCCESS", "message": "Mesh generated successfully", "output": result.stdout, "foam_file": foam_file_path}
         
     except subprocess.CalledProcessError as e:
         update_task_status(task_id, 'error', f'Mesh generation failed: {e.stderr}')
@@ -69,18 +93,62 @@ def run_solver_task(task_id, case_path):
             check=True
         )
         
-        # Create .foam file for ParaView
-        foam_file_path = f"{case_path}/cavity.foam"
-        with open(foam_file_path, 'w') as f:
-            f.write("")  # Create empty .foam file
+        # Ensure .foam file exists after simulation
+        foam_file_path = ensure_foam_file(case_path)
         
         update_task_status(task_id, 'completed', 'Simulation finished successfully.', foam_file_path)
         
-        return {"status": "SUCCESS", "message": "Simulation completed successfully", "output": result.stdout}
+        return {"status": "SUCCESS", "message": "Simulation completed successfully", "output": result.stdout, "foam_file": foam_file_path}
         
     except subprocess.CalledProcessError as e:
         update_task_status(task_id, 'error', f'Simulation failed: {e.stderr}')
         return {"status": "FAILURE", "message": "Simulation failed", "error": e.stderr}
+
+@celery_app.task
+def run_openfoam_command_task(task_id, case_path, command, description="Running OpenFOAM command"):
+    """
+    Generic task for running any OpenFOAM command with automatic .foam file creation.
+    
+    Args:
+        task_id: Unique task identifier
+        case_path: Path to the OpenFOAM case directory
+        command: OpenFOAM command to run (string or list)
+        description: Description of what the command does
+    """
+    update_task_status(task_id, 'in_progress', description)
+    
+    try:
+        # Handle both string and list commands
+        if isinstance(command, str):
+            cmd = command.split()
+        else:
+            cmd = command
+            
+        # Run the OpenFOAM command
+        result = subprocess.run(
+            cmd,
+            cwd=case_path, 
+            capture_output=True, 
+            text=True,
+            check=True
+        )
+        
+        # Always ensure .foam file exists after any OpenFOAM operation
+        foam_file_path = ensure_foam_file(case_path)
+        
+        update_task_status(task_id, 'completed', f'{description} completed successfully.', foam_file_path)
+        
+        return {
+            "status": "SUCCESS", 
+            "message": f"{description} completed successfully", 
+            "output": result.stdout,
+            "foam_file": foam_file_path,
+            "command": " ".join(cmd)
+        }
+        
+    except subprocess.CalledProcessError as e:
+        update_task_status(task_id, 'error', f'{description} failed: {e.stderr}')
+        return {"status": "FAILURE", "message": f"{description} failed", "error": e.stderr, "command": " ".join(cmd)}
 
 # Legacy task for backward compatibility (if needed)
 @celery_app.task
@@ -90,6 +158,8 @@ def run_simulation_task():
     This is kept for backward compatibility.
     """
     sim_script_path = '/home/ubuntu/cavity_tutorial/run_cavity.sh'
+    case_path = '/home/ubuntu/cavity_tutorial'
+    
     try:
         # Execute the script with absolute path
         result = subprocess.run(
@@ -98,6 +168,10 @@ def run_simulation_task():
             text=True,
             check=True
         )
-        return {"status": "SUCCESS", "output": result.stdout}
+        
+        # Ensure .foam file exists after script execution
+        foam_file_path = ensure_foam_file(case_path)
+        
+        return {"status": "SUCCESS", "output": result.stdout, "foam_file": foam_file_path}
     except subprocess.CalledProcessError as e:
         return {"status": "FAILURE", "output": e.stderr}

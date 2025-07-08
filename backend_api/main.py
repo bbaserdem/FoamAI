@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 # Import your Celery tasks
-from celery_worker import generate_mesh_task, run_solver_task
+from celery_worker import generate_mesh_task, run_solver_task, run_openfoam_command_task
 
 app = FastAPI()
 DATABASE_PATH = 'tasks.db'
@@ -25,6 +25,11 @@ class MeshRejectionRequest(BaseModel):
     task_id: str
     approved: bool
     feedback: str | None = None
+
+class OpenFOAMCommandRequest(BaseModel):
+    command: str
+    case_path: str | None = None
+    description: str | None = None
 
 # Health check endpoint
 @app.get("/api/health")
@@ -181,17 +186,52 @@ def get_results(task_id: str):
     if task_data["status"] != "completed":
         raise HTTPException(status_code=400, detail="Task not completed yet")
     
-    # For cavity case, return standard results
-    case_path = task_data.get("file_path", "/home/ubuntu/cavity_tutorial")
+    # Get the foam file path from database, or construct it
+    foam_file_path = task_data.get("file_path")
+    if not foam_file_path:
+        case_path = "/home/ubuntu/cavity_tutorial"
+        foam_file_path = f"{case_path}/cavity_tutorial.foam"  # Named after directory
     
     return {
         "status": "completed",
         "task_id": task_id,
-        "file_path": f"{case_path}/cavity.foam",
+        "file_path": foam_file_path,
         "file_type": "openfoam",
         "time_steps": [0, 0.1, 0.2, 0.3, 0.4, 0.5],
         "available_fields": ["p", "U", "k", "epsilon", "nut"]
     }
+
+@app.post("/api/run_openfoam_command")
+def run_openfoam_command(request: OpenFOAMCommandRequest):
+    """Run an arbitrary OpenFOAM command with automatic .foam file creation"""
+    task_id = str(uuid.uuid4())
+    
+    # Use provided case path or default to cavity tutorial
+    case_path = request.case_path or "/home/ubuntu/cavity_tutorial"
+    description = request.description or f"Running OpenFOAM command: {request.command}"
+    
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO tasks (task_id, status, message) VALUES (?, ?, ?)",
+        (task_id, "submitted", description)
+    )
+    conn.commit()
+    conn.close()
+
+    # Start the OpenFOAM command task
+    run_openfoam_command_task.delay(task_id, case_path, request.command, description)
+    
+    return JSONResponse(
+        status_code=202, 
+        content={
+            "status": "success",
+            "task_id": task_id,
+            "message": description,
+            "command": request.command,
+            "case_path": case_path
+        }
+    )
 
 if __name__ == "__main__":
     import uvicorn

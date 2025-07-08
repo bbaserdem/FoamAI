@@ -11,6 +11,44 @@ from loguru import logger
 from .state import CFDState, CFDStep
 
 
+def _get_docker_command(case_directory: Path, command: str, settings: "FoamAISettings") -> List[str]:
+    """Helper to construct a docker command."""
+    if not settings.docker_container_name:
+        raise ValueError("Docker container name is not set.")
+    
+    # Get the relative path of the case directory from the project root
+    project_root = Path.cwd()
+    
+    # Use docker_mount_path if available, otherwise assume project root is mounted at the same path
+    docker_mount_path = settings.docker_mount_path or str(project_root)
+    
+    try:
+        relative_case_dir = case_directory.relative_to(project_root)
+        container_case_dir = Path(docker_mount_path) / relative_case_dir
+    except ValueError:
+        # If case_directory is not inside project_root, we can't determine relative path
+        # This can happen if work_dir is outside the project.
+        # In this case, we assume the case_directory is mapped directly.
+        # This requires the user to mount the work_dir into the container.
+        container_case_dir = Path(settings.docker_mount_path or "/") / case_directory.name
+
+    # Get the openfoam bashrc path. If a specific source script is provided, use that.
+    # Otherwise, fall back to the standard bashrc from the openfoam_path.
+    openfoam_source_cmd = ""
+    if settings.openfoam_source_script:
+        openfoam_source_cmd = f"source {settings.openfoam_source_script} && "
+    elif settings.openfoam_path:
+        openfoam_source_cmd = f"source {settings.openfoam_path}/etc/bashrc && "
+
+    docker_command_str = (
+        f"cd '{container_case_dir}' && "
+        f"{openfoam_source_cmd}"
+        f"{command}"
+    )
+
+    return ["docker", "exec", settings.docker_container_name, "bash", "-c", docker_command_str]
+
+
 def simulation_executor_agent(state: CFDState) -> CFDState:
     """
     Simulation Executor Agent.
@@ -152,43 +190,40 @@ def run_blockmesh(case_directory: Path, state: CFDState) -> Dict[str, Any]:
     log_file = case_directory / "log.blockMesh"
     
     try:
-        # Get settings to check if we need WSL
+        # Get settings
         import sys
         sys.path.append('src')
         from foamai.config import get_settings
         settings = get_settings()
         
-        # Prepare environment
+        # Prepare environment for non-docker execution
         env = prepare_openfoam_env()
         
-        # Determine if we need to use WSL
-        if settings.openfoam_path and settings.openfoam_path.startswith("/"):
+        # Determine command
+        if settings.use_docker:
+            cmd = _get_docker_command(case_directory, "blockMesh", settings)
+        elif settings.openfoam_path and settings.openfoam_path.startswith("/"):
             # WSL path - run through WSL
             wsl_case_dir = str(case_directory).replace("\\", "/").replace("C:", "/mnt/c")
             cmd = ["wsl", "-e", "bash", "-c", 
                    f"cd '{wsl_case_dir}' && source {settings.openfoam_path}/etc/bashrc && blockMesh"]
         else:
-            # Windows path - run directly
+            # Windows/Native path - run directly
             cmd = ["blockMesh"]
         
         with open(log_file, "w") as f:
-            if settings.openfoam_path and settings.openfoam_path.startswith("/"):
-                # For WSL, don't change working directory since we're using cd in the command
-                result = subprocess.run(
-                    cmd,
-                    stdout=f,
-                    stderr=subprocess.STDOUT,
-                    timeout=300  # 5 minute timeout
-                )
+            exec_params = {
+                "stdout": f,
+                "stderr": subprocess.STDOUT,
+                "timeout": 300
+            }
+
+            if settings.use_docker or (settings.openfoam_path and settings.openfoam_path.startswith("/")):
+                # Docker or WSL, no cwd or env
+                result = subprocess.run(cmd, **exec_params)
             else:
-                result = subprocess.run(
-                    cmd,
-                    cwd=case_directory,
-                    stdout=f,
-                    stderr=subprocess.STDOUT,
-                    env=env,
-                    timeout=300  # 5 minute timeout
-                )
+                # For native, run in case directory with env
+                result = subprocess.run(cmd, cwd=case_directory, env=env, **exec_params)
         
         # Parse blockMesh output
         mesh_info = parse_blockmesh_output(log_file)
@@ -224,44 +259,41 @@ def run_checkmesh(case_directory: Path, state: CFDState) -> Dict[str, Any]:
     log_file = case_directory / "log.checkMesh"
     
     try:
-        # Get settings to check if we need WSL
+        # Get settings
         import sys
         sys.path.append('src')
         from foamai.config import get_settings
         settings = get_settings()
         
-        # Prepare environment
+        # Prepare environment for non-docker execution
         env = prepare_openfoam_env()
         
-        # Determine if we need to use WSL
-        if settings.openfoam_path and settings.openfoam_path.startswith("/"):
+        # Determine command
+        if settings.use_docker:
+            cmd = _get_docker_command(case_directory, "checkMesh", settings)
+        elif settings.openfoam_path and settings.openfoam_path.startswith("/"):
             # WSL path - run through WSL
             wsl_case_dir = str(case_directory).replace("\\", "/").replace("C:", "/mnt/c")
             cmd = ["wsl", "-e", "bash", "-c", 
                    f"cd '{wsl_case_dir}' && source {settings.openfoam_path}/etc/bashrc && checkMesh"]
         else:
-            # Windows path - run directly
+            # Windows/Native path - run directly
             cmd = ["checkMesh"]
         
         with open(log_file, "w") as f:
-            if settings.openfoam_path and settings.openfoam_path.startswith("/"):
-                # For WSL, don't change working directory since we're using cd in the command
-                result = subprocess.run(
-                    cmd,
-                    stdout=f,
-                    stderr=subprocess.STDOUT,
-                    timeout=120  # 2 minute timeout
-                )
+            exec_params = {
+                "stdout": f,
+                "stderr": subprocess.STDOUT,
+                "timeout": 120
+            }
+
+            if settings.use_docker or (settings.openfoam_path and settings.openfoam_path.startswith("/")):
+                # Docker or WSL, no cwd or env
+                result = subprocess.run(cmd, **exec_params)
             else:
-                result = subprocess.run(
-                    cmd,
-                    cwd=case_directory,
-                    stdout=f,
-                    stderr=subprocess.STDOUT,
-                    env=env,
-                    timeout=120  # 2 minute timeout
-                )
-        
+                # For native, run in case directory with env
+                result = subprocess.run(cmd, cwd=case_directory, env=env, **exec_params)
+
         # Parse checkMesh output
         mesh_quality = parse_checkmesh_output(log_file)
         
@@ -296,43 +328,40 @@ def run_solver(case_directory: Path, solver: str, state: CFDState) -> Dict[str, 
     log_file = case_directory / f"log.{solver}"
     
     try:
-        # Get settings to check if we need WSL
+        # Get settings
         import sys
         sys.path.append('src')
         from foamai.config import get_settings
         settings = get_settings()
         
-        # Prepare environment
+        # Prepare environment for non-docker execution
         env = prepare_openfoam_env()
         
-        # Determine if we need to use WSL
-        if settings.openfoam_path and settings.openfoam_path.startswith("/"):
+        # Determine command
+        if settings.use_docker:
+            cmd = _get_docker_command(case_directory, solver, settings)
+        elif settings.openfoam_path and settings.openfoam_path.startswith("/"):
             # WSL path - run through WSL
             wsl_case_dir = str(case_directory).replace("\\", "/").replace("C:", "/mnt/c")
             cmd = ["wsl", "-e", "bash", "-c", 
                    f"cd '{wsl_case_dir}' && source {settings.openfoam_path}/etc/bashrc && {solver}"]
         else:
-            # Windows path - run directly
+            # Windows/Native path - run directly
             cmd = [solver]
         
         with open(log_file, "w") as f:
-            if settings.openfoam_path and settings.openfoam_path.startswith("/"):
-                # For WSL, don't change working directory since we're using cd in the command
-                result = subprocess.run(
-                    cmd,
-                    stdout=f,
-                    stderr=subprocess.STDOUT,
-                    timeout=state.get("max_simulation_time", 3600)  # Default 1 hour timeout
-                )
+            exec_params = {
+                "stdout": f,
+                "stderr": subprocess.STDOUT,
+                "timeout": state.get("max_simulation_time", 3600)
+            }
+
+            if settings.use_docker or (settings.openfoam_path and settings.openfoam_path.startswith("/")):
+                # Docker or WSL, no cwd or env
+                result = subprocess.run(cmd, **exec_params)
             else:
-                result = subprocess.run(
-                    cmd,
-                    cwd=case_directory,
-                    stdout=f,
-                    stderr=subprocess.STDOUT,
-                    env=env,
-                    timeout=state.get("max_simulation_time", 3600)  # Default 1 hour timeout
-                )
+                # For native, run in case directory with env
+                result = subprocess.run(cmd, cwd=case_directory, env=env, **exec_params)
         
         # Parse solver output
         solver_info = parse_solver_output(log_file, solver)
@@ -587,43 +616,40 @@ def run_toposet(case_directory: Path, state: CFDState) -> Dict[str, Any]:
     log_file = case_directory / "log.topoSet"
     
     try:
-        # Get settings to check if we need WSL
+        # Get settings
         import sys
         sys.path.append('src')
         from foamai.config import get_settings
         settings = get_settings()
         
-        # Prepare environment
+        # Prepare environment for non-docker execution
         env = prepare_openfoam_env()
         
-        # Determine if we need to use WSL
-        if settings.openfoam_path and settings.openfoam_path.startswith("/"):
+        # Determine command
+        if settings.use_docker:
+            cmd = _get_docker_command(case_directory, "topoSet", settings)
+        elif settings.openfoam_path and settings.openfoam_path.startswith("/"):
             # WSL path - run through WSL
             wsl_case_dir = str(case_directory).replace("\\", "/").replace("C:", "/mnt/c")
             cmd = ["wsl", "-e", "bash", "-c", 
                    f"cd '{wsl_case_dir}' && source {settings.openfoam_path}/etc/bashrc && topoSet"]
         else:
-            # Windows path - run directly
+            # Windows/Native path - run directly
             cmd = ["topoSet"]
         
         with open(log_file, "w") as f:
-            if settings.openfoam_path and settings.openfoam_path.startswith("/"):
-                # For WSL, don't change working directory since we're using cd in the command
-                result = subprocess.run(
-                    cmd,
-                    stdout=f,
-                    stderr=subprocess.STDOUT,
-                    timeout=120  # 2 minute timeout
-                )
+            exec_params = {
+                "stdout": f,
+                "stderr": subprocess.STDOUT,
+                "timeout": 120
+            }
+
+            if settings.use_docker or (settings.openfoam_path and settings.openfoam_path.startswith("/")):
+                # Docker or WSL, no cwd or env
+                result = subprocess.run(cmd, **exec_params)
             else:
-                result = subprocess.run(
-                    cmd,
-                    cwd=case_directory,
-                    stdout=f,
-                    stderr=subprocess.STDOUT,
-                    env=env,
-                    timeout=120  # 2 minute timeout
-                )
+                # For native, run in case directory with env
+                result = subprocess.run(cmd, cwd=case_directory, env=env, **exec_params)
         
         return {
             "success": result.returncode == 0,
@@ -653,43 +679,40 @@ def run_createpatch(case_directory: Path, state: CFDState) -> Dict[str, Any]:
     log_file = case_directory / "log.createPatch"
     
     try:
-        # Get settings to check if we need WSL
+        # Get settings
         import sys
         sys.path.append('src')
         from foamai.config import get_settings
         settings = get_settings()
         
-        # Prepare environment
+        # Prepare environment for non-docker execution
         env = prepare_openfoam_env()
         
-        # Determine if we need to use WSL
-        if settings.openfoam_path and settings.openfoam_path.startswith("/"):
+        # Determine command
+        if settings.use_docker:
+            cmd = _get_docker_command(case_directory, "createPatch -overwrite", settings)
+        elif settings.openfoam_path and settings.openfoam_path.startswith("/"):
             # WSL path - run through WSL
             wsl_case_dir = str(case_directory).replace("\\", "/").replace("C:", "/mnt/c")
             cmd = ["wsl", "-e", "bash", "-c", 
                    f"cd '{wsl_case_dir}' && source {settings.openfoam_path}/etc/bashrc && createPatch -overwrite"]
         else:
-            # Windows path - run directly
+            # Windows/Native path - run directly
             cmd = ["createPatch", "-overwrite"]
         
         with open(log_file, "w") as f:
-            if settings.openfoam_path and settings.openfoam_path.startswith("/"):
-                # For WSL, don't change working directory since we're using cd in the command
-                result = subprocess.run(
-                    cmd,
-                    stdout=f,
-                    stderr=subprocess.STDOUT,
-                    timeout=120  # 2 minute timeout
-                )
+            exec_params = {
+                "stdout": f,
+                "stderr": subprocess.STDOUT,
+                "timeout": 120
+            }
+
+            if settings.use_docker or (settings.openfoam_path and settings.openfoam_path.startswith("/")):
+                # Docker or WSL, no cwd or env
+                result = subprocess.run(cmd, **exec_params)
             else:
-                result = subprocess.run(
-                    cmd,
-                    cwd=case_directory,
-                    stdout=f,
-                    stderr=subprocess.STDOUT,
-                    env=env,
-                    timeout=120  # 2 minute timeout
-                )
+                # For native, run in case directory with env
+                result = subprocess.run(cmd, cwd=case_directory, env=env, **exec_params)
         
         return {
             "success": result.returncode == 0,

@@ -24,11 +24,17 @@ class FoamAISettings(BaseSettings):
     # OpenFOAM Configuration
     openfoam_path: Optional[str] = Field(None, description="Path to OpenFOAM installation")
     openfoam_version: str = Field("2312", description="OpenFOAM version")
-    
+    openfoam_source_script: Optional[str] = Field(None, description="Path to the script to source to activate the OpenFOAM environment")
+
     # ParaView Configuration
     paraview_path: Optional[str] = Field(None, description="Path to ParaView installation")
     paraview_server_port: int = Field(11111, description="ParaView server port")
     
+    # Docker Configuration
+    use_docker: bool = Field(False, description="Use Docker for OpenFOAM execution")
+    docker_container_name: Optional[str] = Field(None, description="Name of the Docker container for OpenFOAM")
+    docker_mount_path: Optional[str] = Field(None, description="Path inside the Docker container where the project is mounted")
+
     # Application Configuration
     log_level: str = Field("INFO", description="Logging level")
     max_simulation_time: int = Field(3600, description="Maximum simulation time in seconds")
@@ -101,6 +107,8 @@ class FoamAISettings(BaseSettings):
             "openai_api_key": bool(self.openai_api_key),
             "openfoam_path": bool(self.openfoam_path),
             "paraview_path": bool(self.paraview_path),
+            "use_docker": self.use_docker,
+            "docker_container_name": bool(self.docker_container_name),
             "work_dir_exists": self.get_work_dir().exists(),
             "results_dir_exists": self.get_results_dir().exists(),
             "debug_mode": self.debug,

@@ -69,10 +69,16 @@ def visualization_agent(state: CFDState) -> CFDState:
             settings = get_settings()
             
             if settings.paraview_path and Path(settings.paraview_path).exists():
+                paraview_path = Path(settings.paraview_path)
                 if platform.system() == "Windows":
-                    paraview_exe = Path(settings.paraview_path) / "bin" / "paraview.exe"
+                    paraview_exe = paraview_path / "bin" / "paraview.exe"
+                elif platform.system() == "Darwin":  # macOS
+                    if paraview_path.suffix == ".app":
+                        paraview_exe = paraview_path / "Contents" / "MacOS" / "paraview"
+                    else:
+                        paraview_exe = paraview_path / "bin" / "paraview"
                 else:
-                    paraview_exe = Path(settings.paraview_path) / "bin" / "paraview"
+                    paraview_exe = paraview_path / "bin" / "paraview"
                 
                 if paraview_exe.exists():
                     logger.info(f"Opening results in ParaView...")
@@ -400,23 +406,34 @@ def prepare_paraview_env() -> Dict[str, str]:
         configured_path = settings.paraview_path
     except ImportError:
         # Fallback if import fails (e.g., when run from ParaView)
-        configured_path = os.environ.get("PARAVIEW_PATH", "C:\\Program Files\\ParaView 6.0.0")
+        configured_path = os.environ.get("PARAVIEW_PATH")
     
     # Add common ParaView paths
     paraview_paths = [
         "/usr/bin",
         "/opt/paraview/bin",
         "/usr/local/bin",
-        "/Applications/ParaView.app/Contents/bin"  # macOS
+        "/Applications/ParaView.app/Contents/MacOS"  # macOS default
     ]
     
     # Add configured ParaView path if it exists
-    if configured_path and not configured_path.startswith("/"):
-        # Windows path - add bin directory
-        paraview_bin = os.path.join(configured_path, "bin")
-        if os.path.exists(paraview_bin):
-            paraview_paths.insert(0, paraview_bin)
-    
+    if configured_path:
+        if configured_path.endswith(".app"):
+            # Handle macOS .app bundle
+            paraview_bin = os.path.join(configured_path, "Contents", "MacOS")
+            if os.path.exists(paraview_bin):
+                paraview_paths.insert(0, paraview_bin)
+        elif not configured_path.startswith("/"):
+            # Windows path - add bin directory
+            paraview_bin = os.path.join(configured_path, "bin")
+            if os.path.exists(paraview_bin):
+                paraview_paths.insert(0, paraview_bin)
+        else:
+            # Linux/other path - add bin directory
+            paraview_bin = os.path.join(configured_path, "bin")
+            if os.path.exists(paraview_bin):
+                paraview_paths.insert(0, paraview_bin)
+
     current_path = env.get("PATH", "")
     
     # Use appropriate separator based on OS

@@ -1,0 +1,85 @@
+# Docker Compose Configuration for FoamAI CFD Assistant
+# Manages three containerized services: API, OpenFOAM solver, and ParaView server
+version: '3.8'
+
+services:
+  # FastAPI Backend Service
+  api:
+    image: yourorg/cfd-api:latest
+    container_name: foamai-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - simulation_data:/data
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=UTC
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - foamai-network
+
+  # OpenFOAM CFD Solver Service
+  openfoam:
+    image: yourorg/openfoam:latest
+    container_name: foamai-openfoam
+    volumes:
+      - simulation_data:/data
+    environment:
+      - FOAM_INST_DIR=/opt/openfoam10
+      - TZ=UTC
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bash", "-c", "source /opt/openfoam10/etc/bashrc 2>/dev/null && which blockMesh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - foamai-network
+    depends_on:
+      - api
+
+  # ParaView Server for Remote Visualization
+  pvserver:
+    image: yourorg/pvserver:latest
+    container_name: foamai-pvserver
+    ports:
+      - "11111:11111"
+    volumes:
+      - simulation_data:/data
+    environment:
+      - TZ=UTC
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "netcat", "-z", "localhost", "11111"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - foamai-network
+    depends_on:
+      - openfoam
+
+# Named volumes for persistent data storage
+volumes:
+  simulation_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data
+
+# Custom network for service communication
+networks:
+  foamai-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16 

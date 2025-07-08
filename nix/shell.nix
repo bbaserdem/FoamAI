@@ -93,9 +93,10 @@ in {
         standartPackages
         ++ [virtualenv pkgs.uv]
         ++ [
-          pkgs.task-master-ai
           terraform
+          pkgs.task-master-ai
           pkgs.docker
+          pkgs.docker-compose
         ];
 
       env = {

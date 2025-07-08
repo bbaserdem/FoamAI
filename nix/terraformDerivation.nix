@@ -17,4 +17,9 @@ pkgs.stdenv.mkDerivation {
       else "0bpl60bi05pinw7jq305qlgmavsnw37r6rzc7n5gncxhqysysh9j";
     stripRoot = false;
   };
+  installPhase = ''
+    mkdir -p $out/bin
+    mv terraform $out/bin/
+    chmod +x $out/bin/terraform
+  '';
 }

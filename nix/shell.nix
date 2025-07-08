@@ -33,6 +33,7 @@
     tree # Display directories as trees
     unzip # Unzip utility
     zip # Zip utility
+    netcat # Network utility
   ];
 
   # Got a nice terraform binary derivation from Connor

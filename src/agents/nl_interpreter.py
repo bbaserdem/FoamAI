@@ -35,7 +35,7 @@ class CFDParameters(BaseModel):
     flow_context: FlowContext = Field(description="Context of the flow (external/internal, domain type)")
     
     # Flow conditions
-    flow_type: FlowType = Field(description="Flow type (laminar, turbulent, transitional)")
+    flow_type: FlowType = Field(default=FlowType.LAMINAR, description="Flow type (laminar, turbulent, transitional)")
     analysis_type: AnalysisType = Field(description="Analysis type (steady, unsteady)")
     
     # Fluid properties
@@ -147,6 +147,27 @@ def extract_dimensions_from_text(text: str, geometry_type: GeometryType) -> Dict
             if radius_match:
                 dimensions['diameter'] = float(radius_match.group(1)) * 2
     
+    elif geometry_type == GeometryType.CUBE:
+        # For cubes, look for side length or size
+        if not dimensions.get('side_length'):
+            # Look for various cube dimension patterns
+            cube_patterns = [
+                r'(\d+\.?\d*)\s*(?:m|meter|metre)?\s*(?:cube|square)',
+                r'(\d+\.?\d*)\s*(?:m|meter|metre)?\s*side',
+                r'side\s*(?:length)?\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre)?',
+            ]
+            for pattern in cube_patterns:
+                match = re.search(pattern, text_lower)
+                if match:
+                    value = float(match.group(1))
+                    # Check for unit conversion
+                    for unit, factor in unit_conversions.items():
+                        if unit in match.group(0):
+                            value *= factor
+                            break
+                    dimensions['side_length'] = value
+                    break
+    
     return dimensions
 
 
@@ -173,7 +194,7 @@ def infer_flow_context(text: str, geometry_type: GeometryType) -> FlowContext:
         is_external = False
     else:
         # Use geometry-based defaults
-        if geometry_type in [GeometryType.CYLINDER, GeometryType.SPHERE, GeometryType.AIRFOIL]:
+        if geometry_type in [GeometryType.CYLINDER, GeometryType.SPHERE, GeometryType.AIRFOIL, GeometryType.CUBE]:
             is_external = True  # Default to external flow for these geometries
         else:
             is_external = False  # Default to internal flow for pipes/channels
@@ -188,6 +209,8 @@ def infer_flow_context(text: str, geometry_type: GeometryType) -> FlowContext:
             domain_size_multiplier = 30.0  # 30x chord for airfoil
         elif geometry_type == GeometryType.SPHERE:
             domain_size_multiplier = 20.0  # 20x diameter for sphere
+        elif geometry_type == GeometryType.CUBE:
+            domain_size_multiplier = 20.0  # 20x side length for cube
         else:
             domain_size_multiplier = 10.0  # Default
     else:
@@ -255,6 +278,15 @@ def apply_intelligent_defaults(geometry_type: GeometryType, dimensions: Dict[str
     elif geometry_type == GeometryType.SPHERE:
         if 'diameter' not in dimensions:
             dimensions['diameter'] = 0.1  # Default 10cm sphere
+    
+    elif geometry_type == GeometryType.CUBE:
+        if 'side_length' not in dimensions:
+            if reynolds_number and reynolds_number < 1000:
+                dimensions['side_length'] = 0.01  # Small cube for low Re
+            elif reynolds_number and reynolds_number > 100000:
+                dimensions['side_length'] = 1.0   # Large cube for high Re
+            else:
+                dimensions['side_length'] = 0.1   # Default 10cm cube
     
     return dimensions
 
@@ -458,6 +490,8 @@ def get_characteristic_length(geometry_info: Dict[str, Any]) -> Optional[float]:
         return dimensions.get("diameter", 0.05)  # Default 0.05m diameter
     elif geometry_type == GeometryType.SPHERE:
         return dimensions.get("diameter", 0.1)  # Default 0.1m diameter
+    elif geometry_type == GeometryType.CUBE:
+        return dimensions.get("side_length", 0.1)  # Default 0.1m side length
     elif geometry_type == GeometryType.CHANNEL:
         return dimensions.get("height", 0.1)  # Default 0.1m height
     else:

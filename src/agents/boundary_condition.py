@@ -208,6 +208,8 @@ def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
                 }
             }
     elif geometry_type == GeometryType.AIRFOIL:
+        # External flow with snappyHexMesh - use background mesh patch names
+        is_2d = mesh_config.get("is_2d", True)
         velocity_field["boundaryField"] = {
             "inlet": {
                 "type": "fixedValue",
@@ -219,12 +221,17 @@ def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
             "airfoil": {
                 "type": "noSlip"
             },
-            "farfield": {
-                "type": "freestreamVelocity",
-                "freestreamValue": f"uniform {velocity_vector}"
+            "top": {
+                "type": "slip"
             },
-            "sides": {
-                "type": "empty"
+            "bottom": {
+                "type": "slip"
+            },
+            "front": {
+                "type": "empty" if is_2d else "slip"
+            },
+            "back": {
+                "type": "empty" if is_2d else "slip"
             }
         }
     elif geometry_type == GeometryType.PIPE:
@@ -263,6 +270,7 @@ def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
             }
         }
     elif geometry_type == GeometryType.SPHERE:
+        # External flow with snappyHexMesh - use background mesh patch names
         velocity_field["boundaryField"] = {
             "inlet": {
                 "type": "fixedValue",
@@ -274,9 +282,45 @@ def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
             "sphere": {
                 "type": "noSlip"
             },
-            "farfield": {
-                "type": "freestreamVelocity",
-                "freestreamValue": f"uniform {velocity_vector}"
+            "top": {
+                "type": "slip"
+            },
+            "bottom": {
+                "type": "slip"
+            },
+            "front": {
+                "type": "slip"
+            },
+            "back": {
+                "type": "slip"
+            }
+        }
+    elif geometry_type == GeometryType.CUBE:
+        # External flow around cube with snappyHexMesh
+        is_2d = mesh_config.get("is_2d", False)
+        
+        velocity_field["boundaryField"] = {
+            "cube": {
+                "type": "noSlip"  # Wall boundary on cube surface
+            },
+            "inlet": {
+                "type": "fixedValue",
+                "value": f"uniform {velocity_vector}"
+            },
+            "outlet": {
+                "type": "zeroGradient"
+            },
+            "top": {
+                "type": "slip"  # Slip condition for far field
+            },
+            "bottom": {
+                "type": "slip"  # Slip condition for far field
+            },
+            "front": {
+                "type": "empty" if is_2d else "slip"
+            },
+            "back": {
+                "type": "empty" if is_2d else "slip"
             }
         }
     
@@ -372,6 +416,8 @@ def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
                 }
             }
     elif geometry_type == GeometryType.AIRFOIL:
+        # External flow with snappyHexMesh - use background mesh patch names
+        is_2d = mesh_config.get("is_2d", True)
         pressure_field["boundaryField"] = {
             "inlet": {
                 "type": "zeroGradient"
@@ -383,12 +429,17 @@ def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
             "airfoil": {
                 "type": "zeroGradient"
             },
-            "farfield": {
-                "type": "freestreamPressure",
-                "freestreamValue": f"uniform {pressure}"
+            "top": {
+                "type": "zeroGradient"
             },
-            "sides": {
-                "type": "empty"
+            "bottom": {
+                "type": "zeroGradient"
+            },
+            "front": {
+                "type": "empty" if is_2d else "zeroGradient"
+            },
+            "back": {
+                "type": "empty" if is_2d else "zeroGradient"
             }
         }
     elif geometry_type == GeometryType.PIPE:
@@ -427,6 +478,7 @@ def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
             }
         }
     elif geometry_type == GeometryType.SPHERE:
+        # External flow with snappyHexMesh - use background mesh patch names
         pressure_field["boundaryField"] = {
             "inlet": {
                 "type": "zeroGradient"
@@ -438,9 +490,45 @@ def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
             "sphere": {
                 "type": "zeroGradient"
             },
-            "farfield": {
-                "type": "freestreamPressure",
-                "freestreamValue": f"uniform {pressure}"
+            "top": {
+                "type": "zeroGradient"
+            },
+            "bottom": {
+                "type": "zeroGradient"
+            },
+            "front": {
+                "type": "zeroGradient"
+            },
+            "back": {
+                "type": "zeroGradient"
+            }
+        }
+    elif geometry_type == GeometryType.CUBE:
+        # External flow around cube
+        is_2d = mesh_config.get("is_2d", False)
+        
+        pressure_field["boundaryField"] = {
+            "cube": {
+                "type": "zeroGradient"  # No pressure gradient at wall
+            },
+            "inlet": {
+                "type": "zeroGradient"
+            },
+            "outlet": {
+                "type": "fixedValue",
+                "value": f"uniform {pressure}"
+            },
+            "top": {
+                "type": "zeroGradient"
+            },
+            "bottom": {
+                "type": "zeroGradient"
+            },
+            "front": {
+                "type": "empty" if is_2d else "zeroGradient"
+            },
+            "back": {
+                "type": "empty" if is_2d else "zeroGradient"
             }
         }
     
@@ -575,6 +663,33 @@ def generate_turbulent_kinetic_energy_field(parsed_params: Dict[str, Any], geome
                 "type": "empty"
             }
         }
+    elif geometry_type == GeometryType.SPHERE:
+        # External flow with snappyHexMesh - use background mesh patch names
+        k_field["boundaryField"] = {
+            "inlet": {
+                "type": "fixedValue",
+                "value": f"uniform {k_value}"
+            },
+            "outlet": {
+                "type": "zeroGradient"
+            },
+            "sphere": {
+                "type": "kqRWallFunction",
+                "value": f"uniform {k_value}"
+            },
+            "top": {
+                "type": "slip"
+            },
+            "bottom": {
+                "type": "slip"
+            },
+            "front": {
+                "type": "slip"
+            },
+            "back": {
+                "type": "slip"
+            }
+        }
     elif geometry_type in [GeometryType.PIPE, GeometryType.CHANNEL]:
         k_field["boundaryField"] = {
             "inlet": {
@@ -597,6 +712,37 @@ def generate_turbulent_kinetic_energy_field(parsed_params: Dict[str, Any], geome
             k_field["boundaryField"]["sides"] = {
                 "type": sides_type
             }
+    elif geometry_type == GeometryType.CUBE:
+        # External flow around cube
+        is_2d = mesh_config.get("is_2d", False)
+        
+        k_field["boundaryField"] = {
+            "cube": {
+                "type": "kqRWallFunction",
+                "value": f"uniform {k_value}"
+            },
+            "inlet": {
+                "type": "fixedValue",
+                "value": f"uniform {k_value}"
+            },
+            "outlet": {
+                "type": "zeroGradient"
+            },
+            "top": {
+                "type": "kqRWallFunction",
+                "value": f"uniform {k_value}"
+            },
+            "bottom": {
+                "type": "kqRWallFunction",
+                "value": f"uniform {k_value}"
+            },
+            "front": {
+                "type": "empty" if is_2d else "zeroGradient"
+            },
+            "back": {
+                "type": "empty" if is_2d else "zeroGradient"
+            }
+        }
     
     return k_field
 
@@ -729,6 +875,7 @@ def generate_specific_dissipation_field(parsed_params: Dict[str, Any], geometry_
             }
         }
     elif geometry_type == GeometryType.SPHERE:
+        # External flow with snappyHexMesh - use background mesh patch names
         omega_field["boundaryField"] = {
             "inlet": {
                 "type": "fixedValue",
@@ -738,13 +885,53 @@ def generate_specific_dissipation_field(parsed_params: Dict[str, Any], geometry_
                 "type": "zeroGradient"
             },
             "sphere": {
-                "type": "noSlip"
+                "type": "omegaWallFunction",
+                "value": f"uniform {omega_value}"
             },
-            "farfield": {
-                "type": "freestreamVelocity",
-                "freestreamValue": f"uniform {omega_value}"
+            "top": {
+                "type": "slip"
+            },
+            "bottom": {
+                "type": "slip"
+            },
+            "front": {
+                "type": "slip"
+            },
+            "back": {
+                "type": "slip"
             }
         }
+    elif geometry_type == GeometryType.CUBE:
+        # External flow around cube with snappyHexMesh
+        mesh_topology = mesh_config.get("mesh_topology", "structured")
+        is_2d = mesh_config.get("is_2d", False)
+        
+        if mesh_topology == "snappy":
+            omega_field["boundaryField"] = {
+                "cube": {
+                    "type": "omegaWallFunction",
+                    "value": f"uniform {omega_value}"
+                },
+                "inlet": {
+                    "type": "fixedValue",
+                    "value": f"uniform {omega_value}"
+                },
+                "outlet": {
+                    "type": "zeroGradient"
+                },
+                "top": {
+                    "type": "slip"
+                },
+                "bottom": {
+                    "type": "slip"
+                },
+                "front": {
+                    "type": "empty" if is_2d else "zeroGradient"
+                },
+                "back": {
+                    "type": "empty" if is_2d else "zeroGradient"
+                }
+            }
     elif geometry_type in [GeometryType.PIPE, GeometryType.CHANNEL]:
         omega_field["boundaryField"] = {
             "inlet": {
@@ -879,6 +1066,7 @@ def generate_dissipation_field(parsed_params: Dict[str, Any], geometry_info: Dic
                 }
             }
     elif geometry_type == GeometryType.SPHERE:
+        # External flow with snappyHexMesh - use background mesh patch names
         epsilon_field["boundaryField"] = {
             "inlet": {
                 "type": "fixedValue",
@@ -887,16 +1075,21 @@ def generate_dissipation_field(parsed_params: Dict[str, Any], geometry_info: Dic
             "outlet": {
                 "type": "zeroGradient"
             },
-            f"{geometry_type.value}": {
+            "sphere": {
                 "type": "epsilonWallFunction",
                 "value": f"uniform {epsilon_value}"
             },
-            "walls": {
-                "type": "epsilonWallFunction",
-                "value": f"uniform {epsilon_value}"
+            "top": {
+                "type": "slip"
             },
-            "sides": {
-                "type": "empty"
+            "bottom": {
+                "type": "slip"
+            },
+            "front": {
+                "type": "slip"
+            },
+            "back": {
+                "type": "slip"
             }
         }
     elif geometry_type == GeometryType.AIRFOIL:
@@ -921,6 +1114,37 @@ def generate_dissipation_field(parsed_params: Dict[str, Any], geometry_info: Dic
                 "type": "empty"
             }
         }
+    elif geometry_type == GeometryType.CUBE:
+        # External flow around cube with snappyHexMesh
+        mesh_topology = mesh_config.get("mesh_topology", "structured")
+        is_2d = mesh_config.get("is_2d", False)
+        
+        if mesh_topology == "snappy":
+            epsilon_field["boundaryField"] = {
+                "cube": {
+                    "type": "epsilonWallFunction",
+                    "value": f"uniform {epsilon_value}"
+                },
+                "inlet": {
+                    "type": "fixedValue",
+                    "value": f"uniform {epsilon_value}"
+                },
+                "outlet": {
+                    "type": "zeroGradient"
+                },
+                "top": {
+                    "type": "slip"
+                },
+                "bottom": {
+                    "type": "slip"
+                },
+                "front": {
+                    "type": "empty" if is_2d else "zeroGradient"
+                },
+                "back": {
+                    "type": "empty" if is_2d else "zeroGradient"
+                }
+            }
     elif geometry_type in [GeometryType.PIPE, GeometryType.CHANNEL]:
         epsilon_field["boundaryField"] = {
             "inlet": {
@@ -1049,6 +1273,7 @@ def generate_turbulent_viscosity_field(parsed_params: Dict[str, Any], geometry_i
                 }
             }
     elif geometry_type == GeometryType.SPHERE:
+        # External flow with snappyHexMesh - use background mesh patch names
         nut_field["boundaryField"] = {
             "inlet": {
                 "type": "calculated",
@@ -1058,16 +1283,25 @@ def generate_turbulent_viscosity_field(parsed_params: Dict[str, Any], geometry_i
                 "type": "calculated",
                 "value": "uniform 0"
             },
-            f"{geometry_type.value}": {
+            "sphere": {
                 "type": "nutkWallFunction",
                 "value": "uniform 0"
             },
-            "walls": {
-                "type": "nutkWallFunction",
+            "top": {
+                "type": "calculated",
                 "value": "uniform 0"
             },
-            "sides": {
-                "type": "empty"
+            "bottom": {
+                "type": "calculated",
+                "value": "uniform 0"
+            },
+            "front": {
+                "type": "calculated",
+                "value": "uniform 0"
+            },
+            "back": {
+                "type": "calculated",
+                "value": "uniform 0"
             }
         }
     elif geometry_type == GeometryType.AIRFOIL:
@@ -1092,6 +1326,42 @@ def generate_turbulent_viscosity_field(parsed_params: Dict[str, Any], geometry_i
                 "type": "empty"
             }
         }
+    elif geometry_type == GeometryType.CUBE:
+        # External flow around cube with snappyHexMesh
+        mesh_topology = mesh_config.get("mesh_topology", "structured")
+        is_2d = mesh_config.get("is_2d", False)
+        
+        if mesh_topology == "snappy":
+            nut_field["boundaryField"] = {
+                "cube": {
+                    "type": "nutkWallFunction",
+                    "value": "uniform 0"
+                },
+                "inlet": {
+                    "type": "calculated",
+                    "value": "uniform 0"
+                },
+                "outlet": {
+                    "type": "calculated",
+                    "value": "uniform 0"
+                },
+                "top": {
+                    "type": "calculated",
+                    "value": "uniform 0"
+                },
+                "bottom": {
+                    "type": "calculated",
+                    "value": "uniform 0"
+                },
+                "front": {
+                    "type": "empty" if is_2d else "calculated",
+                    "value": "uniform 0"
+                } if not is_2d else {"type": "empty"},
+                "back": {
+                    "type": "empty" if is_2d else "calculated", 
+                    "value": "uniform 0"
+                } if not is_2d else {"type": "empty"}
+            }
     elif geometry_type in [GeometryType.PIPE, GeometryType.CHANNEL]:
         nut_field["boundaryField"] = {
             "inlet": {
@@ -1132,7 +1402,7 @@ def generate_temperature_field(parsed_params: Dict[str, Any], geometry_info: Dic
     }
     
     # Configure boundary conditions
-    if geometry_type in [GeometryType.CYLINDER, GeometryType.SPHERE]:
+    if geometry_type == GeometryType.CYLINDER:
         temp_field["boundaryField"] = {
             "inlet": {
                 "type": "fixedValue",
@@ -1151,6 +1421,62 @@ def generate_temperature_field(parsed_params: Dict[str, Any], geometry_info: Dic
                 "type": "empty"
             }
         }
+    elif geometry_type == GeometryType.SPHERE:
+        # External flow with snappyHexMesh - use background mesh patch names
+        temp_field["boundaryField"] = {
+            "inlet": {
+                "type": "fixedValue",
+                "value": f"uniform {temperature}"
+            },
+            "outlet": {
+                "type": "zeroGradient"
+            },
+            "sphere": {
+                "type": "zeroGradient"
+            },
+            "top": {
+                "type": "zeroGradient"
+            },
+            "bottom": {
+                "type": "zeroGradient"
+            },
+            "front": {
+                "type": "zeroGradient"
+            },
+            "back": {
+                "type": "zeroGradient"
+            }
+        }
+    elif geometry_type == GeometryType.CUBE:
+        # External flow around cube with snappyHexMesh
+        mesh_topology = mesh_config.get("mesh_topology", "structured")
+        is_2d = mesh_config.get("is_2d", False)
+        
+        if mesh_topology == "snappy":
+            temp_field["boundaryField"] = {
+                "cube": {
+                    "type": "zeroGradient"
+                },
+                "inlet": {
+                    "type": "fixedValue",
+                    "value": f"uniform {temperature}"
+                },
+                "outlet": {
+                    "type": "zeroGradient"
+                },
+                "top": {
+                    "type": "zeroGradient"
+                },
+                "bottom": {
+                    "type": "zeroGradient"
+                },
+                "front": {
+                    "type": "empty" if is_2d else "zeroGradient"
+                },
+                "back": {
+                    "type": "empty" if is_2d else "zeroGradient"
+                }
+            }
     elif geometry_type == GeometryType.AIRFOIL:
         temp_field["boundaryField"] = {
             "inlet": {

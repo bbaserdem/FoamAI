@@ -75,13 +75,15 @@ def generate_mesh_config(geometry_info: Dict[str, Any], parsed_params: Dict[str,
     if geometry_type == GeometryType.CYLINDER:
         return generate_cylinder_mesh(dimensions, mesh_resolution, is_external_flow, flow_context)
     elif geometry_type == GeometryType.AIRFOIL:
-        return generate_airfoil_mesh(dimensions, resolution_multiplier, parsed_params, is_external_flow)
+        return generate_airfoil_mesh(dimensions, mesh_resolution, is_external_flow, flow_context)
     elif geometry_type == GeometryType.PIPE:
         return generate_pipe_mesh(dimensions, resolution_multiplier, parsed_params)
     elif geometry_type == GeometryType.CHANNEL:
         return generate_channel_mesh(dimensions, resolution_multiplier, parsed_params)
     elif geometry_type == GeometryType.SPHERE:
-        return generate_sphere_mesh(dimensions, resolution_multiplier, parsed_params, is_external_flow)
+        return generate_sphere_mesh(dimensions, mesh_resolution, is_external_flow, flow_context)
+    elif geometry_type == GeometryType.CUBE:
+        return generate_cube_mesh(dimensions, mesh_resolution, is_external_flow, flow_context)
     else:
         raise ValueError(f"Unsupported geometry type: {geometry_type}")
 
@@ -306,44 +308,138 @@ def generate_cylinder_mesh(dimensions: Dict[str, float], resolution: str = "medi
     return mesh_config
 
 
-def generate_airfoil_mesh(dimensions: Dict[str, float], resolution_multiplier: float, params: Dict[str, Any], is_external_flow: bool = True) -> Dict[str, Any]:
+def generate_airfoil_mesh(dimensions: Dict[str, float], resolution: str = "medium", 
+                         is_external_flow: bool = True, flow_context: Dict[str, Any] = None) -> Dict[str, Any]:
     """Generate mesh configuration for airfoil geometry."""
     chord = dimensions.get("chord", 0.1)
-    span = dimensions.get("span", 0.01)  # For 2D simulation
+    span = dimensions.get("span", chord * 0.1)  # Default thin span for 2D
+    thickness = dimensions.get("thickness", chord * 0.12)  # NACA 0012 default
     
-    # Domain dimensions
-    domain_length = chord * 30
-    domain_height = chord * 20
+    # Determine if this is 2D or 3D
+    is_2d = span < chord * 0.2  # Less than 20% of chord means 2D
     
-    # Base mesh resolution
-    base_resolution = int(60 * resolution_multiplier)
-    
-    mesh_config = {
-        "type": "blockMesh",
-        "geometry_type": "airfoil",
-        "dimensions": {
-            "chord": chord,
-            "span": span,
-            "domain_length": domain_length,
-            "domain_height": domain_height
-        },
-        "resolution": {
-            "chordwise": max(int(base_resolution * 1.2), 48),
-            "normal": max(int(base_resolution * 0.8), 32),
-            "spanwise": max(int(base_resolution * 0.1), 4)
-        },
-        "blocks": generate_airfoil_blocks(chord, domain_length, domain_height, base_resolution),
-        "total_cells": 0,
-        "boundary_patches": {
-            "inlet": "patch",
-            "outlet": "patch",
-            "airfoil": "wall",
-            "farfield": "patch",
-            "sides": "empty"  # For 2D
+    if is_external_flow:
+        # External flow around airfoil
+        domain_multiplier = flow_context.get("domain_size_multiplier", 30.0) if flow_context else 30.0
+        
+        # Domain dimensions
+        domain_length = chord * domain_multiplier
+        domain_height = chord * (domain_multiplier / 2)
+        domain_upstream = chord * (domain_multiplier * 0.3)  # 30% upstream
+        domain_downstream = chord * (domain_multiplier * 0.7)  # 70% downstream
+        
+        # For 3D, ensure adequate domain width
+        if is_2d:
+            domain_width = span
+            n_cells_z = 1
+        else:
+            domain_width = max(span * 4, chord * domain_multiplier / 2)
+            base_resolution = {"coarse": 15, "medium": 30, "fine": 60, "very_fine": 90}.get(resolution, 30)
+            n_cells_z = max(int(base_resolution * domain_width / domain_length), 10)
+        
+        # Get resolution count
+        base_resolution = {"coarse": 15, "medium": 30, "fine": 60, "very_fine": 90}.get(resolution, 30)
+        
+        # Use snappyHexMesh for proper airfoil geometry
+        mesh_config = {
+            "type": "snappyHexMesh",
+            "mesh_topology": "snappy",
+            "geometry_type": "airfoil",
+            "is_external_flow": True,
+            "is_2d": is_2d,
+            "background_mesh": {
+                "type": "blockMesh",
+                "domain_length": domain_length,
+                "domain_height": domain_height,
+                "domain_width": domain_width,
+                "n_cells_x": int(base_resolution * 2),
+                "n_cells_y": int(base_resolution * 1),
+                "n_cells_z": n_cells_z
+            },
+            "geometry": {
+                "airfoil": {
+                    "type": "airfoil",
+                    "chord": chord,
+                    "span": span,
+                    "thickness": thickness,
+                    "center": [domain_upstream, domain_height/2, domain_width/2]
+                }
+            },
+            "snappy_settings": {
+                "castellated_mesh": True,
+                "snap": True,
+                "add_layers": True,  # Important for airfoil accuracy
+                "refinement_levels": {
+                    "min": 2,
+                    "max": 3  # Higher refinement for airfoil
+                },
+                "refinement_region": {
+                    # Refinement box around airfoil
+                    "min": [domain_upstream - chord*0.5, domain_height/2 - chord*2, 0],
+                    "max": [domain_upstream + chord*1.5, domain_height/2 + chord*2, domain_width]
+                },
+                "layers": {
+                    "n_layers": 10,  # More layers for airfoil
+                    "expansion_ratio": 1.2,
+                    "final_layer_thickness": 0.5,
+                    "min_thickness": 0.1
+                }
+            },
+            "dimensions": {
+                "airfoil_chord": chord,
+                "airfoil_span": span,
+                "airfoil_thickness": thickness,
+                "domain_length": domain_length,
+                "domain_height": domain_height,
+                "domain_upstream": domain_upstream,
+                "domain_downstream": domain_downstream,
+                "airfoil_center_x": domain_upstream,
+                "airfoil_center_y": domain_height / 2,
+                "chord": chord  # Also store standard chord key
+            },
+            "resolution": {
+                "background": base_resolution,
+                "surface": base_resolution * 3,  # Higher surface refinement for airfoil
+                "refinement": base_resolution * 6
+            },
+            "total_cells": base_resolution * base_resolution * 12,  # Estimate after refinement
+            "quality_metrics": {
+                "aspect_ratio": 1.3,
+                "quality_score": 0.95  # High quality needed for airfoil
+            }
         }
-    }
-    
-    mesh_config["total_cells"] = calculate_total_cells(mesh_config)
+    else:
+        # Internal flow (airfoil in channel) - rare but supported
+        channel_length = dimensions.get("length", chord * 20)
+        channel_height = dimensions.get("channel_height", chord * 5)
+        channel_width = dimensions.get("channel_width", span * 5)
+        
+        base_resolution = {"coarse": 20, "medium": 40, "fine": 80}.get(resolution, 40)
+        
+        mesh_config = {
+            "type": "blockMesh",
+            "mesh_topology": "structured",
+            "geometry_type": "airfoil_in_channel",
+            "is_external_flow": False,
+            "is_2d": is_2d,
+            "dimensions": {
+                "airfoil_chord": chord,
+                "channel_length": channel_length,
+                "channel_height": channel_height,
+                "channel_width": channel_width,
+                "chord": chord
+            },
+            "resolution": {
+                "streamwise": base_resolution * 2,
+                "normal": base_resolution,
+                "spanwise": 1 if is_2d else int(base_resolution * 0.5)
+            },
+            "total_cells": base_resolution * base_resolution * 2,
+            "quality_metrics": {
+                "aspect_ratio": 2.0,
+                "quality_score": 0.8
+            }
+        }
     
     return mesh_config
 
@@ -419,53 +515,252 @@ def generate_channel_mesh(dimensions: Dict[str, float], resolution_multiplier: f
     return mesh_config
 
 
-def generate_sphere_mesh(dimensions: Dict[str, float], resolution_multiplier: float, 
-                        params: Dict[str, Any], is_external_flow: bool = True) -> Dict[str, Any]:
+def generate_sphere_mesh(dimensions: Dict[str, float], resolution: str = "medium", 
+                        is_external_flow: bool = True, flow_context: Dict[str, Any] = None) -> Dict[str, Any]:
     """Generate mesh configuration for sphere geometry."""
     diameter = dimensions.get("diameter", 0.1)
     
     if is_external_flow:
-        # External flow around sphere - 3D O-grid
-        domain_size = diameter * 20
+        # External flow around sphere - must be 3D
+        domain_multiplier = flow_context.get("domain_size_multiplier", 20.0) if flow_context else 20.0
         
-        # Base mesh resolution
-        base_resolution = int(50 * resolution_multiplier)
+        # Domain dimensions - sphere requires 3D domain
+        domain_length = diameter * domain_multiplier
+        domain_height = diameter * domain_multiplier
+        domain_width = diameter * domain_multiplier
+        domain_upstream = diameter * (domain_multiplier * 0.4)  # 40% upstream
+        domain_downstream = diameter * (domain_multiplier * 0.6)  # 60% downstream
         
+        # Get resolution count
+        base_resolution = {"coarse": 15, "medium": 30, "fine": 60, "very_fine": 90}.get(resolution, 30)
+        
+        # Use snappyHexMesh for proper sphere geometry
         mesh_config = {
-            "type": "blockMesh",
-            "mesh_topology": "o-grid-3d",
+            "type": "snappyHexMesh",
+            "mesh_topology": "snappy",
             "geometry_type": "sphere",
             "is_external_flow": True,
+            "is_2d": False,  # Sphere is always 3D
+            "background_mesh": {
+                "type": "blockMesh",
+                "domain_length": domain_length,
+                "domain_height": domain_height,
+                "domain_width": domain_width,
+                "n_cells_x": int(base_resolution * 1.5),
+                "n_cells_y": int(base_resolution * 1.5),
+                "n_cells_z": int(base_resolution * 1.5)
+            },
+            "geometry": {
+                "sphere": {
+                    "type": "sphere",
+                    "center": [domain_upstream, domain_height/2, domain_width/2],
+                    "radius": diameter / 2.0
+                }
+            },
+            "snappy_settings": {
+                "castellated_mesh": True,
+                "snap": True,
+                "add_layers": True,  # Boundary layers for sphere
+                "refinement_levels": {
+                    "min": 1,
+                    "max": 3  # Higher refinement for curved surface
+                },
+                "refinement_region": {
+                    # Refinement box around sphere
+                    "min": [domain_upstream - diameter*2, domain_height/2 - diameter*2, domain_width/2 - diameter*2],
+                    "max": [domain_upstream + diameter*3, domain_height/2 + diameter*2, domain_width/2 + diameter*2]
+                },
+                "layers": {
+                    "n_layers": 8,
+                    "expansion_ratio": 1.3,
+                    "final_layer_thickness": 0.7,
+                    "min_thickness": 0.1
+                }
+            },
             "dimensions": {
                 "sphere_diameter": diameter,
-                "domain_size": domain_size,
-                "sphere_center": [domain_size/2, domain_size/2, domain_size/2]
+                "domain_length": domain_length,
+                "domain_height": domain_height,
+                "domain_width": domain_width,
+                "domain_upstream": domain_upstream,
+                "domain_downstream": domain_downstream,
+                "sphere_center_x": domain_upstream,
+                "sphere_center_y": domain_height / 2,
+                "sphere_center_z": domain_width / 2,
+                "diameter": diameter  # Also store standard diameter key
             },
             "resolution": {
-                "circumferential": max(int(base_resolution * 1.0), 24),
-                "radial": max(int(base_resolution * 0.8), 20),
-                "meridional": max(int(base_resolution * 1.0), 24)
+                "background": base_resolution,
+                "surface": base_resolution * 3,  # Higher for curved surface
+                "refinement": base_resolution * 5
             },
-            "boundary_layer": {
-                "enabled": True,
-                "first_layer_height": diameter * 1e-5,
-                "layers": 15,
-                "expansion_ratio": 1.2
-            },
-            "blocks": generate_sphere_ogrid_blocks(diameter, domain_size, base_resolution),
-            "total_cells": 0,
-            "boundary_patches": {
-                "inlet": "patch",
-                "outlet": "patch",
-                "sphere": "wall",
-                "farfield": "patch"
+            "total_cells": base_resolution * base_resolution * base_resolution * 10,  # Estimate after refinement
+            "quality_metrics": {
+                "aspect_ratio": 1.5,
+                "quality_score": 0.9  # High quality with snappyHexMesh
             }
         }
     else:
         # Internal flow (sphere in duct) - less common
-        mesh_config = generate_sphere_internal_mesh(dimensions, resolution_multiplier, params)
+        duct_diameter = dimensions.get("duct_diameter", diameter * 3)
+        duct_length = dimensions.get("duct_length", diameter * 10)
+        
+        base_resolution = {"coarse": 20, "medium": 40, "fine": 80}.get(resolution, 40)
+        
+        mesh_config = {
+            "type": "blockMesh",
+            "mesh_topology": "structured",
+            "geometry_type": "sphere_in_duct",
+            "is_external_flow": False,
+            "is_2d": False,  # Always 3D
+            "dimensions": {
+                "sphere_diameter": diameter,
+                "duct_diameter": duct_diameter,
+                "duct_length": duct_length,
+                "diameter": diameter
+            },
+            "resolution": {
+                "axial": base_resolution * 2,
+                "radial": base_resolution,
+                "circumferential": base_resolution
+            },
+            "total_cells": base_resolution * base_resolution * base_resolution * 2,
+            "quality_metrics": {
+                "aspect_ratio": 2.0,
+                "quality_score": 0.8
+            }
+        }
     
-    mesh_config["total_cells"] = calculate_total_cells(mesh_config)
+    return mesh_config
+
+
+def generate_cube_mesh(dimensions: Dict[str, float], resolution: str = "medium", is_external_flow: bool = True, flow_context: Dict[str, Any] = None) -> Dict[str, Any]:
+    """Generate mesh configuration for cube geometry."""
+    side_length = dimensions.get("side_length", 0.1)
+    
+    # Get resolution count  
+    base_resolution = {"coarse": 15, "medium": 30, "fine": 60, "very_fine": 90}.get(resolution, 30)
+    
+    if is_external_flow:
+        # External flow around cube
+        domain_multiplier = flow_context.get("domain_size_multiplier", 20.0) if flow_context else 20.0
+        
+        # Domain dimensions
+        domain_length = side_length * domain_multiplier
+        domain_height = side_length * (domain_multiplier / 2)  # Typically half in height
+        domain_upstream = side_length * (domain_multiplier * 0.4)  # 40% upstream
+        domain_downstream = side_length * (domain_multiplier * 0.6)  # 60% downstream
+        
+        # For 2D (square), use thin domain width
+        is_2d = dimensions.get("is_2d", False) or side_length < 0.02  # Less than 2cm suggests 2D
+        if is_2d:
+            domain_width = side_length * 0.1  # Thin slice for 2D
+            n_cells_z = 1
+        else:
+            # For 3D, domain width should be similar to height
+            domain_width = domain_height
+            n_cells_z = int(base_resolution * 1.5)
+    
+        mesh_config = {
+            "type": "snappyHexMesh",
+            "mesh_topology": "snappy",
+            "geometry_type": "cube",
+            "is_external_flow": is_external_flow,
+            "is_2d": is_2d,
+            "background_mesh": {
+                "type": "blockMesh",
+                "domain_length": domain_length,
+                "domain_height": domain_height,
+                "domain_width": domain_width,
+                "n_cells_x": int(base_resolution * 1.5),
+                "n_cells_y": int(base_resolution * 0.75),
+                "n_cells_z": n_cells_z
+            },
+            "geometry": {
+                "cube": {
+                    "type": "cube",
+                    "min": [domain_upstream - side_length/2, domain_height/2 - side_length/2, domain_width/2 - side_length/2],
+                    "max": [domain_upstream + side_length/2, domain_height/2 + side_length/2, domain_width/2 + side_length/2]
+                }
+            },
+            "snappy_settings": {
+                "castellated_mesh": True,
+                "snap": True,
+                "add_layers": False,
+                "refinement_levels": {
+                    "min": 1,
+                    "max": 2
+                },
+                "refinement_region": {
+                    # Refinement box around cube
+                    "min": [domain_upstream - side_length*2, domain_height/2 - side_length*2, 0],
+                    "max": [domain_upstream + side_length*3, domain_height/2 + side_length*2, domain_width]
+                },
+                "layers": {
+                    "n_layers": 5,
+                    "expansion_ratio": 1.3,
+                    "final_layer_thickness": 0.7,
+                    "min_thickness": 0.1
+                }
+            },
+            "dimensions": {
+                "cube_side_length": side_length,
+                "domain_length": domain_length,
+                "domain_height": domain_height,
+                "domain_width": domain_width,
+                "domain_upstream": domain_upstream,
+                "domain_downstream": domain_downstream,
+                "cube_center_x": domain_upstream,
+                "cube_center_y": domain_height / 2,
+                "cube_center_z": domain_width / 2,
+                "side_length": side_length  # Also store standard key
+            },
+            "resolution": {
+                "background": base_resolution,
+                "surface": base_resolution * 2,
+                "refinement": base_resolution * 4
+            },
+            "total_cells": base_resolution * base_resolution * 8, # Estimate after refinement
+            "quality_metrics": {
+                "aspect_ratio": 1.5,
+                "quality_score": 0.9
+            }
+        }
+    else:
+        # Internal flow (cube in channel) - less common
+        channel_length = dimensions.get("length", side_length * 20)
+        channel_height = dimensions.get("channel_height", side_length * 5)
+        channel_width = dimensions.get("channel_width", channel_height)
+        
+        base_resolution = {"coarse": 20, "medium": 40, "fine": 80}.get(resolution, 40)
+        
+        # Determine if 2D or 3D
+        is_2d = channel_width < side_length * 0.2
+        
+        mesh_config = {
+            "type": "blockMesh",
+            "mesh_topology": "structured",
+            "geometry_type": "cube_in_channel",
+            "is_external_flow": False,
+            "is_2d": is_2d,
+            "dimensions": {
+                "cube_side_length": side_length,
+                "channel_length": channel_length,
+                "channel_height": channel_height,
+                "channel_width": channel_width,
+                "side_length": side_length
+            },
+            "resolution": {
+                "streamwise": base_resolution * 2,
+                "normal": base_resolution,
+                "spanwise": 1 if is_2d else int(base_resolution * 0.5)
+            },
+            "total_cells": base_resolution * base_resolution * 2,
+            "quality_metrics": {
+                "aspect_ratio": 2.0,
+                "quality_score": 0.8
+            }
+        }
     
     return mesh_config
 

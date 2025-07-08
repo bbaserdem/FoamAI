@@ -166,11 +166,16 @@ def check_simulation_results(case_directory: Path) -> bool:
 def generate_paraview_script(case_directory: Path, state: CFDState) -> str:
     """Generate ParaView Python script for visualization."""
     geometry_type = state["geometry_info"].get("type", "unknown")
+    # Convert enum to string value if needed
+    if hasattr(geometry_type, 'value'):
+        geometry_type_str = geometry_type.value
+    else:
+        geometry_type_str = str(geometry_type)
     parsed_params = state["parsed_parameters"]
     flow_type = parsed_params.get("flow_type", "laminar")
     
     script = f'''
-# ParaView Python script for {geometry_type} visualization
+# ParaView Python script for {geometry_type_str} visualization
 import paraview.simple as pv
 
 # Disable automatic camera reset
@@ -205,10 +210,33 @@ if time_values:
 # Update the pipeline to load data at the correct time
 pv.UpdatePipeline(time=latest_time, proxy=foam_case)
 
+# Create a slice for 3D cases (for better visualization)
+try:
+    if "{geometry_type_str}" in ["sphere", "cube"] and not {state.get("mesh_config", {}).get("is_2d", False)}:
+        # Create slice through center of domain
+        slice_filter = pv.Slice(Input=foam_case)
+        slice_filter.SliceType = 'Plane'
+        slice_filter.SliceType.Origin = [0, 0, {state.get("mesh_config", {}).get("dimensions", {}).get("domain_width", 1.0) / 2}]
+        slice_filter.SliceType.Normal = [0, 0, 1]  # Z-normal slice
+        
+        # Use slice for visualization
+        visualization_source = slice_filter
+    else:
+        visualization_source = foam_case
+except:
+    visualization_source = foam_case
+
 # Generate pressure visualization
 try:
+    # Display the visualization source
+    if visualization_source != foam_case:
+        source_display = pv.Show(visualization_source, render_view)
+        pv.Hide(foam_case, render_view)
+    else:
+        source_display = foam_display
+    
     # Color by pressure
-    pv.ColorBy(foam_display, ('POINTS', 'p'))
+    pv.ColorBy(source_display, ('POINTS', 'p'))
     
     # Get pressure lookup table
     p_lut = pv.GetColorTransferFunction('p')
@@ -231,7 +259,7 @@ except:
 # Generate velocity visualization
 try:
     # Color by velocity magnitude
-    calculator = pv.Calculator(Input=foam_case)
+    calculator = pv.Calculator(Input=visualization_source)
     calculator.ResultArrayName = 'U_magnitude'
     calculator.Function = 'mag(U)'
     
@@ -259,7 +287,7 @@ except:
 
 # Generate streamlines for external flows
 try:
-    if "{geometry_type}" in ["cylinder", "airfoil", "sphere"]:
+    if "{geometry_type_str}" in ["cylinder", "airfoil", "sphere", "cube"]:
         # Create streamline tracer
         streamlines = pv.StreamTracer(Input=calculator)
         streamlines.Vectors = ['POINTS', 'U']
@@ -268,8 +296,14 @@ try:
         
         # Position seed points upstream
         streamlines.SeedType = 'Line'
-        streamlines.SeedType.Point1 = [-1.0, -0.5, 0.0]
-        streamlines.SeedType.Point2 = [-1.0, 0.5, 0.0]
+        # Get domain dimensions from mesh config
+        domain_upstream = {state.get("mesh_config", {}).get("dimensions", {}).get("domain_upstream", 1.0)}
+        domain_height = {state.get("mesh_config", {}).get("dimensions", {}).get("domain_height", 1.0)}
+        
+        # Position seed line upstream of the object
+        seed_x = -domain_upstream * 0.8  # 80% of upstream distance
+        streamlines.SeedType.Point1 = [seed_x, -domain_height * 0.4, 0.0]
+        streamlines.SeedType.Point2 = [seed_x, domain_height * 0.4, 0.0]
         streamlines.SeedType.Resolution = 20
         
         # Display streamlines
@@ -287,7 +321,7 @@ except:
 
 # Generate wall pressure distribution for bluff bodies
 try:
-    if "{geometry_type}" in ["cylinder", "airfoil", "sphere"]:
+    if "{geometry_type_str}" in ["cylinder", "airfoil", "sphere", "cube"]:
         # Extract surface
         extract_surface = pv.ExtractSurface(Input=foam_case)
         

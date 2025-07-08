@@ -171,6 +171,8 @@ def generate_blockmesh_dict(mesh_config: Dict[str, Any], state: CFDState) -> Dic
                 return {"x": count, "y": count, "z": count}
             elif geom_type == "sphere":
                 return {"circumferential": count, "radial": count//2, "meridional": count//2}
+            elif geom_type == "cube":
+                return {"x": count, "y": count, "z": count}
             else:
                 return {"x": count, "y": count, "z": count}
         
@@ -186,6 +188,8 @@ def generate_blockmesh_dict(mesh_config: Dict[str, Any], state: CFDState) -> Dic
         return generate_channel_blockmesh_dict(dimensions, resolution)
     elif geometry_type == "sphere":
         return generate_sphere_blockmesh_dict(dimensions, resolution)
+    elif geometry_type == "cube":
+        return generate_cube_blockmesh_dict(dimensions, resolution)
     else:
         raise ValueError(f"Unsupported geometry type for blockMesh: {geometry_type}")
 
@@ -630,6 +634,70 @@ def generate_sphere_blockmesh_dict(dimensions: Dict[str, float], resolution: Dic
     }
 
 
+def generate_cube_blockmesh_dict(dimensions: Dict[str, float], resolution: Dict[str, int]) -> Dict[str, Any]:
+    """Generate blockMeshDict for cube geometry (used for background mesh only)."""
+    # This is just for the background mesh when using snappyHexMesh
+    # The actual cube geometry is handled by snappyHexMesh
+    
+    # Use the background mesh dimensions from mesh_config
+    domain_length = dimensions.get("domain_length", 2.0)
+    domain_height = dimensions.get("domain_height", 1.0)
+    domain_width = dimensions.get("domain_width", 0.1)
+    
+    # Cell counts
+    nx = resolution.get("x", 60)
+    ny = resolution.get("y", 30)
+    nz = resolution.get("z", 1)
+    
+    # Check if this is 2D or 3D
+    is_2d = nz == 1
+    
+    return {
+        "convertToMeters": 1.0,
+        "vertices": [
+            "(0 0 0)",
+            f"({domain_length} 0 0)",
+            f"({domain_length} {domain_height} 0)",
+            f"(0 {domain_height} 0)",
+            f"(0 0 {domain_width})",
+            f"({domain_length} 0 {domain_width})",
+            f"({domain_length} {domain_height} {domain_width})",
+            f"(0 {domain_height} {domain_width})"
+        ],
+        "blocks": [
+            f"hex (0 1 2 3 4 5 6 7) ({nx} {ny} {nz}) simpleGrading (1 1 1)"
+        ],
+        "edges": [],
+        "boundary": {
+            "inlet": {
+                "type": "patch",
+                "faces": ["(0 4 7 3)"]
+            },
+            "outlet": {
+                "type": "patch",
+                "faces": ["(1 2 6 5)"]
+            },
+            "top": {
+                "type": "patch",
+                "faces": ["(3 7 6 2)"]
+            },
+            "bottom": {
+                "type": "patch",
+                "faces": ["(0 1 5 4)"]
+            },
+            "front": {
+                "type": "empty" if is_2d else "patch",
+                "faces": ["(0 3 2 1)"]
+            },
+            "back": {
+                "type": "empty" if is_2d else "patch",
+                "faces": ["(4 5 6 7)"]
+            }
+        },
+        "mergePatchPairs": []
+    }
+
+
 def generate_airfoil_vertices(chord: float, span: float, domain_length: float, domain_height: float) -> list:
     """Generate vertices for airfoil geometry (simplified)."""
     return [
@@ -1060,6 +1128,57 @@ def generate_background_blockmesh_dict(background_mesh: Dict[str, Any]) -> Dict[
     }
 
 
+def generate_location_in_mesh(mesh_config: Dict[str, Any], dimensions: Dict[str, Any]) -> list:
+    """Generate locationInMesh point based on geometry type."""
+    geometry_type = mesh_config.get("geometry_type", "")
+    is_2d = mesh_config.get("is_2d", False)
+    
+    # Get background mesh dimensions
+    background_mesh = mesh_config.get("background_mesh", {})
+    domain_width = background_mesh.get("domain_width", 0.1)
+    
+    # Default z-coordinate for 2D cases should be in the middle of the thin domain
+    z_coord = domain_width / 2 if is_2d else 0.05
+    
+    if geometry_type == "cylinder":
+        # Place point upstream of cylinder
+        x = dimensions.get("cylinder_center_x", dimensions.get("domain_upstream", 0.8)) - dimensions.get("cylinder_diameter", 0.1)
+        y = dimensions.get("cylinder_center_y", dimensions.get("domain_height", 1.0) / 2)
+        return [x, y, z_coord]
+    
+    elif geometry_type == "sphere":
+        # Place point upstream of sphere
+        x = dimensions.get("sphere_center_x", dimensions.get("domain_upstream", 0.8)) - dimensions.get("sphere_diameter", 0.1)
+        y = dimensions.get("sphere_center_y", dimensions.get("domain_height", 1.0) / 2)
+        z = dimensions.get("sphere_center_z", dimensions.get("domain_width", 1.0) / 2) - dimensions.get("sphere_diameter", 0.1) / 2
+        return [x, y, z]
+    
+    elif geometry_type == "cube":
+        # Place point upstream of cube
+        x = dimensions.get("cube_center_x", dimensions.get("domain_upstream", 0.8)) - dimensions.get("cube_side_length", 0.1)
+        y = dimensions.get("cube_center_y", dimensions.get("domain_height", 0.5) / 2)
+        z = dimensions.get("cube_center_z", z_coord)
+        # Make sure z is within domain for 2D
+        if is_2d:
+            z = domain_width / 2
+        return [x, y, z]
+    
+    elif geometry_type == "airfoil":
+        # Place point upstream of airfoil
+        x = dimensions.get("airfoil_center_x", dimensions.get("domain_upstream", 0.9)) - dimensions.get("airfoil_chord", 0.1)
+        y = dimensions.get("airfoil_center_y", dimensions.get("domain_height", 1.5) / 2)
+        # For 2D airfoil, z must be within the thin domain
+        if is_2d:
+            z = domain_width / 2
+        else:
+            z = dimensions.get("domain_width", 0.75) / 2
+        return [x, y, z]
+    
+    else:
+        # Default location
+        return [0.9, 0.5, z_coord]
+
+
 def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) -> Dict[str, Any]:
     """Generate snappyHexMeshDict for mesh refinement around geometry."""
     geometry = mesh_config.get("geometry", {})
@@ -1076,10 +1195,52 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
                 "point2": geom_data["point2"],
                 "radius": geom_data["radius"]
             }
-        # Can add more geometry types here (sphere, box, etc.)
+        elif geom_data["type"] == "sphere":
+            geometry_dict[geom_name] = {
+                "type": "searchableSphere",
+                "centre": geom_data["center"],
+                "radius": geom_data["radius"]
+            }
+        elif geom_data["type"] == "cube":
+            geometry_dict[geom_name] = {
+                "type": "searchableBox",
+                "min": geom_data["min"],
+                "max": geom_data["max"]
+            }
+        elif geom_data["type"] == "airfoil":
+            # Airfoils typically need STL files or custom geometry
+            # For now, use a simple box approximation
+            geometry_dict[geom_name] = {
+                "type": "searchableBox",
+                "min": [geom_data["center"][0] - geom_data["chord"]/2, 
+                       geom_data["center"][1] - geom_data["thickness"]/2,
+                       geom_data["center"][2] - geom_data["span"]/2],
+                "max": [geom_data["center"][0] + geom_data["chord"]/2, 
+                       geom_data["center"][1] + geom_data["thickness"]/2,
+                       geom_data["center"][2] + geom_data["span"]/2]
+            }
     
     # Refinement region
     refinement_region = snappy_settings.get("refinement_region", {})
+    
+    # Build refinement surfaces and layers based on geometry names
+    refinement_surfaces = {}
+    layers_dict = {}
+    for geom_name in geometry_dict.keys():
+        refinement_surfaces[geom_name] = {
+            "level": [
+                snappy_settings.get("refinement_levels", {}).get("min", 1),
+                snappy_settings.get("refinement_levels", {}).get("max", 3)
+            ],
+            "patchInfo": {
+                "type": "wall"
+            }
+        }
+        # Add layers if enabled
+        if snappy_settings.get("add_layers", False):
+            layers_dict[geom_name] = {
+                "nSurfaceLayers": snappy_settings.get("layers", {}).get("n_layers", 5)
+            }
     
     # Build the snappyHexMeshDict
     snappy_dict = {
@@ -1094,17 +1255,7 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
             "maxLoadUnbalance": 0.10,
             "nCellsBetweenLevels": 3,
             "features": [],  # Can add feature edge refinement here
-            "refinementSurfaces": {
-                "cylinder": {
-                    "level": [
-                        snappy_settings.get("refinement_levels", {}).get("min", 1),
-                        snappy_settings.get("refinement_levels", {}).get("max", 3)
-                    ],
-                    "patchInfo": {
-                        "type": "wall"
-                    }
-                }
-            },
+            "refinementSurfaces": refinement_surfaces,
             "resolveFeatureAngle": 30,
             "refinementRegions": {
                 "refinementBox": {
@@ -1112,11 +1263,7 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
                     "levels": [(1e15, snappy_settings.get("refinement_levels", {}).get("max", 3) - 1)]
                 }
             },
-            "locationInMesh": [
-                dimensions.get("cylinder_center_x", 1.0) - dimensions.get("cylinder_diameter", 0.1),
-                dimensions.get("cylinder_center_y", 0.5),
-                dimensions.get("cylinder_length", 0.1) / 2
-            ],
+            "locationInMesh": generate_location_in_mesh(mesh_config, dimensions),
             "allowFreeStandingZoneFaces": True
         },
         "snapControls": {
@@ -1131,11 +1278,7 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
         },
         "addLayersControls": {
             "relativeSizes": True,
-            "layers": {
-                "cylinder": {
-                    "nSurfaceLayers": snappy_settings.get("layers", {}).get("n_layers", 5)
-                }
-            },
+            "layers": layers_dict,
             "expansionRatio": snappy_settings.get("layers", {}).get("expansion_ratio", 1.3),
             "finalLayerThickness": snappy_settings.get("layers", {}).get("final_layer_thickness", 0.7),
             "minThickness": snappy_settings.get("layers", {}).get("min_thickness", 0.1),
@@ -1148,7 +1291,7 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
             "nSmoothThickness": 10,
             "maxFaceThicknessRatio": 0.5,
             "maxThicknessToMedialRatio": 0.3,
-            "minMedianAxisAngle": 90,
+            "minMedialAxisAngle": 90,
             "nBufferCellsNoExtrude": 0,
             "nLayerIter": 50
         },

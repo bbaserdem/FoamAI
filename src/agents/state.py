@@ -25,6 +25,7 @@ class GeometryType(str, Enum):
     PIPE = "pipe"
     CHANNEL = "channel"
     SPHERE = "sphere"
+    CUBE = "cube"
     CUSTOM = "custom"
 
 

@@ -1,0 +1,24 @@
+# Ignore common development files
+.git
+.gitignore
+README.md
+*.md
+
+# Ignore node modules and Python cache
+node_modules
+__pycache__
+*.pyc
+*.pyo
+
+# Ignore IDE files
+.vscode
+.idea
+*.swp
+*.swo
+
+# Ignore logs
+*.log
+
+# Ignore temporary files
+.tmp
+.cache 

@@ -2,7 +2,11 @@ import subprocess
 import sqlite3
 import os
 from pathlib import Path
+from datetime import datetime
 from celery import Celery
+
+# Import our pvserver management functions
+from pvserver_manager import ensure_pvserver_for_task, cleanup_inactive_pvservers
 
 # Configure Celery to use Redis as the message broker
 celery_app = Celery(
@@ -13,20 +17,33 @@ celery_app = Celery(
 
 DATABASE_PATH = 'tasks.db'
 
-def update_task_status(task_id, status, message, file_path=None):
+def update_task_status(task_id, status, message, file_path=None, case_path=None):
     """Helper function to update task status in the database."""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
-    if file_path:
+    
+    # Prepare the update query based on what fields we have
+    if file_path and case_path:
+        cursor.execute(
+            "UPDATE tasks SET status = ?, message = ?, file_path = ?, case_path = ? WHERE task_id = ?",
+            (status, message, file_path, case_path, task_id)
+        )
+    elif file_path:
         cursor.execute(
             "UPDATE tasks SET status = ?, message = ?, file_path = ? WHERE task_id = ?",
             (status, message, file_path, task_id)
+        )
+    elif case_path:
+        cursor.execute(
+            "UPDATE tasks SET status = ?, message = ?, case_path = ? WHERE task_id = ?",
+            (status, message, case_path, task_id)
         )
     else:
         cursor.execute(
             "UPDATE tasks SET status = ?, message = ? WHERE task_id = ?",
             (status, message, task_id)
         )
+    
     conn.commit()
     conn.close()
 
@@ -49,13 +66,23 @@ def ensure_foam_file(case_path):
     
     return str(foam_file_path)
 
+def start_pvserver_for_task(task_id, case_path):
+    """
+    Start or reuse a pvserver for the given task and case.
+    Returns pvserver info.
+    """
+    try:
+        pvserver_info = ensure_pvserver_for_task(task_id, case_path)
+        return pvserver_info
+    except Exception as e:
+        print(f"Error starting pvserver for task {task_id}: {e}")
+        return {"status": "error", "error_message": str(e)}
+
 @celery_app.task
 def generate_mesh_task(task_id):
     """Task for generating the mesh."""
-    update_task_status(task_id, 'in_progress', 'Generating mesh...')
-    
-    # Use the cavity tutorial directory
     case_path = '/home/ubuntu/cavity_tutorial'
+    update_task_status(task_id, 'in_progress', 'Generating mesh...', case_path=case_path)
     
     try:
         # Run blockMesh on the cavity case
@@ -70,18 +97,34 @@ def generate_mesh_task(task_id):
         # Ensure .foam file exists after mesh generation
         foam_file_path = ensure_foam_file(case_path)
         
-        update_task_status(task_id, 'waiting_approval', 'Mesh generated. Please approve.', foam_file_path)
+        # Start pvserver for visualization
+        pvserver_info = start_pvserver_for_task(task_id, case_path)
         
-        return {"status": "SUCCESS", "message": "Mesh generated successfully", "output": result.stdout, "foam_file": foam_file_path}
+        # Update status with success message
+        if pvserver_info["status"] == "running":
+            reused_msg = " (reusing existing)" if pvserver_info.get("reused") else ""
+            message = f"Mesh generated. PVServer ready on port {pvserver_info['port']}{reused_msg}. Please approve."
+        else:
+            message = f"Mesh generated. PVServer error: {pvserver_info.get('error_message', 'Unknown error')}. Please approve."
+        
+        update_task_status(task_id, 'waiting_approval', message, foam_file_path, case_path)
+        
+        return {
+            "status": "SUCCESS", 
+            "message": "Mesh generated successfully", 
+            "output": result.stdout, 
+            "foam_file": foam_file_path,
+            "pvserver": pvserver_info
+        }
         
     except subprocess.CalledProcessError as e:
-        update_task_status(task_id, 'error', f'Mesh generation failed: {e.stderr}')
+        update_task_status(task_id, 'error', f'Mesh generation failed: {e.stderr}', case_path=case_path)
         return {"status": "FAILURE", "message": "Mesh generation failed", "error": e.stderr}
 
 @celery_app.task
 def run_solver_task(task_id, case_path):
     """Task for running the OpenFOAM solver."""
-    update_task_status(task_id, 'in_progress', 'Simulation running...')
+    update_task_status(task_id, 'in_progress', 'Simulation running...', case_path=case_path)
     
     try:
         # Run the full cavity simulation using foamRun
@@ -96,26 +139,36 @@ def run_solver_task(task_id, case_path):
         # Ensure .foam file exists after simulation
         foam_file_path = ensure_foam_file(case_path)
         
-        update_task_status(task_id, 'completed', 'Simulation finished successfully.', foam_file_path)
+        # Start or reuse pvserver for visualization
+        pvserver_info = start_pvserver_for_task(task_id, case_path)
         
-        return {"status": "SUCCESS", "message": "Simulation completed successfully", "output": result.stdout, "foam_file": foam_file_path}
+        # Update status with completion message
+        if pvserver_info["status"] == "running":
+            reused_msg = " (reusing existing)" if pvserver_info.get("reused") else ""
+            message = f"Simulation complete. Results ready on PVServer port {pvserver_info['port']}{reused_msg}."
+        else:
+            message = f"Simulation complete. PVServer error: {pvserver_info.get('error_message', 'Unknown error')}."
+        
+        update_task_status(task_id, 'completed', message, foam_file_path, case_path)
+        
+        return {
+            "status": "SUCCESS", 
+            "message": "Simulation completed successfully", 
+            "output": result.stdout, 
+            "foam_file": foam_file_path,
+            "pvserver": pvserver_info
+        }
         
     except subprocess.CalledProcessError as e:
-        update_task_status(task_id, 'error', f'Simulation failed: {e.stderr}')
+        update_task_status(task_id, 'error', f'Simulation failed: {e.stderr}', case_path=case_path)
         return {"status": "FAILURE", "message": "Simulation failed", "error": e.stderr}
 
 @celery_app.task
 def run_openfoam_command_task(task_id, case_path, command, description="Running OpenFOAM command"):
     """
     Generic task for running any OpenFOAM command with automatic .foam file creation.
-    
-    Args:
-        task_id: Unique task identifier
-        case_path: Path to the OpenFOAM case directory
-        command: OpenFOAM command to run (string or list)
-        description: Description of what the command does
     """
-    update_task_status(task_id, 'in_progress', description)
+    update_task_status(task_id, 'in_progress', description, case_path=case_path)
     
     try:
         # Handle both string and list commands
@@ -136,19 +189,42 @@ def run_openfoam_command_task(task_id, case_path, command, description="Running 
         # Always ensure .foam file exists after any OpenFOAM operation
         foam_file_path = ensure_foam_file(case_path)
         
-        update_task_status(task_id, 'completed', f'{description} completed successfully.', foam_file_path)
+        # Start or reuse pvserver for visualization
+        pvserver_info = start_pvserver_for_task(task_id, case_path)
+        
+        # Update status with completion message
+        if pvserver_info["status"] == "running":
+            reused_msg = " (reusing existing)" if pvserver_info.get("reused") else ""
+            message = f"{description} completed. Results ready on PVServer port {pvserver_info['port']}{reused_msg}."
+        else:
+            message = f"{description} completed. PVServer error: {pvserver_info.get('error_message', 'Unknown error')}."
+        
+        update_task_status(task_id, 'completed', message, foam_file_path, case_path)
         
         return {
             "status": "SUCCESS", 
             "message": f"{description} completed successfully", 
             "output": result.stdout,
             "foam_file": foam_file_path,
-            "command": " ".join(cmd)
+            "command": " ".join(cmd),
+            "pvserver": pvserver_info
         }
         
     except subprocess.CalledProcessError as e:
-        update_task_status(task_id, 'error', f'{description} failed: {e.stderr}')
+        update_task_status(task_id, 'error', f'{description} failed: {e.stderr}', case_path=case_path)
         return {"status": "FAILURE", "message": f"{description} failed", "error": e.stderr, "command": " ".join(cmd)}
+
+@celery_app.task
+def cleanup_pvservers_task():
+    """Periodic task to clean up inactive pvservers"""
+    try:
+        cleaned_up = cleanup_inactive_pvservers()
+        if cleaned_up:
+            print(f"Cleaned up inactive pvservers: {cleaned_up}")
+        return {"status": "SUCCESS", "cleaned_up": cleaned_up}
+    except Exception as e:
+        print(f"Error during pvserver cleanup: {e}")
+        return {"status": "ERROR", "error": str(e)}
 
 # Legacy task for backward compatibility (if needed)
 @celery_app.task

@@ -59,3 +59,5 @@ vine==5.1.0
 watchfiles==1.1.0
 wcwidth==0.2.13
 websockets==15.0.1
+psutil==6.1.1
+requests==2.32.3

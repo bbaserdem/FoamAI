@@ -1,0 +1,102 @@
+# Git and version control
+.git
+.gitignore
+.gitmodules
+
+# Documentation and README files
+README.md
+*.md
+docs/
+_docs/
+
+# Docker files (avoid recursion)
+Dockerfile
+docker-compose.yml
+docker/
+infra/
+
+# Python cache and build directories
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Test files and coverage
+.coverage
+.pytest_cache/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Nix files
+*.nix
+flake.lock
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Taskmaster files
+.taskmaster/
+
+# Cursor files
+.cursor/
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+.temp/
+
+# Source code (ParaView server doesn't need it)
+src/
+
+# Python project files (not needed for ParaView)
+pyproject.toml
+uv.lock
+main.py 

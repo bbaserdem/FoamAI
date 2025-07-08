@@ -11,25 +11,32 @@
 
 **Target Specification:** SERVER_INTEGRATION.md compliance
 
+**Validation Scripts Created:**
+- ✅ `validate_deployment.py` - Remote API testing from local machine
+- ✅ `ec2_validation.sh` - EC2 instance validation script
+- ✅ `VALIDATION_README.md` - Usage instructions
+
 ---
 
-## Phase 1: Core API Foundation (Week 1)
+## Phase 1: Core API Foundation & Deployment Validation (Week 1)
 
 ### 1.1 Environment Setup & Dependencies
 **Goals:**
-- Get existing code running locally
+- Get existing code running on EC2
 - Set up development environment
-- Create basic test infrastructure
+- Validate basic deployment
 
 **Tasks:**
 - [ ] Update `requirements.txt` with all dependencies
-- [ ] Create development setup script (`setup_dev.sh`)
-- [ ] Test Redis and Celery worker startup
-- [ ] Verify OpenFOAM installation and basic commands
+- [ ] Set up EC2 instance with OpenFOAM and ParaView
+- [ ] Test Redis and Celery worker startup on EC2
+- [ ] Run `ec2_validation.sh` to verify OpenFOAM installation
+- [ ] Verify cavity case runs successfully at `/home/ubuntu/cavity_tutorial`
 
 **Deliverables:**
-- Working local development environment
-- Basic smoke test script
+- Working EC2 deployment environment
+- ✅ EC2 validation script passes
+- OpenFOAM cavity case runs successfully
 
 ### 1.2 API Compliance & Enhancement
 **Goals:**
@@ -66,276 +73,133 @@
 
 ---
 
-## Phase 2: Basic Workflow Testing (Week 2)
+## Phase 2: Basic Workflow Validation (Week 2)
 
-### 2.1 Unit Test Scripts
+### 2.1 Remote API Testing
 **Goals:**
-- Test each API endpoint independently
+- Test API endpoints from local machine
 - Validate request/response formats
 - Test error conditions
 
 **Tasks:**
-- [ ] Create `test_api_endpoints.py` - individual endpoint testing
-- [ ] Create `test_database_ops.py` - database operation testing
-- [ ] Create `test_celery_tasks.py` - async task testing
-- [ ] Add parametrized tests for different input scenarios
+- [ ] Run `validate_deployment.py` against EC2 instance
+- [ ] Test scenario submission and task status polling
+- [ ] Test mesh approval workflow
+- [ ] Test complete end-to-end workflow
+- [ ] Fix any issues found by validation script
 
-**Test Scripts:**
+**Validation Script Tests:**
 ```python
-# test_api_endpoints.py
-- test_submit_scenario_success()
-- test_submit_scenario_invalid_input()
-- test_task_status_found()
-- test_task_status_not_found()
-- test_approve_mesh_success()
-- test_reject_mesh_success()
-- test_health_check()
+# validate_deployment.py includes:
+- test_api_health()
+- test_submit_scenario()
+- test_task_status()
+- test_mesh_approval()
+- test_full_workflow()
 ```
 
 **Deliverables:**
-- Comprehensive unit test suite
-- Test data fixtures
-- Automated test runner
+- ✅ Remote validation script passes
+- API endpoints work from local machine
+- End-to-end workflow completes successfully
 
-### 2.2 Integration Test Scripts
-**Goals:**
-- Test full workflow end-to-end
-- Validate async task coordination
-- Test timing and polling behavior
-
-**Tasks:**
-- [ ] Create `test_full_workflow.py` - complete simulation workflow
-- [ ] Create `test_async_behavior.py` - task queue and polling
-- [ ] Add timeout handling and retry logic testing
-- [ ] Create mock OpenFOAM environment for testing
-
-**Test Scripts:**
-```python
-# test_full_workflow.py
-- test_simple_scenario_workflow()
-- test_mesh_approval_workflow()
-- test_mesh_rejection_workflow()
-- test_simulation_completion()
-```
-
-**Deliverables:**
-- End-to-end workflow tests
-- Async behavior validation
-- Performance baseline measurements
-
----
-
-## Phase 3: OpenFOAM Integration (Week 3)
-
-### 3.1 OpenFOAM Case Management
-**Goals:**
-- Enhance OpenFOAM case handling
-- Support multiple case templates
-- Implement proper case file generation
-
-**Tasks:**
-- [ ] Create case template system (cavity, pitzDaily, etc.)
-- [ ] Implement case file generation from templates
-- [ ] Add case validation and error checking
-- [ ] Create case cleanup utilities
-- [ ] Add support for different solvers (icoFoam, simpleFoam, etc.)
-
-**Deliverables:**
-- Case template system
-- Case management utilities
-- Extended solver support
-
-### 3.2 Result Processing & Storage
-**Goals:**
-- Process OpenFOAM results properly
-- Extract metadata and field information
-- Store results in accessible format
-
-**Tasks:**
-- [ ] Implement result file parsing (time directories, field files)
-- [ ] Extract available fields and time steps
-- [ ] Create `.foam` file generation
-- [ ] Add result file organization and cleanup
-- [ ] Implement result compression and archiving
-
-**Deliverables:**
-- Result processing pipeline
-- Metadata extraction
-- File organization system
-
-### 3.3 OpenFOAM Testing
-**Goals:**
-- Test OpenFOAM integration thoroughly
-- Validate case generation and execution
-- Test different simulation scenarios
-
-**Tasks:**
-- [ ] Create `test_openfoam_integration.py`
-- [ ] Test case generation from templates
-- [ ] Test solver execution and monitoring
-- [ ] Test result processing and metadata extraction
-- [ ] Add performance monitoring and logging
-
-**Test Scripts:**
-```python
-# test_openfoam_integration.py
-- test_case_generation()
-- test_mesh_generation()
-- test_solver_execution()
-- test_result_processing()
-- test_case_cleanup()
-```
-
-**Deliverables:**
-- OpenFOAM integration tests
-- Case generation validation
-- Solver execution monitoring
-
----
-
-## Phase 4: ParaView Integration (Week 4)
-
-### 4.1 ParaView Server Setup
+### 2.2 ParaView Server Setup & Testing
 **Goals:**
 - Set up ParaView server for visualization
 - Test client-server connection
 - Validate OpenFOAM file reading
 
 **Tasks:**
-- [ ] Configure pvserver startup and management
-- [ ] Test ParaView-OpenFOAM integration
-- [ ] Create ParaView connection testing utilities
-- [ ] Add pvserver health monitoring
-- [ ] Document ParaView server configuration
+- [ ] Start pvserver on EC2 instance (port 11111)
+- [ ] Test ParaView server connection from local machine
+- [ ] Connect local ParaView client to EC2 pvserver
+- [ ] Load cavity case results in ParaView
+- [ ] Test visualization of velocity and pressure fields
+
+**Test Procedure:**
+1. Start pvserver: `pvserver --server-port=11111 --disable-xdisplay-test`
+2. Connect from local ParaView: File → Connect → EC2_HOST:11111
+3. Open cavity case: `/home/ubuntu/cavity_tutorial/cavity.foam`
+4. Visualize fields: pressure (p), velocity (U)
 
 **Deliverables:**
-- ParaView server configuration
-- Connection testing utilities
-- Health monitoring system
-
-### 4.2 Visualization Testing
-**Goals:**
-- Test desktop app visualization requirements
-- Validate field rendering and interaction
-- Test file format compatibility
-
-**Tasks:**
-- [ ] Create `test_paraview_integration.py`
-- [ ] Test pvserver connection and disconnection
-- [ ] Test OpenFOAM file loading in ParaView
-- [ ] Test field visualization and rendering
-- [ ] Add automated visualization testing
-
-**Test Scripts:**
-```python
-# test_paraview_integration.py
-- test_pvserver_connection()
-- test_openfoam_file_loading()
-- test_field_visualization()
-- test_multiple_time_steps()
-- test_connection_recovery()
-```
-
-**Deliverables:**
-- ParaView integration tests
-- Visualization validation
-- Connection robustness testing
+- ParaView server running on EC2
+- Local ParaView client connects successfully
+- Cavity case visualizes correctly
 
 ---
 
-## Phase 5: Advanced Features & Polish (Week 5)
+## Phase 3: Desktop App Integration Preparation (Week 3)
 
-### 5.1 Error Handling & Recovery
+### 3.1 Enhanced OpenFOAM Integration
 **Goals:**
-- Implement robust error handling
-- Add automatic recovery mechanisms
-- Improve user feedback
+- Improve OpenFOAM case handling for desktop app
+- Add result processing and metadata extraction
+- Support proper file organization
 
 **Tasks:**
-- [ ] Add comprehensive error handling throughout API
-- [ ] Implement task retry mechanisms
-- [ ] Add detailed error logging and reporting
-- [ ] Create error recovery procedures
-- [ ] Add user-friendly error messages
+- [ ] Update cavity case to use proper working directory structure
+- [ ] Implement result file parsing (time directories, field files)
+- [ ] Extract available fields and time steps for API responses
+- [ ] Create proper `.foam` file generation
+- [ ] Add case cleanup utilities
+- [ ] Test case directory permissions and access
 
 **Deliverables:**
-- Enhanced error handling system
-- Automatic recovery mechanisms
-- Improved logging and monitoring
+- Enhanced OpenFOAM case management
+- Result metadata extraction
+- File organization system
 
-### 5.2 Performance & Scalability
+### 3.2 API Enhancements for Desktop Integration
 **Goals:**
-- Optimize API performance
-- Test under load
-- Prepare for multiple users
+- Add missing SERVER_INTEGRATION.md endpoints
+- Improve error handling and user feedback
+- Optimize for desktop app workflow
 
 **Tasks:**
-- [ ] Create `test_performance.py` - load and stress testing
-- [ ] Optimize database queries and connections
-- [ ] Add request rate limiting
-- [ ] Implement caching where appropriate
-- [ ] Test concurrent user scenarios
-
-**Test Scripts:**
-```python
-# test_performance.py
-- test_concurrent_submissions()
-- test_database_performance()
-- test_memory_usage()
-- test_long_running_simulations()
-```
+- [ ] Add `/api/results/{task_id}` endpoint with proper metadata
+- [ ] Implement better error messages and status updates
+- [ ] Add file path validation and security checks
+- [ ] Improve task status messages for user feedback
+- [ ] Add proper timeout handling for long-running tasks
 
 **Deliverables:**
-- Performance test suite
-- Optimization recommendations
-- Scalability baseline
+- Complete API endpoint implementation
+- Enhanced error handling and user feedback
+- Improved task management
 
-### 5.3 Documentation & Deployment
+### 3.3 Production Readiness
 **Goals:**
-- Create comprehensive documentation
-- Prepare for deployment
-- Create deployment scripts
+- Add logging and monitoring
+- Implement proper configuration management
+- Prepare for desktop app integration
 
 **Tasks:**
-- [ ] Update API documentation
-- [ ] Create deployment guide
-- [ ] Create monitoring and logging setup
-- [ ] Add configuration management
-- [ ] Create backup and recovery procedures
+- [ ] Add comprehensive logging throughout API
+- [ ] Create configuration file for deployment settings
+- [ ] Add process monitoring and restart capabilities
+- [ ] Implement proper shutdown procedures
+- [ ] Add basic security measures (file path validation)
 
 **Deliverables:**
-- Complete documentation
-- Deployment scripts
-- Monitoring setup
+- Production-ready logging system
+- Configuration management
+- Process monitoring
 
 ---
 
-## Test Script Organization
+## Validation Script Organization
 
 ```
 backend_api/
-├── tests/
-│   ├── unit/
-│   │   ├── test_api_endpoints.py
-│   │   ├── test_database_ops.py
-│   │   └── test_celery_tasks.py
-│   ├── integration/
-│   │   ├── test_full_workflow.py
-│   │   ├── test_async_behavior.py
-│   │   └── test_openfoam_integration.py
-│   ├── performance/
-│   │   ├── test_performance.py
-│   │   └── test_load_testing.py
-│   └── fixtures/
-│       ├── test_data.json
-│       └── mock_responses.py
-├── scripts/
-│   ├── setup_dev.sh
-│   ├── run_tests.sh
-│   └── benchmark.py
-└── utilities/
-    ├── test_helpers.py
-    └── mock_openfoam.py
+├── validate_deployment.py    # Remote API testing from local machine
+├── ec2_validation.sh        # EC2 instance validation 
+├── VALIDATION_README.md     # Usage instructions
+├── main.py                  # FastAPI application
+├── celery_worker.py         # Celery worker tasks
+├── database_setup.py        # Database initialization
+├── requirements.txt         # Python dependencies
+└── run_cavity.sh           # OpenFOAM cavity case execution
 ```
 
 ---
@@ -343,53 +207,44 @@ backend_api/
 ## Success Criteria
 
 ### Phase 1 Complete:
-- [ ] All API endpoints respond correctly
+- [ ] ✅ EC2 validation script passes
+- [ ] ✅ OpenFOAM cavity case runs successfully
+- [ ] API endpoints respond correctly
 - [ ] Database operations work reliably
 - [ ] Celery tasks execute successfully
-- [ ] Basic test suite passes
 
 ### Phase 2 Complete:
+- [ ] ✅ Remote validation script passes
 - [ ] Full workflow can be scripted end-to-end
-- [ ] All error conditions handled gracefully
-- [ ] Async behavior is predictable and testable
-- [ ] Performance baselines established
+- [ ] ParaView server runs and accepts connections
+- [ ] Local ParaView client connects to EC2 pvserver
+- [ ] Cavity case visualizes correctly in ParaView
 
 ### Phase 3 Complete:
-- [ ] OpenFOAM cases generate and execute correctly
-- [ ] Results are processed and stored properly
-- [ ] Multiple case templates supported
-- [ ] Case management is automated
-
-### Phase 4 Complete:
-- [ ] ParaView server integrates successfully
-- [ ] Visualization works with OpenFOAM files
-- [ ] Desktop app requirements are met
-- [ ] Connection robustness is validated
-
-### Phase 5 Complete:
-- [ ] System is production-ready
-- [ ] Performance is acceptable under load
-- [ ] Documentation is complete
-- [ ] Deployment is automated
+- [ ] All SERVER_INTEGRATION.md endpoints implemented
+- [ ] OpenFOAM integration is robust and reliable
+- [ ] API responses include proper metadata
+- [ ] Error handling provides clear user feedback
+- [ ] System is ready for desktop app integration
 
 ---
 
 ## Next Steps After Completion
 
 1. **Desktop App Integration**: Begin integration with PySide6 desktop application
-2. **LLM Integration**: Add natural language processing capabilities
-3. **Advanced Features**: Multi-user support, authentication, advanced case templates
-4. **Production Deployment**: Deploy to AWS EC2 with proper monitoring
+2. **LLM Integration**: Add natural language processing capabilities  
+3. **Advanced Features**: Multiple case templates, improved user experience
+4. **Production Deployment**: Enhanced monitoring and scaling
 5. **User Testing**: Conduct user acceptance testing with real CFD scenarios
 
 ---
 
 ## Development Guidelines
 
-- **Git Workflow**: Feature branches with PR reviews
-- **Testing**: All features must have corresponding tests
-- **Documentation**: Update docs with each phase
-- **Code Quality**: Use linting and type checking
-- **Monitoring**: Add logging and metrics throughout
+- **Focus on MVP**: Prioritize getting basic workflow working over comprehensive features
+- **Test Early**: Use validation scripts to catch issues quickly
+- **Document Changes**: Update validation scripts as API evolves
+- **Keep It Simple**: Avoid over-engineering for the MVP phase
+- **Validate Continuously**: Run validation scripts after each change
 
-This incremental plan ensures solid foundations before moving to desktop app integration, with comprehensive testing at each phase. 
+This streamlined plan focuses on practical deployment validation and desktop app integration readiness, with simple scripts to verify functionality at each step. 

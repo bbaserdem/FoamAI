@@ -6,11 +6,6 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
 
-# ParaView version and configuration
-ENV PARAVIEW_VERSION=5.11
-ENV PARAVIEW_MAJOR_VERSION=5.11
-ENV PARAVIEW_FULL_VERSION=5.11.2
-
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     # Core utilities
@@ -45,23 +40,17 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     # Networking utilities
     netcat \
+    # ParaView from Ubuntu repositories
+    paraview \
     # Clean up apt cache to reduce image size
     && rm -rf /var/lib/apt/lists/*
 
 # Create ParaView user (non-root for security)
 RUN groupadd -r paraview && useradd -r -g paraview -m -d /home/paraview paraview
 
-# Download and install ParaView
-RUN mkdir -p /opt/paraview && cd /opt/paraview \
-    && wget -O paraview.tar.gz "https://www.paraview.org/files/v${PARAVIEW_VERSION}/ParaView-${PARAVIEW_FULL_VERSION}-MPI-Linux-Python3.10-x86_64.tar.gz" \
-    && tar -xzf paraview.tar.gz --strip-components=1 \
-    && rm paraview.tar.gz \
-    && chown -R paraview:paraview /opt/paraview
-
 # Set ParaView environment variables
-ENV PATH="/opt/paraview/bin:$PATH"
-ENV PARAVIEW_ROOT="/opt/paraview"
-ENV LD_LIBRARY_PATH="/opt/paraview/lib:$LD_LIBRARY_PATH"
+ENV PATH="/usr/bin:$PATH"
+ENV LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}"
 
 # Create necessary directories
 RUN mkdir -p /data \
@@ -80,7 +69,7 @@ RUN echo '#!/bin/bash' > /home/paraview/start-pvserver.sh \
     && echo 'echo "Starting ParaView server..."' >> /home/paraview/start-pvserver.sh \
     && echo 'echo "ParaView version: $(pvserver --version 2>&1 | head -1)"' >> /home/paraview/start-pvserver.sh \
     && echo 'echo "Listening on port 11111..."' >> /home/paraview/start-pvserver.sh \
-    && echo 'exec pvserver --use-offscreen-rendering --server-port=11111' >> /home/paraview/start-pvserver.sh \
+    && echo 'exec pvserver --force-offscreen-rendering --server-port=11111' >> /home/paraview/start-pvserver.sh \
     && chmod +x /home/paraview/start-pvserver.sh
 
 # Create a test script to verify ParaView installation

@@ -21,8 +21,9 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "pyyaml>=6.0.2",
     "ruff>=0.12.1",
-    {include-group = "test"}
+    {include-group = "test"},
 ]
 test = [
     "pytest>=8.4.1",

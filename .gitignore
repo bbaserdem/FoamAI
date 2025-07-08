@@ -1,0 +1,64 @@
+# Gitignore things
+
+# Large files
+*.webm
+
+# Secrets
+.env*
+mcp.json
+
+# Nix and direnv related files
+!.envrc
+.direnv/
+result
+result-*
+manual_test_output/
+
+# Python-generated files
+__pycache__/
+.pytest_cache/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# UV Virtual environments
+.venv
+
+# Generic
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+migrate_working_dir/
+Thumbs.db
+*.tmp
+*.temp
+*.cache
+
+# Logs
+logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dev-debug.log
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS specific
+
+# Task files
+# tasks.json
+# tasks/ 

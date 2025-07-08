@@ -34,6 +34,9 @@
     unzip # Unzip utility
     zip # Zip utility
   ];
+
+  # Got a nice terraform binary derivation from Connor
+  terraform = import ./terraformDerivation.nix {inherit pkgs;};
 in {
   # The default shell, where nix manages the venv and dependencies
   # The venv is editable for the local projects
@@ -90,6 +93,8 @@ in {
         ++ [virtualenv pkgs.uv]
         ++ [
           pkgs.task-master-ai
+          terraform
+          pkgs.docker
         ];
 
       env = {

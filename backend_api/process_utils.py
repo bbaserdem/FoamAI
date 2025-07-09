@@ -28,6 +28,37 @@ class ProcessManager:
         self._lock = threading.Lock()
         self._shutdown_in_progress = False
         self._setup_exit_handler()
+        self._start_reaper_thread()
+
+    def _start_reaper_thread(self):
+        """Starts a background thread to reap zombie processes."""
+        reaper_thread = threading.Thread(target=self._reap_zombies, daemon=True)
+        reaper_thread.start()
+        print("🧟‍♂️ Started zombie reaper thread to clean up defunct processes.")
+
+    def _reap_zombies(self):
+        """Periodically reap dead child processes to prevent them from becoming zombies."""
+        while not self._shutdown_in_progress:
+            try:
+                # Non-blocking wait for any child process to exit.
+                # This cleans up zombies.
+                pid, status = os.waitpid(-1, os.WNOHANG)
+                while pid > 0:
+                    print(f"🧹 Reaped zombie process PID {pid} with status {status}.")
+                    with self._lock:
+                        if pid in self._active_pvservers:
+                            print(f"🧟‍♂️ Zombie PID {pid} was a tracked pvserver. Removing from tracking.")
+                            del self._active_pvservers[pid]
+                    # Check for more zombies immediately, in case multiple children exited.
+                    pid, status = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                # This error is expected and simply means there are no children to reap.
+                pass
+            except Exception as e:
+                print(f"🧟‍♂️ Reaper thread encountered an error: {e}")
+            
+            # Wait for a short interval before checking again.
+            time.sleep(5)
 
     def _setup_exit_handler(self):
         """Set up a handler to clean up processes on exit."""
@@ -152,7 +183,9 @@ class ProcessManager:
                 if pid in self._active_pvservers:
                     del self._active_pvservers[pid]
                     if not is_shutdown:
-                        print(f"Untracked pvserver PID {pid}")
+                        # This should not be printed, as the logic is now removed.
+                        # Keeping the nested if for structure.
+                        pass
 
     def get_active_pvserver_summary(self) -> Dict:
         """Get a summary of currently tracked pvservers."""

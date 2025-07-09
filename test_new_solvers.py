@@ -4,8 +4,8 @@
 import sys
 sys.path.append('src')
 
-from agents.state import CFDState, SolverType
-from agents.solver_selector import solver_selector_agent
+from foamai.agents.state import CFDState, SolverType
+from foamai.agents.solver_selector import solver_selector_agent
 from loguru import logger
 
 def test_interfoam_selection():

@@ -9,9 +9,9 @@ from pathlib import Path
 # Add src to path
 sys.path.append('src')
 
-from agents.orchestrator import create_initial_state, create_cfd_workflow
-from agents.user_approval import user_approval_agent
-from agents.state import CFDState, CFDStep
+from foamai.agents.orchestrator import create_initial_state, create_cfd_workflow
+from foamai.agents.user_approval import user_approval_agent
+from foamai.agents.state import CFDState, CFDStep
 
 def test_user_approval_integration():
     """Test the user approval integration in the workflow."""

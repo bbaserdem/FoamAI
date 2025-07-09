@@ -1,0 +1,18 @@
+# src/client/pyproject.toml
+[project]
+name = "foamai-core"
+version = "0.1.0"
+description = "Agent for FoamAI"
+requires-python = ">=3.13"
+dependencies = [
+    # Deps for llm agent
+    "langchain>=0.2.0",
+    "langchain-openai>=0.1.0",
+    "loguru>=0.7.0",
+    "langgraph>=0.2.0",
+    "pydantic>=2.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

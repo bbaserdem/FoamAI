@@ -4,8 +4,8 @@ import sys
 from pathlib import Path
 sys.path.append('src')
 
-from agents.visualization import visualization_agent
-from agents.state import CFDState, GeometryType, FlowType
+from foamai.agents.visualization import visualization_agent
+from foamai.agents.state import CFDState, GeometryType, FlowType
 
 # Create a test state with a successful simulation
 test_state = {

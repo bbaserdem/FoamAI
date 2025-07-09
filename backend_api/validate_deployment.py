@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Simple deployment validation script for FoamAI backend API.
-Tests basic functionality after deployment to EC2.
+Tests basic functionality after deployment to EC2, including new pvserver management endpoints.
 """
 
 import requests
@@ -17,6 +17,7 @@ EC2_HOST = "3.139.77.134"  # Replace with your EC2 host
 API_BASE_URL = f"http://{EC2_HOST}:8000/api"
 PARAVIEW_HOST = EC2_HOST
 PARAVIEW_PORT = 11111
+CAVITY_CASE_PATH = "/home/ubuntu/cavity_tutorial"
 
 def test_api_health():
     """Test if API server is responding"""
@@ -47,6 +48,130 @@ def test_api_health():
         
     except Exception as e:
         print(f"❌ API health check failed: {e}")
+        return False
+
+def test_start_pvserver():
+    """Test the new start_pvserver endpoint"""
+    print(f"\n🚀 Testing start_pvserver endpoint for {CAVITY_CASE_PATH}...")
+    
+    pvserver_data = {
+        "case_path": CAVITY_CASE_PATH
+        # port is optional - let API auto-find available port
+    }
+    
+    try:
+        response = requests.post(
+            f"{API_BASE_URL}/start_pvserver",
+            json=pvserver_data,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            print(f"✅ PVServer started successfully")
+            print(f"📋 Status: {data.get('status')}")
+            print(f"🔗 Port: {data.get('port')}")
+            print(f"📡 Connection: {data.get('connection_string')}")
+            print(f"🏠 Case Path: {data.get('case_path')}")
+            print(f"🔄 Reused: {data.get('reused', False)}")
+            
+            if data.get('reused'):
+                print("ℹ️  PVServer was reused from existing instance")
+            else:
+                print("ℹ️  New PVServer instance created")
+            
+            return {
+                "success": True,
+                "port": data.get('port'),
+                "connection_string": data.get('connection_string')
+            }
+        else:
+            print(f"❌ Start PVServer failed: {response.status_code}")
+            print(f"Response: {response.text}")
+            return {"success": False}
+            
+    except Exception as e:
+        print(f"❌ Start PVServer failed: {e}")
+        return {"success": False}
+
+def test_list_pvservers():
+    """Test the new list_pvservers endpoint"""
+    print("\n📋 Testing list_pvservers endpoint...")
+    
+    try:
+        response = requests.get(f"{API_BASE_URL}/pvservers", timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            print(f"✅ PVServers listed successfully")
+            print(f"📊 Total Count: {data.get('total_count', 0)}")
+            print(f"🔢 Port Range: {data.get('port_range', 'Unknown')}")
+            print(f"🔓 Available Ports: {data.get('available_ports', 0)}")
+            
+            pvservers = data.get('pvservers', [])
+            if pvservers:
+                print("🎨 Active PVServers:")
+                for i, pvserver in enumerate(pvservers, 1):
+                    print(f"  {i}. Port {pvserver.get('port')} - Case: {pvserver.get('case_path', 'Unknown')}")
+                    print(f"     PID: {pvserver.get('pid')}, Connection: {pvserver.get('connection_string')}")
+            else:
+                print("ℹ️  No active PVServers found")
+            
+            return {"success": True, "pvservers": pvservers}
+        else:
+            print(f"❌ List PVServers failed: {response.status_code}")
+            print(f"Response: {response.text}")
+            return {"success": False}
+            
+    except Exception as e:
+        print(f"❌ List PVServers failed: {e}")
+        return {"success": False}
+
+def test_stop_pvserver(port):
+    """Test the new stop_pvserver endpoint"""
+    print(f"\n🛑 Testing stop_pvserver endpoint for port {port}...")
+    
+    try:
+        response = requests.delete(f"{API_BASE_URL}/pvservers/{port}", timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            print(f"✅ PVServer stopped successfully")
+            print(f"📋 Status: {data.get('status')}")
+            print(f"🔗 Port: {data.get('port')}")
+            print(f"💬 Message: {data.get('message')}")
+            return True
+        else:
+            print(f"❌ Stop PVServer failed: {response.status_code}")
+            print(f"Response: {response.text}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Stop PVServer failed: {e}")
+        return False
+
+def test_paraview_connection(port=None):
+    """Test ParaView server connection"""
+    test_port = port or PARAVIEW_PORT
+    print(f"\n🎨 Testing ParaView server connection to {PARAVIEW_HOST}:{test_port}...")
+    
+    try:
+        # Simple socket connection test
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(10)
+        result = sock.connect_ex((PARAVIEW_HOST, test_port))
+        sock.close()
+        
+        if result == 0:
+            print("✅ ParaView server is accepting connections")
+            return True
+        else:
+            print(f"❌ ParaView server connection failed (port {test_port} not open)")
+            return False
+            
+    except Exception as e:
+        print(f"❌ ParaView server connection test failed: {e}")
         return False
 
 def test_submit_scenario():
@@ -168,7 +293,7 @@ def test_openfoam_command():
     
     command_data = {
         "command": "blockMesh",
-        "case_path": "/home/ubuntu/cavity_tutorial",
+        "case_path": CAVITY_CASE_PATH,
         "description": "Test mesh generation via API"
     }
     
@@ -240,30 +365,97 @@ def test_cleanup_endpoint():
         print(f"❌ Cleanup endpoint failed: {e}")
         return False
 
-def test_paraview_connection():
-    """Test ParaView server connection"""
-    print(f"\n🎨 Testing ParaView server connection to {PARAVIEW_HOST}:{PARAVIEW_PORT}...")
+def test_pvserver_management_workflow():
+    """Test the new pvserver management workflow"""
+    print("\n🔄 Testing PVServer Management Workflow...")
+    
+    # Step 1: List current pvservers
+    print("\n--- Step 1: List current pvservers ---")
+    list_result = test_list_pvservers()
+    if not list_result["success"]:
+        return False
+    
+    # Step 2: Start a pvserver for the cavity case
+    print("\n--- Step 2: Start pvserver for cavity case ---")
+    start_result = test_start_pvserver()
+    if not start_result["success"]:
+        return False
+    
+    pvserver_port = start_result["port"]
+    connection_string = start_result["connection_string"]
+    
+    # Step 3: List pvservers again to confirm it's running
+    print("\n--- Step 3: Confirm pvserver is running ---")
+    list_result = test_list_pvservers()
+    if not list_result["success"]:
+        return False
+    
+    # Step 4: Test ParaView connection
+    print("\n--- Step 4: Test ParaView connection ---")
+    connection_success = test_paraview_connection(pvserver_port)
+    
+    # Step 5: Run blockMesh command (this should reuse the existing pvserver)
+    print("\n--- Step 5: Run blockMesh command ---")
+    mesh_task_id = test_openfoam_command()
+    if not mesh_task_id:
+        return False
+    
+    # Step 6: Wait for blockMesh completion
+    print("\n--- Step 6: Wait for blockMesh completion ---")
+    if not test_task_status(mesh_task_id):
+        return False
+    
+    # Step 7: Run foamRun command (this should also reuse the existing pvserver)
+    print("\n--- Step 7: Run foamRun command ---")
+    solver_data = {
+        "command": "foamRun",
+        "case_path": CAVITY_CASE_PATH,
+        "description": "Test solver run via API"
+    }
     
     try:
-        # Simple socket connection test
-        import socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(10)
-        result = sock.connect_ex((PARAVIEW_HOST, PARAVIEW_PORT))
-        sock.close()
+        response = requests.post(
+            f"{API_BASE_URL}/run_openfoam_command",
+            json=solver_data,
+            timeout=30
+        )
         
-        if result == 0:
-            print("✅ ParaView server is accepting connections")
-            return True
+        if response.status_code == 200:
+            data = response.json()
+            solver_task_id = data.get("task_id")
+            print(f"✅ foamRun command submitted successfully. Task ID: {solver_task_id}")
+            
+            # Wait for solver completion
+            print("\n--- Step 8: Wait for foamRun completion ---")
+            if not test_task_status(solver_task_id):
+                return False
         else:
-            print(f"ℹ️  ParaView server connection failed (port {PARAVIEW_PORT} not open)")
-            print("   This is expected if no pvserver is currently running")
-            return True  # Don't fail the test for this
+            print(f"❌ foamRun command failed: {response.status_code}")
+            return False
             
     except Exception as e:
-        print(f"ℹ️  ParaView server connection test failed: {e}")
-        print("   This is expected if no pvserver is currently running")
-        return True  # Don't fail the test for this
+        print(f"❌ foamRun command failed: {e}")
+        return False
+    
+    # Step 9: Final pvserver list to show it's still running
+    print("\n--- Step 9: Final pvserver status ---")
+    list_result = test_list_pvservers()
+    if not list_result["success"]:
+        return False
+    
+    # Step 10: Test stopping the pvserver
+    print("\n--- Step 10: Stop pvserver ---")
+    if not test_stop_pvserver(pvserver_port):
+        return False
+    
+    # Step 11: Confirm pvserver is stopped
+    print("\n--- Step 11: Confirm pvserver is stopped ---")
+    list_result = test_list_pvservers()
+    if not list_result["success"]:
+        return False
+    
+    print("✅ PVServer management workflow test completed successfully!")
+    return True
 
 def test_full_workflow():
     """Test the complete workflow end-to-end"""
@@ -306,14 +498,14 @@ def main():
     
     print(f"🎯 Testing deployment at: {EC2_HOST}")
     print(f"📡 API Base URL: {API_BASE_URL}")
-    print(f"🎨 ParaView Host: {PARAVIEW_HOST}:{PARAVIEW_PORT}")
+    print(f"🎨 ParaView Host: {PARAVIEW_HOST}")
+    print(f"🏠 Cavity Case Path: {CAVITY_CASE_PATH}")
     
     # Run tests
     tests = [
         ("API Health", test_api_health),
-        ("OpenFOAM Command", test_openfoam_command),
+        ("PVServer Management Workflow", test_pvserver_management_workflow),
         ("Cleanup Endpoint", test_cleanup_endpoint),
-        ("ParaView Connection", test_paraview_connection),
         ("Full Workflow", test_full_workflow),
     ]
     

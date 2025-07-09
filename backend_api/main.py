@@ -1,12 +1,15 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List, Dict, Tuple
 import uuid
 from datetime import datetime
 import json
 
 from celery_worker import celery_app, generate_mesh_task, run_solver_task, run_openfoam_command_task, cleanup_pvservers_task
-from pvserver_manager import get_pvserver_info, cleanup_inactive_pvservers
+from pvserver_service import (
+    get_pvserver_info_with_validation, cleanup_inactive_pvservers,
+    start_pvserver_for_case, list_active_pvservers, stop_pvserver_by_port
+)
 from database import (
     create_task, get_task, update_task_rejection, 
     DatabaseError, TaskNotFoundError
@@ -29,6 +32,10 @@ class OpenFOAMCommandRequest(BaseModel):
     case_path: str = Field(..., description="Path to the OpenFOAM case directory")
     description: Optional[str] = Field(None, description="Description of what the command does")
 
+class StartPVServerRequest(BaseModel):
+    case_path: str = Field(..., description="Path to the OpenFOAM case directory")
+    port: Optional[int] = Field(None, description="Specific port to use (optional, auto-finds if not specified)")
+
 # Response models
 class PVServerInfo(BaseModel):
     status: str = Field(..., description="PVServer status (running, stopped, error)")
@@ -36,6 +43,27 @@ class PVServerInfo(BaseModel):
     pid: Optional[int] = Field(None, description="Process ID if running")
     connection_string: Optional[str] = Field(None, description="Connection string for ParaView")
     reused: Optional[bool] = Field(None, description="Whether existing server was reused")
+    error_message: Optional[str] = Field(None, description="Error message if failed")
+
+class PVServerStartResponse(BaseModel):
+    status: str = Field(..., description="Operation status")
+    port: Optional[int] = Field(None, description="Port number if successful")
+    pid: Optional[int] = Field(None, description="Process ID if successful")
+    connection_string: Optional[str] = Field(None, description="Connection string for ParaView")
+    case_path: str = Field(..., description="Case path used")
+    message: str = Field(..., description="Status message")
+    error_message: Optional[str] = Field(None, description="Error message if failed")
+
+class PVServerListResponse(BaseModel):
+    pvservers: List[Dict] = Field(..., description="List of active pvservers")
+    total_count: int = Field(..., description="Total number of active pvservers")
+    port_range: Tuple[int, int] = Field(..., description="Available port range")
+    available_ports: int = Field(..., description="Number of available ports")
+
+class PVServerStopResponse(BaseModel):
+    status: str = Field(..., description="Operation status")
+    port: int = Field(..., description="Port that was stopped")
+    message: str = Field(..., description="Status message")
     error_message: Optional[str] = Field(None, description="Error message if failed")
 
 class TaskStatusResponse(BaseModel):
@@ -246,19 +274,81 @@ async def cleanup_pvservers():
 async def get_pvserver_info_endpoint(task_id: str):
     """Get detailed pvserver information for a task."""
     try:
-        task_data = get_task(task_id)
+        # Use the new service function with validation
+        pvserver_data = get_pvserver_info_with_validation(task_id)
         
-        if not task_data:
-            raise HTTPException(status_code=404, detail="Task not found")
+        if not pvserver_data:
+            raise HTTPException(status_code=404, detail="Task not found or no pvserver information available")
         
-        pvserver_info = format_pvserver_info(task_data)
-        
-        if not pvserver_info:
-            raise HTTPException(status_code=404, detail="No pvserver information available for this task")
+        # Convert to PVServerInfo format
+        pvserver_info = PVServerInfo(
+            status=pvserver_data['pvserver_status'],
+            port=pvserver_data.get('pvserver_port'),
+            pid=pvserver_data.get('pvserver_pid'),
+            connection_string=pvserver_data.get('connection_string'),
+            error_message=pvserver_data.get('pvserver_error_message')
+        )
         
         return pvserver_info
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@app.post("/api/start_pvserver", response_model=PVServerStartResponse)
+async def start_pvserver_endpoint(request: StartPVServerRequest):
+    """Start a pvserver for a specific case directory."""
+    try:
+        result = start_pvserver_for_case(request.case_path, request.port)
+        
+        if result["status"] == "error":
+            raise HTTPException(status_code=400, detail=result["message"])
+        
+        return PVServerStartResponse(
+            status=result["status"],
+            port=result.get("port"),
+            pid=result.get("pid"),
+            connection_string=result.get("connection_string"),
+            case_path=result["case_path"],
+            message=result["message"],
+            error_message=result.get("error_message")
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start pvserver: {str(e)}")
+
+@app.get("/api/pvservers", response_model=PVServerListResponse)
+async def list_pvservers_endpoint():
+    """List all active pvservers."""
+    try:
+        result = list_active_pvservers()
+        
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+        
+        return PVServerListResponse(
+            pvservers=result["pvservers"],
+            total_count=result["total_count"],
+            port_range=result["port_range"],
+            available_ports=result["available_ports"]
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list pvservers: {str(e)}")
+
+@app.delete("/api/pvservers/{port}", response_model=PVServerStopResponse)
+async def stop_pvserver_endpoint(port: int):
+    """Stop a pvserver running on a specific port."""
+    try:
+        result = stop_pvserver_by_port(port)
+        
+        if result["status"] == "error":
+            raise HTTPException(status_code=400, detail=result["message"])
+        
+        return PVServerStopResponse(
+            status=result["status"],
+            port=result["port"],
+            message=result["message"],
+            error_message=result.get("error_message")
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to stop pvserver: {str(e)}")
 
 # Error handlers
 @app.exception_handler(404)

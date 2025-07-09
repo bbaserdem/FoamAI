@@ -51,7 +51,7 @@ def test_port_management():
     print("🧪 Testing port management...")
     
     try:
-        from pvserver_manager import port_is_available, find_available_port, PVSERVER_PORT_RANGE
+        from port_utils import port_is_available, find_available_port, PVSERVER_PORT_RANGE
         
         # Test port availability check
         available_port = find_available_port()
@@ -71,7 +71,7 @@ def test_port_management():
         print(f"  ✅ Port range: {start_port}-{end_port}")
         
     except ImportError as e:
-        print(f"  ❌ Error importing pvserver_manager: {e}")
+        print(f"  ❌ Error importing port_utils: {e}")
     
     print("✅ Port management test completed\n")
 
@@ -80,13 +80,13 @@ def test_pvserver_functions():
     print("🧪 Testing pvserver management functions...")
     
     try:
-        from pvserver_manager import (
-            count_running_pvservers, 
-            get_running_pvserver_for_case,
-            update_pvserver_status,
-            get_pvserver_info,
-            find_available_port
+        from pvserver_service import (
+            count_running_pvservers_with_validation as count_running_pvservers, 
+            get_running_pvserver_for_case_with_validation as get_running_pvserver_for_case,
+            get_pvserver_info_with_validation as get_pvserver_info
         )
+        from database import update_pvserver_status
+        from port_utils import find_available_port
         
         # Test counting running pvservers
         count = count_running_pvservers()
@@ -120,7 +120,7 @@ def test_pvserver_functions():
             print(f"  ✅ Cleaned up test pvserver status")
         
     except ImportError as e:
-        print(f"  ❌ Error importing pvserver_manager: {e}")
+        print(f"  ❌ Error importing pvserver service modules: {e}")
     except Exception as e:
         print(f"  ❌ Error in pvserver functions: {e}")
     

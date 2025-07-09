@@ -5,10 +5,12 @@ from datetime import datetime
 from celery import Celery
 from celery.signals import worker_ready
 
-# Import our pvserver management functions
-from pvserver_manager import (
+# Import our pvserver service functions
+from pvserver_service import (
     ensure_pvserver_for_task, 
-    cleanup_inactive_pvservers,
+    cleanup_inactive_pvservers
+)
+from process_utils import (
     setup_signal_handlers,
     get_active_pvserver_summary
 )

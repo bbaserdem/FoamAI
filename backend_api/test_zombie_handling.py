@@ -12,13 +12,15 @@ from datetime import datetime
 from pathlib import Path
 
 # Import our new robust pvserver management
-from pvserver_manager import (
+from process_utils import (
     setup_signal_handlers, 
-    ensure_pvserver_for_task, 
     get_active_pvserver_summary,
+    validate_pvserver_pid
+)
+from pvserver_service import (
+    ensure_pvserver_for_task, 
     cleanup_stale_database_entries,
-    validate_pvserver_pid,
-    get_pvserver_info
+    get_pvserver_info_with_validation as get_pvserver_info
 )
 
 DATABASE_PATH = 'tasks.db'

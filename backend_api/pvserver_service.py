@@ -6,9 +6,8 @@ from config import MAX_CONCURRENT_PVSERVERS, CLEANUP_THRESHOLD_HOURS
 
 # Import our utility modules
 from process_utils import (
-    validate_pvserver_pid, start_pvserver, stop_pvserver, 
-    get_active_pvserver_summary, setup_signal_handlers,
-    PVServerError
+    PVServerError,
+    process_manager
 )
 from port_utils import (
     port_is_available, find_available_port, PortInUseError,
@@ -131,7 +130,7 @@ def ensure_pvserver_for_task(task_id: str, case_path: str) -> Dict:
             raise PortInUseError(f"Port {port} is not available")
         
         # 5. Start new pvserver with process group management
-        pid = start_pvserver(case_path, port, task_id)
+        pid = process_manager.start_pvserver(case_path, port, task_id)
         update_pvserver_status(task_id, 'running', port, pid)
         
         return {
@@ -166,7 +165,7 @@ def cleanup_inactive_pvservers() -> List[str]:
             # Use validator to check if process is running
             if validator.is_running(server):
                 # Process is running, try to stop it
-                if stop_pvserver(pid):
+                if process_manager.stop_pvserver(pid):
                     update_pvserver_status(task_id, 'stopped')
                     cleaned_up.append(f"task_{task_id}_port_{port}")
                     print(f"✅ Stopped inactive pvserver: Task {task_id}, PID {pid}, Port {port}")
@@ -204,7 +203,7 @@ def get_service_status() -> Dict:
     """Get comprehensive service status information"""
     try:
         # Get process tracking info
-        process_summary = get_active_pvserver_summary()
+        process_summary = process_manager.get_active_pvserver_summary()
         
         # Get port availability
         port_range = get_port_range()
@@ -261,7 +260,7 @@ def force_cleanup_all_pvservers() -> Dict:
                 # Use validator to check if process is running
                 if validator.is_running(server):
                     # Process is running, try to stop it
-                    if stop_pvserver(pid):
+                    if process_manager.stop_pvserver(pid):
                         stopped_count += 1
                     else:
                         errors.append(f"Failed to stop PID {pid}")
@@ -351,7 +350,7 @@ def start_pvserver_for_case(case_path: str, port: int = None) -> Dict:
         update_task_status(temp_task_id, "pending", f"Starting pvserver on port {port}", case_path=case_path)
         
         # 6. Start the pvserver
-        pid = start_pvserver(case_path, port, temp_task_id)
+        pid = process_manager.start_pvserver(case_path, port, temp_task_id)
         update_pvserver_status(temp_task_id, 'running', port, pid)
         
         return {
@@ -466,7 +465,7 @@ def stop_pvserver_by_port(port: int) -> Dict:
             }
         
         # Stop the process
-        if stop_pvserver(pid):
+        if process_manager.stop_pvserver(pid):
             update_pvserver_status(task_id, 'stopped')
             return {
                 "status": "success",
@@ -487,9 +486,4 @@ def stop_pvserver_by_port(port: int) -> Dict:
             "port": port,
             "message": f"Unexpected error stopping pvserver: {str(e)}",
             "error_message": f"Unexpected error stopping pvserver: {str(e)}"
-        }
-
-# Legacy compatibility - these functions maintain the same interface as the original pvserver_manager
-def process_is_running(pid: int) -> bool:
-    """Check if a process with given PID is still running"""
-    return validate_pvserver_pid(pid) 
+        } 

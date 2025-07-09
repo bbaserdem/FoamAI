@@ -2,7 +2,7 @@
 name = "foamai-client"
 version = "0.1.0"
 description = "Client testing for FoamAI"
-readme = "README.md"
+#readme = "README.md"
 authors = [
     { name = "bbaserdem", email = "baserdemb@gmail.com" },
     { name = "ericDrury", email = "baserdemb@gmail.com" },
@@ -52,7 +52,7 @@ dev = [
 foamai-client = "foamai_client:cli"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "editables"]
 build-backend = "hatchling.build"
 
 [tool.black]
@@ -68,3 +68,6 @@ python_version = "3.13"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["foamai_client"]

@@ -65,7 +65,10 @@ in {
               fileset = lib.fileset.unions [
                 (old.src + "/pyproject.toml")
                 (old.src + "/README.md")
-                (old.src + "/src/${projectName}/__init__.py")
+                (old.src + "/src/${projectName}-client/${projectName}_client/__init__.py")
+                (old.src + "/src/${projectName}-core/${projectName}_core/__init__.py")
+                #(old.src + "/src/${projectName}-desktop/${projectName}_desktop/__init__.py")
+                #(old.src + "/src/${projectName}-server/${projectName}_server/__init__.py")
               ];
             };
 

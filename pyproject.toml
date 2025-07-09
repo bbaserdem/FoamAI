@@ -40,7 +40,3 @@ test = [
     "pytest-cov>=6.2.1",
     "pytest-mock>=3.14.1",
 ]
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"

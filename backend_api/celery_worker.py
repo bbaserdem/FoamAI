@@ -145,18 +145,19 @@ def generate_mesh_task(task_id):
     """Task for generating the mesh (pvserver management is now explicit)."""
     return ['blockMesh']
 
-@celery_app.task
-@foam_task("Running simulation")
+@celery_app.task(name='celery_worker.run_solver_task')
+@foam_task("Running simulation", final_status='completed')
 def run_solver_task(task_id, case_path):
-    """Task for running the OpenFOAM solver (pvserver management is now explicit)."""
+    """
+    Runs the OpenFOAM solver for a given case.
+    """
     return ['foamRun']
 
-@celery_app.task
-@foam_task("Running OpenFOAM command")
-def run_openfoam_command_task(task_id, case_path, command, description="Running OpenFOAM command"):
+@celery_app.task(name='celery_worker.run_openfoam_command_task')
+@foam_task("Running OpenFOAM command", final_status='completed')
+def run_openfoam_command_task(task_id, case_path, command, description=""):
     """
-    Generic task for running any OpenFOAM command with automatic .foam file creation.
-    PVServer management is now explicit via API endpoints.
+    Runs an arbitrary OpenFOAM command.
     """
     return {
         'command': command,

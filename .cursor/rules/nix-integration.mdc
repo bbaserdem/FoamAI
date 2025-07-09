@@ -1,0 +1,206 @@
+---
+description: Best practices for setting up local python environment in NixOS, integrated with uv package manager.
+globs: flake.nix, nix/*
+alwaysApply: false
+---
+# NixOS Development Workflow
+
+**CRITICAL: This project uses NixOS with uv2nix integration. Follow these commands exactly.**
+
+## **Essential Commands (ALWAYS USE THESE)**
+
+### **📦 Adding Packages** 
+```bash
+# ✅ ALWAYS use uv to add Python dependencies
+uv add <package-name>          # Add runtime dependency
+uv add --dev <package-name>    # Add development dependency
+
+# Examples:
+uv add numpy pandas            # Production dependencies
+uv add --dev pytest mypy       # Development dependencies
+
+# ❌ NEVER modify pyproject.toml manually for dependencies
+# ❌ NEVER use pip install
+```
+
+### **🔄 Environment Management**
+```bash
+# ✅ Enter development shell (automatically via direnv)
+# Just cd into the project - direnv handles the rest
+
+# ✅ Rebuild environment after adding packages
+nix develop
+
+# ✅ Check environment status
+nix flake show
+```
+
+---
+
+## **Integration with Taskmaster Testing Rule**
+
+When following the [test-driven-completion.mdc](mdc:.cursor/rules/test-driven-completion.mdc) rule:
+
+### **Step 4: Run Tests**
+```bash
+# ✅ DO: Use nix flake check instead of pytest
+nix flake check  # This runs all tests in the proper NixOS environment
+```
+
+### **Before Marking Tasks as Done**
+```bash
+# ✅ Required verification:
+1. nix flake check              # Run all tests
+2. Check test output            # Verify all tests pass
+3. task-master set-status --id=<id> --status=done
+```
+
+---
+
+## **Architecture Overview**
+
+- **uv2nix Framework**: Integrates Nix with uv for Python development
+- **Nix handles**: System dependencies, development shell, test runner
+- **uv handles**: Python package management, dependency resolution
+- **direnv**: Automatically loads development shell when entering project
+
+## **Development Workflow Integration**
+
+### **Adding New Dependencies to Tasks**
+When implementing Taskmaster tasks that require new packages:
+
+```bash
+# 1. Add the package via uv
+uv add requests httpx
+
+# 2. Update the nix environment
+nix develop
+
+# 3. Implement your code
+# ... write implementation ...
+
+# 4. Write tests (following test-driven-completion.mdc)
+# ... write tests ...
+
+# 5. Run tests via nix
+nix flake check
+
+# 6. Mark task complete
+task-master set-status --id=<id> --status=done
+```
+
+### **Working with AI Agents**
+When AI agents need packages for content generation, resource curation, etc.:
+
+```bash
+# ✅ DO: Add AI/ML packages properly
+uv add openai anthropic tiktoken
+uv add --dev pytest-mock responses  # For testing AI agents
+
+# ✅ Run tests to verify AI integration
+nix flake check
+```
+
+---
+
+## **File Structure Guidelines**
+
+### **Nix Files Organization**
+```
+project/
+├── flake.nix              # Main flake configuration
+├── flake.lock             # Locked dependencies 
+├── nix/                   # Additional nix files
+│   ├── example-config.nix
+│   └── hm.nix
+├── pyproject.toml         # Python dependencies (managed by uv)
+└── uv.lock               # Python lock file
+```
+
+### **Dependencies Management**
+- **Python Dependencies**: Always in `pyproject.toml` via `uv add`
+- **System Dependencies**: Only in `flake.nix` if absolutely necessary
+- **Never modify**: `flake.lock`, `uv.lock` manually
+
+---
+
+## **flake.nix Guidelines**
+
+### **✅ DO:**
+```nix
+{
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";  # Use unstable
+  
+  # Only add non-Python system dependencies
+  buildInputs = with pkgs; [
+    git
+    curl
+    # NOT: python packages (use uv for those)
+  ];
+}
+```
+
+### **❌ DON'T:**
+```nix
+# Don't add Python packages to nix
+python3Packages.requests  # Wrong! Use: uv add requests
+
+# Avoid noisy shell hooks
+shellHook = "echo 'Welcome!'";  # Too noisy for dev workflow
+```
+
+---
+
+## **Troubleshooting**
+
+### **Tests Not Running**
+```bash
+# If nix flake check fails:
+1. nix develop          # Refresh environment
+2. nix flake check      # Try again
+3. Check flake.nix syntax if still failing
+```
+
+### **Package Issues**
+```bash
+# If uv add fails:
+1. uv lock              # Regenerate lock file
+2. nix develop          # Refresh nix environment
+3. uv add <package>     # Try adding again
+```
+
+### **Environment Issues**
+```bash
+# If direnv isn't working:
+1. direnv allow         # Allow direnv for this project
+2. cd .. && cd .        # Re-enter directory
+```
+
+---
+
+## **Compatibility Notes**
+
+### **✅ NixOS Compatible Tools**
+- **Package Management**: uv, pip-tools
+- **Testing**: pytest, nox, tox
+- **Code Quality**: ruff, mypy, black
+- **AI/ML**: openai, anthropic, langchain
+- **Web**: fastapi, flask, django
+
+### **⚠️ Potentially Problematic Tools**
+- Global pip installs (use uv instead)
+- Docker in docker scenarios
+- Some binary wheels (nix handles this)
+
+---
+
+## **Integration with Other Rules**
+
+This rule works with:
+- [test-driven-completion.mdc](mdc:.cursor/rules/test-driven-completion.mdc): Use `nix flake check` for test execution
+- [project-rules.mdc](mdc:.cursor/rules/project-rules.mdc): Follow file structure guidelines
+- [terminal-path-verification.mdc](mdc:.cursor/rules/terminal-path-verification.mdc): Verify commands work in NixOS environment
+
+---
+
+**Remember: The key to NixOS development is consistency. Always use `nix flake check` for tests and `uv add` for packages. No exceptions.**

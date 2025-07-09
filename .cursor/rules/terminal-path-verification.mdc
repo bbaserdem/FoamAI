@@ -1,0 +1,118 @@
+---
+description: Best practices for verifying paths and locations before executing terminal commands
+globs: **/*.{py,pyc}, **/*.sh
+---
+
+# Terminal Path Verification
+
+// Description: Best practices for verifying paths and locations before executing terminal commands
+// Recommended Globs: **/*.{py,pyc}, **/*.sh
+
+## Overview
+Always verify current directory and path structure before executing path-related commands to prevent errors and unintended operations.
+
+## Core Rules
+1. Before any `cd` command:
+   - Use `pwd` to verify current location
+   - Use `ls` to verify target directory exists
+2. Before file operations:
+   - Use `ls` to verify file existence
+   - Use `ls -la` for detailed file information when needed
+
+## Examples
+
+### ✅ Good Practice
+```bash
+# Before changing directory
+pwd  # Check current location
+ls   # Verify directory structure
+cd target_directory
+
+# Before file operations
+ls -la file_to_modify.txt  # Verify file exists and check permissions
+vim file_to_modify.txt
+```
+
+### ❌ Bad Practice
+```bash
+# Directly changing directory without verification
+cd some_directory  # Might not exist!
+
+# File operations without verification
+rm file.txt  # Dangerous without verification!
+```
+
+## Implementation in Cursor
+```typescript
+async function executeTerminalCommand(command: string) {
+  // Always verify location before path-related commands
+  if (command.startsWith('cd ')) {
+    await verifyPath(command.split(' ')[1]);
+  }
+
+  // Always verify file existence before file operations
+  if (isFileOperation(command)) {
+    await verifyFileExistence(command);
+  }
+}
+
+async function verifyPath(targetPath: string) {
+  // Check current location
+  console.log('Current location:');
+  await runCommand('pwd');
+
+  // List directory contents
+  console.log('\nDirectory contents:');
+  await runCommand('ls');
+
+  // Verify target exists
+  if (!(await pathExists(targetPath))) {
+    throw new Error(`Target path does not exist: ${targetPath}`);
+  }
+}
+```
+
+## Best Practices
+- Always use `pwd` before changing directories
+- Use `ls` to verify directory contents
+- Use `ls -la` when file permissions are important
+- Implement path verification in automated scripts
+- Add error handling for non-existent paths
+
+## Common Patterns
+1. Directory Navigation:
+   ```bash
+   pwd  # Verify current location
+   ls   # Check directory structure
+   cd ./project/src
+   ```
+
+2. File Operations:
+   ```bash
+   ls -la target_file.txt  # Verify file and permissions
+   chmod +x target_file.txt
+   ```
+
+3. Project Root Verification:
+   ```bash
+   pwd  # Ensure we're in project root
+   ls uv.lock  # Verify project file exists
+   uv add numpy # Add package to dependencies
+   ```
+
+## Error Prevention
+- Always verify paths before destructive operations
+- Use absolute paths when location is uncertain
+- Implement safeguards in automated scripts
+- Add validation for user-provided paths
+
+## Testing
+- Test path verification in different environments
+- Verify behavior with non-existent paths
+- Test with various file permissions
+- Validate error handling
+
+## Resources
+- [Bash Documentation](https://www.gnu.org/software/bash/manual/)
+- [Linux File System Hierarchy](https://refspecs.linuxfoundation.org/FHS_3.0/fhs/index.html)
+- [File System Navigation Best Practices](https://tldp.org/LDP/abs/html/)

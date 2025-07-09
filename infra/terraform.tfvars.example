@@ -1,0 +1,50 @@
+# Example Terraform Variables Configuration for FoamAI
+# Copy this file to terraform.tfvars and update with your actual values
+
+# AWS Configuration
+aws_region = "us-east-1"
+
+# EC2 Instance Configuration
+instance_type = "c7i.2xlarge"  # Compute-optimized for CFD workloads
+
+# SSH Key Configuration (REQUIRED)
+# Generate your SSH key pair with: ssh-keygen -t ed25519 -f ~/.ssh/foamai-key
+key_name = "foamai-key"
+public_key_content = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... your-email@example.com"
+
+# Storage Configuration
+root_volume_size = 50   # GB - OS and applications
+data_volume_size = 100  # GB - Simulation data storage
+
+# Project Settings
+project_name = "FoamAI"
+environment  = "mvp"
+
+# Security Configuration
+allowed_ssh_cidrs = [
+  "0.0.0.0/0"  # WARNING: This allows SSH from anywhere - restrict to your IP in production
+  # Example: ["203.0.113.0/24", "198.51.100.0/24"]  # Replace with your actual IP ranges
+]
+
+# Application Configuration
+docker_hub_username = "foamai"  # Your Docker Hub username/organization
+github_repo_url = "https://github.com/yourusername/FoamAI.git"  # Update with your actual repo URL
+
+# Optional: Monitoring and Performance
+enable_detailed_monitoring = false  # Set to true for production monitoring
+backup_retention_days = 7          # Days to keep EBS snapshots
+
+# Example configurations for different environments:
+
+# Development Environment (smaller, cheaper)
+# instance_type = "c6i.large"
+# root_volume_size = 30
+# data_volume_size = 50
+# enable_detailed_monitoring = false
+
+# Production Environment (larger, more robust)
+# instance_type = "c7i.4xlarge"
+# root_volume_size = 100
+# data_volume_size = 500
+# enable_detailed_monitoring = true
+# allowed_ssh_cidrs = ["your.office.ip.range/24"] 

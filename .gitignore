@@ -1,15 +1,60 @@
-# Environment files
-.env
-.env.local
-.env.*.local
+# =============================================================================
+# FoamAI Project .gitignore
+# Comprehensive ignore patterns for Python/Docker/Terraform/AWS/NixOS development
+# =============================================================================
 
-# Python
+# =============================================================================
+# SECRETS & CREDENTIALS (CRITICAL - NEVER COMMIT)
+# =============================================================================
+.env*
+!.env.example
+!.env.template
+mcp.json
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets.json
+credentials.json
+service-account*.json
+.aws/credentials
+.aws/config
+terraform.tfvars
+!terraform.tfvars.example
+
+# SSH Keys (additional protection)
+id_rsa*
+id_ed25519*
+foamai-key*
+*_rsa*
+*_key.pub
+*.backup
+*.bak
+
+# =============================================================================
+# TERRAFORM
+# =============================================================================
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfplan.*
+.terraformrc
+terraform.rc
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# =============================================================================
+# PYTHON & UV
+# =============================================================================
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-
-# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -23,13 +68,22 @@ parts/
 sdist/
 var/
 wheels/
+pip-wheel-metadata/
+share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
 # Virtual environments
-.venv/
-# PyInstaller
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.python-version
 *.manifest
 *.spec
 
@@ -37,17 +91,19 @@ wheels/
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
+# Testing
+.pytest_cache/
 .coverage
 .coverage.*
+htmlcov/
+.tox/
+.nox/
 .cache
 nosetests.xml
 coverage.xml
 *.cover
+*.py,cover
 .hypothesis/
-.pytest_cache/
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -56,71 +112,190 @@ coverage.xml
 profile_default/
 ipython_config.py
 
-# pyenv
-.python-version
+# =============================================================================
+# DOCKER & CONTAINERS
+# =============================================================================
+.dockerignore
+docker-compose.override.yml
+docker-compose.local.yml
+docker-compose.*.yml
+!docker-compose.yml
+Dockerfile.local
+Dockerfile.dev
+.docker/
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+# =============================================================================
+# NIX & DIRENV
+# =============================================================================
+!.envrc
+.direnv/
+result
+result-*
+manual_test_output/
+.nix-gc-roots
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
+# =============================================================================
+# AWS & CLOUD
+# =============================================================================
+.aws/
+*.pem
+.terraform.d/
+.pulumi/
 
-# FoamAI specific
-work/
-results/
-*.log
-*.foam
-*.case
-
-# OpenFOAM
-constant/polyMesh/
-processor*/
-*.pid
-*.log
-*.out
-*.err
-
-# ParaView
-*.pvd
-*.vtp
-*.vtu
-*.vtk
-
-# OS
-.DS_Store
-Thumbs.db 
-# OS
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Project specific
-*.db
-*.sqlite3
-*.foam
+# =============================================================================
+# LOGS & TEMPORARY FILES
+# =============================================================================
 *.log
 logs/
 temp/
 tmp/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dev-debug.log
+*.tmp
+*.temp
+*.cache
+*.pid
+*.seed
+*.pid.lock
 
-# Backend API specific
-backend_api/__pycache__/
-backend_api/*.pyc
-backend_api/*.pyo
-backend_api/tasks.db
-backend_api/celerybeat-schedule
-backend_api/.celery_* 
+# =============================================================================
+# IDE & EDITORS
+# =============================================================================
+# VSCode
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# IntelliJ / PyCharm
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+# Vim
+*.swp
+*.swo
+*~
+.netrwhist
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# =============================================================================
+# OPERATING SYSTEM
+# =============================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# =============================================================================
+# LARGE FILES & MEDIA
+# =============================================================================
+*.webm
+*.mkv
+*.mp4
+*.avi
+*.mov
+*.wmv
+*.flv
+*.iso
+*.dmg
+*.tar.gz
+*.zip
+*.rar
+*.7z
+
+# =============================================================================
+# TASKMASTER
+# =============================================================================
+# Uncomment these lines if you want to ignore taskmaster files
+# .taskmaster/
+# tasks.json
+# tasks/
+
+# =============================================================================
+# PROJECT SPECIFIC
+# =============================================================================
+# OpenFOAM simulation outputs (if running locally)
+work/
+results/
+case/
+0*/
+constant/polyMesh/
+processor*/
+postProcessing/
+*.pid
+*.log
+*.out
+*.err
+*.foam
+*.case
+*.OpenFOAM
+
+# ParaView state files (if too large)
+*.pvd
+*.pvsm
+*.vtu
+*.vtp
+*.vtk
+
+# CFD data files
+*.dat
+*.plt
+*.cgns
+*.med 
+
+# Celery
+celerybeat-schedule
+.celery_*
+
+# Other
+*.db
+*.sqlite3

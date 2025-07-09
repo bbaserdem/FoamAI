@@ -1,0 +1,88 @@
+# Docker Compose Configuration for FoamAI CFD Assistant
+# Manages three containerized services: API, OpenFOAM solver, and ParaView server
+# Updated to use GitHub Container Registry (ghcr.io) for reliable image hosting
+version: '3.8'
+
+services:
+  # FastAPI Backend Service
+  api:
+    image: ${GHCR_API_URL:-ghcr.io/batuhan/foamai/api}:latest
+    container_name: foamai-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - simulation_data:/data
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=UTC
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - foamai-network
+
+  # OpenFOAM CFD Solver Service
+  openfoam:
+    image: ${GHCR_OPENFOAM_URL:-ghcr.io/batuhan/foamai/openfoam}:latest
+    container_name: foamai-openfoam
+    volumes:
+      - simulation_data:/data
+    environment:
+      - FOAM_SETTINGS=/opt/openfoam/etc/bashrc
+      - TZ=UTC
+    restart: unless-stopped
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "test", "-f", "/opt/openfoam/etc/bashrc"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 120s
+    networks:
+      - foamai-network
+
+  # ParaView Server for Remote Visualization
+  pvserver:
+    image: ${GHCR_PVSERVER_URL:-ghcr.io/batuhan/foamai/pvserver}:latest
+    container_name: foamai-pvserver
+    ports:
+      - "11111:11111"
+    volumes:
+      - simulation_data:/data
+    environment:
+      - DISPLAY=:0
+      - TZ=UTC
+    restart: unless-stopped
+    depends_on:
+      - openfoam
+    healthcheck:
+      test: ["CMD", "pgrep", "pvserver"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - foamai-network
+
+# Shared volumes for simulation data
+volumes:
+  simulation_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data
+
+# Custom network for service communication
+networks:
+  foamai-network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16 

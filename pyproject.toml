@@ -3,6 +3,12 @@ name = "foamai"
 version = "0.1.0"
 description = "AI-powered CFD application using OpenFOAM and ParaView"
 readme = "README.md"
+authors = [
+    { name = "bbaserdem", email = "baserdemb@gmail.com" },
+    { name = "ericDrury", email = "baserdemb@gmail.com" },
+    { name = "mcbagz", email = "baserdemb@gmail.com" },
+    { name = "jackwimbish", email = "baserdemb@gmail.com" },
+]
 requires-python = ">=3.13"
 dependencies = [
     # Core LLM and Agent Framework
@@ -28,6 +34,9 @@ dependencies = [
     "toml>=0.10.0",
     # Async support
     "aiofiles>=23.0.0",
+    "uvicorn[standard]>=0.24.0",
+    # Fast API
+    "fastapi>=0.104.0",
 ]
 
 [project.optional-dependencies]
@@ -64,3 +73,17 @@ python_version = "3.13"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+
+[dependency-groups]
+dev = [
+    "pyyaml>=6.0.2",
+    "ruff>=0.12.1",
+    {include-group = "test"},
+]
+test = [
+    "aiohttp>=3.12.13",
+    "boto3>=1.39.3",
+    "pytest>=8.4.1",
+    "pytest-cov>=6.2.1",
+    "pytest-mock>=3.14.1",
+]

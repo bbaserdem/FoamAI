@@ -33,7 +33,11 @@
     tree # Display directories as trees
     unzip # Unzip utility
     zip # Zip utility
+    netcat # Network utility
   ];
+
+  # Got a nice terraform binary derivation from Connor
+  terraform = import ./terraformDerivation.nix {inherit pkgs;};
 in {
   # The default shell, where nix manages the venv and dependencies
   # The venv is editable for the local projects
@@ -65,8 +69,10 @@ in {
               ];
             };
 
-            # Hatchling (build system) has a dependency on the editables package when building editables
-            # In normal python flows this dependency is dynamically handled, in PEP660
+            # Hatchling (build system) has a dependency on the editables package
+            # when building editables
+            # In normal python flows this dependency is dynamically handled,
+            # in PEP660
             # With Nix, the dependency needs to be explicitly declared
             nativeBuildInputs =
               old.nativeBuildInputs
@@ -87,7 +93,13 @@ in {
         standartPackages
         ++ [virtualenv pkgs.uv]
         ++ [
+          terraform
+          pkgs.awscli2
           pkgs.task-master-ai
+          pkgs.docker
+          pkgs.docker-compose
+          pkgs.openssh
+          #pkgs.paraview
         ];
 
       env = {

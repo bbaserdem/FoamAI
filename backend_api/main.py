@@ -10,6 +10,10 @@ from pvserver_service import (
     get_pvserver_info_with_validation, cleanup_inactive_pvservers,
     start_pvserver_for_case, list_active_pvservers, stop_pvserver_by_port
 )
+from project_service import (
+    create_project, list_projects,
+    ProjectConfigurationError, ProjectExistsError, InvalidProjectNameError, ProjectError
+)
 from database import (
     create_task, get_task, update_task_rejection, 
     DatabaseError, TaskNotFoundError
@@ -35,6 +39,9 @@ class OpenFOAMCommandRequest(BaseModel):
 class StartPVServerRequest(BaseModel):
     case_path: str = Field(..., description="Path to the OpenFOAM case directory")
     port: Optional[int] = Field(None, description="Specific port to use (optional, auto-finds if not specified)")
+
+class ProjectRequest(BaseModel):
+    project_name: str = Field(..., description="The name for the new project. Allowed characters: alphanumeric, underscores, dashes, periods.")
 
 # Response models
 class PVServerInfo(BaseModel):
@@ -89,6 +96,16 @@ class ResultsResponse(BaseModel):
     output: Optional[str] = None
     pvserver: Optional[PVServerInfo] = None
 
+class ProjectResponse(BaseModel):
+    status: str = Field(..., description="Status of the project creation")
+    project_name: str = Field(..., description="Name of the created project")
+    path: str = Field(..., description="Full path to the new project directory")
+    message: str = Field(..., description="A descriptive message")
+
+class ProjectListResponse(BaseModel):
+    projects: List[str] = Field(..., description="A list of existing project names")
+    count: int = Field(..., description="The number of projects found")
+
 # Database functions now replaced by DAL - keeping these for reference during migration
 # def create_task_in_db() -> replaced by database.create_task()
 # def get_task_from_db() -> replaced by database.get_task()
@@ -123,6 +140,43 @@ async def health_check():
 async def get_version():
     """Get API version information."""
     return {"version": "1.0.0", "api_name": "FoamAI API"}
+
+# --- Project Management Endpoints ---
+
+@app.post("/api/projects", response_model=ProjectResponse, status_code=201)
+async def create_new_project(request: ProjectRequest):
+    """
+    Creates a new project directory under the FOAM_RUN path.
+    """
+    try:
+        project_path = create_project(request.project_name)
+        return ProjectResponse(
+            status="success",
+            project_name=request.project_name,
+            path=str(project_path),
+            message=f"Project '{request.project_name}' created successfully."
+        )
+    except InvalidProjectNameError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ProjectExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ProjectConfigurationError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except ProjectError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/projects", response_model=ProjectListResponse)
+async def get_project_list():
+    """
+    Lists all existing projects in the FOAM_RUN directory.
+    """
+    try:
+        projects = list_projects()
+        return ProjectListResponse(projects=projects, count=len(projects))
+    except ProjectConfigurationError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- CFD Task Endpoints ---
 
 @app.post("/api/submit_scenario", response_model=SubmitScenarioResponse)
 async def submit_scenario(request: SubmitScenarioRequest):

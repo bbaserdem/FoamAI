@@ -8,6 +8,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+
+# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -27,6 +29,39 @@ wheels/
 
 # Virtual environments
 .venv/
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# Environments
+.env
+.venv
 env/
 venv/
 ENV/
@@ -64,3 +99,28 @@ processor*/
 # OS
 .DS_Store
 Thumbs.db 
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project specific
+*.db
+*.sqlite3
+*.foam
+*.log
+logs/
+temp/
+tmp/
+
+# Backend API specific
+backend_api/__pycache__/
+backend_api/*.pyc
+backend_api/*.pyo
+backend_api/tasks.db
+backend_api/celerybeat-schedule
+backend_api/.celery_* 

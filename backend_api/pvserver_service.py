@@ -117,7 +117,8 @@ def start_pvserver_for_case(case_path: str, port: Optional[int] = None) -> Dict:
         validated_port = _find_and_validate_port(port)
 
         temp_task_id = f"direct_{validated_port}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        create_task(temp_task_id, "running", f"Direct pvserver for {case_path}", case_path=case_path)
+        create_task(temp_task_id, "pending", f"Direct pvserver for {case_path}")
+        update_task_status(temp_task_id, "running", f"Starting pvserver on port {validated_port}", case_path=case_path)
         
         pid = process_manager.start_pvserver(case_path, validated_port, temp_task_id)
         update_pvserver_status_in_db(temp_task_id, 'running', validated_port, pid)

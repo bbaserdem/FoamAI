@@ -2,6 +2,7 @@ import subprocess
 import os
 from pathlib import Path
 from datetime import datetime
+from functools import wraps
 from celery import Celery
 from celery.signals import worker_ready
 
@@ -21,6 +22,104 @@ celery_app = Celery(
     broker='redis://localhost:6379/0',
     backend='redis://localhost:6379/0'
 )
+
+def foam_task(description_template, final_status='completed', get_case_path=None):
+    """
+    A decorator to create a standardized OpenFOAM Celery task.
+    
+    Args:
+        description_template: Template for progress description (can use format placeholders)
+        final_status: Final status to set on success ('completed' or 'waiting_approval')
+        get_case_path: Function to extract case_path from task arguments (optional)
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(task_id, *args, **kwargs):
+            # Extract case_path using the provided function or from arguments
+            if get_case_path:
+                case_path = get_case_path(*args, **kwargs)
+            else:
+                # Default: assume first argument is case_path
+                case_path = args[0] if args else kwargs.get('case_path')
+            
+            # Generate command and description from the decorated function
+            command_info = func(task_id, *args, **kwargs)
+            
+            # Handle different return types from the decorated function
+            if isinstance(command_info, dict):
+                command = command_info['command']
+                description = command_info.get('description', description_template.format(*args, **kwargs))
+            else:
+                command = command_info
+                description = description_template.format(*args, **kwargs)
+            
+            # Update task status to in_progress
+            update_task_status(task_id, 'in_progress', description, case_path=case_path)
+            
+            try:
+                # Handle both string and list commands
+                if isinstance(command, str):
+                    cmd = command.split()
+                else:
+                    cmd = command
+                
+                print(f"🔧 Starting {description} for task {task_id}: {cmd}")
+                
+                # Run the command
+                result = subprocess.run(
+                    cmd,
+                    cwd=case_path, 
+                    capture_output=True, 
+                    text=True,
+                    check=True
+                )
+                
+                print(f"✅ {description} completed for task {task_id}")
+                
+                # Ensure .foam file exists after operation
+                foam_file_path = ensure_foam_file(case_path)
+                
+                # Generate success message
+                success_message = f"{description} completed successfully. Use /api/start_pvserver to start visualization."
+                if final_status == 'waiting_approval':
+                    success_message += " Please approve."
+                
+                print(f"🎉 {success_message}")
+                
+                # Update status to final state
+                update_task_status(task_id, final_status, success_message, foam_file_path, case_path)
+                
+                # Return standardized success response
+                return {
+                    "status": "SUCCESS", 
+                    "message": f"{description} completed successfully", 
+                    "output": result.stdout,
+                    "foam_file": foam_file_path,
+                    "command": " ".join(cmd) if isinstance(cmd, list) else cmd
+                }
+                
+            except subprocess.CalledProcessError as e:
+                error_msg = f'{description} failed: {e.stderr}'
+                print(f"❌ {error_msg}")
+                update_task_status(task_id, 'error', error_msg, case_path=case_path)
+                return {
+                    "status": "FAILURE", 
+                    "message": f"{description} failed", 
+                    "error": e.stderr,
+                    "command": " ".join(cmd) if isinstance(cmd, list) else cmd
+                }
+            except Exception as e:
+                error_msg = f'Unexpected error during {description}: {str(e)}'
+                print(f"❌ {error_msg}")
+                update_task_status(task_id, 'error', error_msg, case_path=case_path)
+                return {
+                    "status": "FAILURE", 
+                    "message": f"{description} failed", 
+                    "error": str(e),
+                    "command": " ".join(cmd) if isinstance(cmd, list) else cmd
+                }
+        return wrapper
+    return decorator
 
 @worker_ready.connect
 def setup_worker_signal_handlers(**kwargs):
@@ -51,154 +150,33 @@ def ensure_foam_file(case_path):
     
     return str(foam_file_path)
 
+def _get_mesh_task_case_path(*args, **kwargs):
+    """Helper function to provide hardcoded case path for mesh generation"""
+    return '/home/ubuntu/cavity_tutorial'
+
 @celery_app.task
+@foam_task("Generating mesh", final_status='waiting_approval', get_case_path=_get_mesh_task_case_path)
 def generate_mesh_task(task_id):
     """Task for generating the mesh (pvserver management is now explicit)."""
-    case_path = '/home/ubuntu/cavity_tutorial'
-    update_task_status(task_id, 'in_progress', 'Generating mesh...', case_path=case_path)
-    
-    try:
-        print(f"🔧 Starting mesh generation for task {task_id}")
-        
-        # Run blockMesh on the cavity case
-        result = subprocess.run(
-            ['blockMesh'], 
-            cwd=case_path, 
-            capture_output=True, 
-            text=True,
-            check=True
-        )
-        
-        print(f"✅ Mesh generation completed for task {task_id}")
-        
-        # Ensure .foam file exists after mesh generation
-        foam_file_path = ensure_foam_file(case_path)
-        
-        # Update status with success message (no automatic pvserver)
-        message = "Mesh generated successfully. Use /api/start_pvserver to start visualization. Please approve."
-        print(f"🎉 {message}")
-        
-        update_task_status(task_id, 'waiting_approval', message, foam_file_path, case_path)
-        
-        return {
-            "status": "SUCCESS", 
-            "message": "Mesh generated successfully", 
-            "output": result.stdout, 
-            "foam_file": foam_file_path
-        }
-        
-    except subprocess.CalledProcessError as e:
-        error_msg = f'Mesh generation failed: {e.stderr}'
-        print(f"❌ {error_msg}")
-        update_task_status(task_id, 'error', error_msg, case_path=case_path)
-        return {"status": "FAILURE", "message": "Mesh generation failed", "error": e.stderr}
-    except Exception as e:
-        error_msg = f'Unexpected error during mesh generation: {str(e)}'
-        print(f"❌ {error_msg}")
-        update_task_status(task_id, 'error', error_msg, case_path=case_path)
-        return {"status": "FAILURE", "message": "Mesh generation failed", "error": str(e)}
+    return ['blockMesh']
 
 @celery_app.task
+@foam_task("Running simulation")
 def run_solver_task(task_id, case_path):
     """Task for running the OpenFOAM solver (pvserver management is now explicit)."""
-    update_task_status(task_id, 'in_progress', 'Simulation running...', case_path=case_path)
-    
-    try:
-        print(f"🌊 Starting simulation for task {task_id}")
-        
-        # Run the full cavity simulation using foamRun
-        result = subprocess.run(
-            ['foamRun'], 
-            cwd=case_path, 
-            capture_output=True, 
-            text=True,
-            check=True
-        )
-        
-        print(f"✅ Simulation completed for task {task_id}")
-        
-        # Ensure .foam file exists after simulation
-        foam_file_path = ensure_foam_file(case_path)
-        
-        # Update status with completion message (no automatic pvserver)
-        message = "Simulation completed successfully. Use /api/start_pvserver to start visualization."
-        print(f"🎉 {message}")
-        
-        update_task_status(task_id, 'completed', message, foam_file_path, case_path)
-        
-        return {
-            "status": "SUCCESS", 
-            "message": "Simulation completed successfully", 
-            "output": result.stdout, 
-            "foam_file": foam_file_path
-        }
-        
-    except subprocess.CalledProcessError as e:
-        error_msg = f'Simulation failed: {e.stderr}'
-        print(f"❌ {error_msg}")
-        update_task_status(task_id, 'error', error_msg, case_path=case_path)
-        return {"status": "FAILURE", "message": "Simulation failed", "error": e.stderr}
-    except Exception as e:
-        error_msg = f'Unexpected error during simulation: {str(e)}'
-        print(f"❌ {error_msg}")
-        update_task_status(task_id, 'error', error_msg, case_path=case_path)
-        return {"status": "FAILURE", "message": "Simulation failed", "error": str(e)}
+    return ['foamRun']
 
 @celery_app.task
+@foam_task("Running OpenFOAM command")
 def run_openfoam_command_task(task_id, case_path, command, description="Running OpenFOAM command"):
     """
     Generic task for running any OpenFOAM command with automatic .foam file creation.
     PVServer management is now explicit via API endpoints.
     """
-    update_task_status(task_id, 'in_progress', description, case_path=case_path)
-    
-    try:
-        print(f"🔧 Starting OpenFOAM command for task {task_id}: {command}")
-        
-        # Handle both string and list commands
-        if isinstance(command, str):
-            cmd = command.split()
-        else:
-            cmd = command
-            
-        # Run the OpenFOAM command
-        result = subprocess.run(
-            cmd,
-            cwd=case_path, 
-            capture_output=True, 
-            text=True,
-            check=True
-        )
-        
-        print(f"✅ OpenFOAM command completed for task {task_id}")
-        
-        # Always ensure .foam file exists after any OpenFOAM operation
-        foam_file_path = ensure_foam_file(case_path)
-        
-        # Update status with completion message (no automatic pvserver)
-        message = f"{description} completed successfully. Use /api/start_pvserver to start visualization."
-        print(f"🎉 {message}")
-        
-        update_task_status(task_id, 'completed', message, foam_file_path, case_path)
-        
-        return {
-            "status": "SUCCESS", 
-            "message": f"{description} completed successfully", 
-            "output": result.stdout,
-            "foam_file": foam_file_path,
-            "command": " ".join(cmd)
-        }
-        
-    except subprocess.CalledProcessError as e:
-        error_msg = f'{description} failed: {e.stderr}'
-        print(f"❌ {error_msg}")
-        update_task_status(task_id, 'error', error_msg, case_path=case_path)
-        return {"status": "FAILURE", "message": f"{description} failed", "error": e.stderr, "command": " ".join(cmd)}
-    except Exception as e:
-        error_msg = f'Unexpected error during {description}: {str(e)}'
-        print(f"❌ {error_msg}")
-        update_task_status(task_id, 'error', error_msg, case_path=case_path)
-        return {"status": "FAILURE", "message": f"{description} failed", "error": str(e), "command": " ".join(cmd)}
+    return {
+        'command': command,
+        'description': description
+    }
 
 @celery_app.task
 def cleanup_pvservers_task():

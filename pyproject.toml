@@ -26,6 +26,8 @@ dev = [
     {include-group = "test"},
 ]
 test = [
+    "aiohttp>=3.12.13",
+    "boto3>=1.39.3",
     "pytest>=8.4.1",
     "pytest-cov>=6.2.1",
     "pytest-mock>=3.14.1",

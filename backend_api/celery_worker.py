@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import datetime
 from functools import wraps
 from celery import Celery
-from celery.signals import worker_ready
+from celery.signals import worker_ready, worker_shutdown
 
 # Import cleanup function for the cleanup task only
 from pvserver_service import cleanup_inactive_pvservers
@@ -21,6 +21,28 @@ celery_app = Celery(
     'tasks',
     broker='redis://localhost:6379/0',
     backend='redis://localhost:6379/0'
+)
+
+# Configure Celery for better shutdown behavior
+celery_app.conf.update(
+    # Reduce shutdown timeout
+    worker_max_tasks_per_child=1000,
+    worker_disable_rate_limits=True,
+    
+    # Graceful shutdown settings
+    worker_send_task_events=True,
+    task_send_sent_event=True,
+    
+    # Prevent hanging during shutdown
+    worker_pool_restarts=True,
+    
+    # Timeout settings
+    task_soft_time_limit=300,  # 5 minutes
+    task_time_limit=360,       # 6 minutes
+    
+    # Connection settings
+    broker_connection_retry_on_startup=True,
+    broker_connection_retry=True,
 )
 
 def foam_task(description_template, final_status='completed', get_case_path=None):
@@ -130,6 +152,32 @@ def setup_worker_signal_handlers(**kwargs):
     # Print summary of active processes
     summary = get_active_pvserver_summary()
     print(f"📊 Worker startup summary: {summary}")
+
+@worker_shutdown.connect
+def cleanup_worker_on_shutdown(**kwargs):
+    """Clean up resources when worker shuts down"""
+    print("🔄 Celery worker shutting down - cleaning up resources...")
+    
+    try:
+        # Clean up any remaining pvservers
+        from pvserver_service import force_cleanup_all_pvservers
+        cleanup_result = force_cleanup_all_pvservers()
+        print(f"🧹 Shutdown cleanup result: {cleanup_result}")
+        
+        # Give a moment for cleanup to complete
+        import time
+        time.sleep(1)
+        
+        print("✅ Worker shutdown cleanup completed")
+    except Exception as e:
+        print(f"⚠️ Error during worker shutdown cleanup: {e}")
+    
+    # Close any remaining database connections
+    try:
+        from database import get_connection
+        print("🔄 Closing database connections...")
+    except Exception as e:
+        print(f"⚠️ Error closing database connections: {e}")
 
 def ensure_foam_file(case_path):
     """

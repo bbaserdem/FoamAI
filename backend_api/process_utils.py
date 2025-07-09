@@ -4,6 +4,7 @@ import psutil
 import signal
 import threading
 import time
+import atexit
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict
@@ -13,6 +14,7 @@ from database import update_pvserver_status, DatabaseError
 _active_pvservers = {}
 _signal_handler_setup = False
 _cleanup_lock = threading.Lock()
+_shutdown_in_progress = False
 
 class ProcessError(Exception):
     """Custom exception for process-related errors"""
@@ -22,6 +24,19 @@ class PVServerError(ProcessError):
     """Custom exception for PVServer-related errors"""
     pass
 
+def _cleanup_on_exit():
+    """Cleanup function to run on process exit"""
+    global _shutdown_in_progress
+    _shutdown_in_progress = True
+    print("🔄 Process shutdown initiated, cleaning up pvservers...")
+    
+    # Stop all tracked pvservers
+    for pid in list(_active_pvservers.keys()):
+        try:
+            stop_pvserver(pid)
+        except Exception as e:
+            print(f"⚠️ Error stopping pvserver {pid} during shutdown: {e}")
+
 def setup_signal_handlers():
     """Set up signal handlers for automatic zombie process cleanup"""
     global _signal_handler_setup
@@ -30,8 +45,15 @@ def setup_signal_handlers():
         return
     
     def reap_children(signum, frame):
-        """Signal handler to reap zombie children"""
-        with _cleanup_lock:
+        """Signal handler to reap zombie children (non-blocking)"""
+        global _shutdown_in_progress
+        
+        # Skip complex operations during shutdown
+        if _shutdown_in_progress:
+            return
+            
+        # Use non-blocking wait to avoid hanging
+        try:
             while True:
                 try:
                     pid, status = os.waitpid(-1, os.WNOHANG)
@@ -40,31 +62,54 @@ def setup_signal_handlers():
                     
                     print(f"🧹 Reaped child process {pid} with status {status}")
                     
-                    # Update our tracking
+                    # Update our tracking (but don't update database in signal handler)
                     if pid in _active_pvservers:
                         pvserver_info = _active_pvservers[pid]
-                        print(f"🔄 Updating database for reaped pvserver {pid} on port {pvserver_info.get('port')}")
+                        print(f"🔄 Marking pvserver {pid} for cleanup (port {pvserver_info.get('port')})")
                         
-                        # Update database status
-                        try:
-                            update_pvserver_status(
-                                pvserver_info['task_id'], 
-                                'stopped', 
-                                error_message=f"Process terminated with status {status}"
-                            )
-                        except Exception as e:
-                            print(f"❌ Error updating database for reaped process {pid}: {e}")
+                        # Schedule database update for later (not in signal handler)
+                        threading.Thread(
+                            target=_update_dead_pvserver_status,
+                            args=(pvserver_info['task_id'], status),
+                            daemon=True
+                        ).start()
                         
                         del _active_pvservers[pid]
                         
                 except OSError:
                     # No more children or other error
                     break
+        except Exception as e:
+            print(f"⚠️ Error in signal handler: {e}")
     
-    # Set up the signal handler
-    signal.signal(signal.SIGCHLD, reap_children)
+    # Only set up signal handler if not in a Celery worker
+    if not _is_celery_worker():
+        signal.signal(signal.SIGCHLD, reap_children)
+        print("✅ Signal handlers set up for zombie process cleanup")
+    else:
+        print("⚠️ Skipping SIGCHLD handler setup in Celery worker to avoid conflicts")
+    
+    # Set up exit handler for cleanup
+    atexit.register(_cleanup_on_exit)
+    
     _signal_handler_setup = True
-    print("✅ Signal handlers set up for zombie process cleanup")
+
+def _is_celery_worker():
+    """Check if we're running in a Celery worker process"""
+    import sys
+    return 'celery' in sys.modules and hasattr(sys.modules.get('celery', {}), 'current_app')
+
+def _update_dead_pvserver_status(task_id: str, status: int):
+    """Update database status for a dead pvserver (runs in separate thread)"""
+    try:
+        if not _shutdown_in_progress:
+            update_pvserver_status(
+                task_id, 
+                'stopped', 
+                error_message=f"Process terminated with status {status}"
+            )
+    except Exception as e:
+        print(f"❌ Error updating database for dead process {task_id}: {e}")
 
 def validate_pvserver_pid(pid: int, expected_port: int = None) -> bool:
     """
@@ -146,13 +191,13 @@ def start_pvserver(case_path: str, port: int, task_id: str) -> int:
     ]
     
     try:
-        # Start process in its own process group for better management
+        # Start process - avoid process groups in Celery workers to prevent signal issues
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=str(case_path),  # Start in the case directory
-            preexec_fn=os.setpgrp  # Create new process group
+            # Don't use preexec_fn=os.setpgrp in Celery workers as it can interfere with shutdown
         )
         
         # Give it a moment to start

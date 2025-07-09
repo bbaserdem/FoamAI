@@ -1,3 +1,9 @@
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from a .env file if it exists
+load_dotenv()
+
 """
 Configuration module for FoamAI backend API.
 
@@ -6,7 +12,11 @@ scattered across different modules, improving maintainability and
 making the system more configurable.
 """
 
-# PVServer Management Configuration
+# --- General Application Settings ---
+# Load EC2_HOST from environment or default to localhost if not set
+EC2_HOST = os.environ.get("EC2_HOST", "127.0.0.1")
+
+# --- PVServer Management Configuration ---
 MAX_CONCURRENT_PVSERVERS = 6
 CLEANUP_THRESHOLD_HOURS = 4
 

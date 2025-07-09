@@ -84,10 +84,17 @@ ENV/
 env.bak/
 venv.bak/
 .python-version
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
 
 # Testing
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
 .tox/
 .nox/
@@ -100,6 +107,10 @@ coverage.xml
 
 # Jupyter Notebook
 .ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
 
 # =============================================================================
 # DOCKER & CONTAINERS
@@ -136,6 +147,8 @@ manual_test_output/
 # =============================================================================
 *.log
 logs/
+temp/
+tmp/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -251,15 +264,23 @@ $RECYCLE.BIN/
 # PROJECT SPECIFIC
 # =============================================================================
 # OpenFOAM simulation outputs (if running locally)
+work/
+results/
 case/
 0*/
 constant/polyMesh/
 processor*/
 postProcessing/
+*.pid
+*.log
+*.out
+*.err
 *.foam
+*.case
 *.OpenFOAM
 
 # ParaView state files (if too large)
+*.pvd
 *.pvsm
 *.vtu
 *.vtp
@@ -270,3 +291,11 @@ postProcessing/
 *.plt
 *.cgns
 *.med 
+
+# Celery
+celerybeat-schedule
+.celery_*
+
+# Other
+*.db
+*.sqlite3

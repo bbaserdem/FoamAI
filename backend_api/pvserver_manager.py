@@ -3,6 +3,9 @@ import sqlite3
 import socket
 import os
 import psutil
+import signal
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List
@@ -14,6 +17,11 @@ PVSERVER_PORT_RANGE = (11111, 11116)  # 6 ports: 11111-11116
 MAX_CONCURRENT_PVSERVERS = 6
 CLEANUP_THRESHOLD_HOURS = 4
 
+# Global tracking for signal handler
+_active_pvservers = {}
+_signal_handler_setup = False
+_cleanup_lock = threading.Lock()
+
 class PVServerError(Exception):
     """Custom exception for PVServer-related errors"""
     pass
@@ -21,6 +29,92 @@ class PVServerError(Exception):
 class PortInUseError(PVServerError):
     """Exception raised when a port is already in use"""
     pass
+
+def setup_signal_handlers():
+    """Set up signal handlers for automatic zombie process cleanup"""
+    global _signal_handler_setup
+    
+    if _signal_handler_setup:
+        return
+    
+    def reap_children(signum, frame):
+        """Signal handler to reap zombie children"""
+        with _cleanup_lock:
+            while True:
+                try:
+                    pid, status = os.waitpid(-1, os.WNOHANG)
+                    if pid == 0:  # No more children to reap
+                        break
+                    
+                    print(f"🧹 Reaped child process {pid} with status {status}")
+                    
+                    # Update our tracking
+                    if pid in _active_pvservers:
+                        pvserver_info = _active_pvservers[pid]
+                        print(f"🔄 Updating database for reaped pvserver {pid} on port {pvserver_info.get('port')}")
+                        
+                        # Update database status
+                        try:
+                            update_pvserver_status(
+                                pvserver_info['task_id'], 
+                                'stopped', 
+                                error_message=f"Process terminated with status {status}"
+                            )
+                        except Exception as e:
+                            print(f"❌ Error updating database for reaped process {pid}: {e}")
+                        
+                        del _active_pvservers[pid]
+                        
+                except OSError:
+                    # No more children or other error
+                    break
+    
+    # Set up the signal handler
+    signal.signal(signal.SIGCHLD, reap_children)
+    _signal_handler_setup = True
+    print("✅ Signal handlers set up for zombie process cleanup")
+
+def validate_pvserver_pid(pid: int, expected_port: int = None) -> bool:
+    """
+    Validate that a PID is actually a running pvserver process
+    Optionally check if it's using the expected port
+    """
+    if not pid:
+        return False
+    
+    try:
+        if not psutil.pid_exists(pid):
+            return False
+        
+        process = psutil.Process(pid)
+        
+        # Check if it's actually a pvserver process
+        if process.name() != 'pvserver':
+            return False
+        
+        # If we have an expected port, validate it
+        if expected_port:
+            cmdline = process.cmdline()
+            found_port = None
+            
+            for arg in cmdline:
+                if f'--server-port={expected_port}' in str(arg):
+                    found_port = expected_port
+                    break
+                elif str(arg) == '--server-port' and cmdline.index(arg) + 1 < len(cmdline):
+                    try:
+                        found_port = int(cmdline[cmdline.index(arg) + 1])
+                    except ValueError:
+                        pass
+                    break
+            
+            if found_port != expected_port:
+                return False
+        
+        return True
+        
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return False
 
 def port_is_available(port: int) -> bool:
     """Check if a port is available for use"""
@@ -39,8 +133,60 @@ def find_available_port() -> Optional[int]:
             return port
     return None
 
+def cleanup_stale_database_entries():
+    """Clean up database entries for dead processes (lazy cleanup)"""
+    print("🧹 Performing lazy cleanup of stale database entries...")
+    
+    conn = sqlite3.connect(DATABASE_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    # Get all running pvserver records
+    cursor.execute("""
+        SELECT task_id, pvserver_pid, pvserver_port, case_path
+        FROM tasks 
+        WHERE pvserver_status = 'running'
+    """)
+    
+    running_records = cursor.fetchall()
+    cleaned_up = []
+    
+    for record in running_records:
+        task_id = record['task_id']
+        pid = record['pvserver_pid']
+        port = record['pvserver_port']
+        
+        # Validate the process is actually running
+        if not validate_pvserver_pid(pid, port):
+            print(f"🔄 Cleaning up stale entry: Task {task_id}, PID {pid}, Port {port}")
+            
+            # Update status to stopped
+            cursor.execute("""
+                UPDATE tasks 
+                SET pvserver_status = 'stopped', 
+                    pvserver_last_activity = ?, 
+                    pvserver_error_message = 'Process died (cleaned up by lazy cleanup)'
+                WHERE task_id = ?
+            """, (datetime.now(), task_id))
+            
+            cleaned_up.append(f"task_{task_id}_port_{port}")
+    
+    conn.commit()
+    conn.close()
+    
+    if cleaned_up:
+        print(f"✅ Cleaned up {len(cleaned_up)} stale database entries")
+    else:
+        print("✅ No stale entries found")
+    
+    return cleaned_up
+
 def count_running_pvservers() -> int:
-    """Count currently running pvservers in database"""
+    """Count currently running pvservers (with validation)"""
+    # First clean up stale entries
+    cleanup_stale_database_entries()
+    
+    # Then count what's actually running
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     cursor.execute(
@@ -51,7 +197,7 @@ def count_running_pvservers() -> int:
     return count
 
 def get_running_pvserver_for_case(case_path: str) -> Optional[Dict]:
-    """Get running pvserver info for a specific case directory, validating process is actually running"""
+    """Get running pvserver info for a specific case directory (with validation)"""
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -61,40 +207,38 @@ def get_running_pvserver_for_case(case_path: str) -> Optional[Dict]:
         FROM tasks 
         WHERE case_path = ? AND pvserver_status = 'running'
         ORDER BY pvserver_started_at DESC
+        LIMIT 1
     """, (case_path,))
     
-    results = cursor.fetchall()
+    result = cursor.fetchone()
     conn.close()
     
-    # Check each "running" server to see if it's actually running
-    for result in results:
-        result_dict = dict(result)
-        pid = result_dict['pvserver_pid']
-        task_id = result_dict['task_id']
-        
-        if pid and process_is_running(pid):
-            # Process is actually running, return this one
-            return result_dict
+    if result:
+        # Validate the process is actually running
+        if validate_pvserver_pid(result['pvserver_pid'], result['pvserver_port']):
+            return dict(result)
         else:
-            # Process is dead, mark it as stopped
-            print(f"🧹 Cleaning up dead pvserver record: Task {task_id}, PID {pid}")
-            update_pvserver_status(task_id, 'stopped', error_message="Process died unexpectedly")
+            # Process is dead, clean it up
+            print(f"🔄 Found dead pvserver for case {case_path}, cleaning up...")
+            update_pvserver_status(result['task_id'], 'stopped', 
+                                 error_message="Process died (detected during case lookup)")
     
-    # No running servers found
     return None
 
 def process_is_running(pid: int) -> bool:
     """Check if a process with given PID is still running"""
-    try:
-        return psutil.pid_exists(pid) and psutil.Process(pid).is_running()
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return False
+    return validate_pvserver_pid(pid)
 
-def start_pvserver(case_path: str, port: int) -> int:
+def start_pvserver(case_path: str, port: int, task_id: str) -> int:
     """
-    Start a pvserver process for the given case and port
+    Start a pvserver process for the given case and port using process groups
     Returns the PID of the started process
     """
+    global _active_pvservers
+    
+    # Ensure signal handlers are set up
+    setup_signal_handlers()
+    
     if not port_is_available(port):
         raise PortInUseError(f"Port {port} is not available")
     
@@ -111,19 +255,29 @@ def start_pvserver(case_path: str, port: int) -> int:
     ]
     
     try:
+        # Start process in its own process group for better management
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd=str(case_path)  # Start in the case directory
+            cwd=str(case_path),  # Start in the case directory
+            preexec_fn=os.setpgrp  # Create new process group
         )
         
         # Give it a moment to start
-        import time
         time.sleep(1)
         
         # Check if process is still running
         if process.poll() is None:
+            # Add to our tracking
+            _active_pvservers[process.pid] = {
+                'task_id': task_id,
+                'port': port,
+                'case_path': str(case_path),
+                'started': datetime.now()
+            }
+            
+            print(f"✅ Started pvserver PID {process.pid} on port {port}")
             return process.pid
         else:
             # Process died immediately, get error
@@ -137,9 +291,13 @@ def start_pvserver(case_path: str, port: int) -> int:
 
 def stop_pvserver(pid: int) -> bool:
     """Stop a pvserver process by PID"""
+    global _active_pvservers
+    
     try:
-        if process_is_running(pid):
+        if validate_pvserver_pid(pid):
             process = psutil.Process(pid)
+            
+            # Try graceful termination first
             process.terminate()
             
             # Wait for graceful shutdown
@@ -150,9 +308,15 @@ def stop_pvserver(pid: int) -> bool:
                 process.kill()
                 process.wait(timeout=5)
             
+            # Remove from our tracking
+            if pid in _active_pvservers:
+                del _active_pvservers[pid]
+            
             return True
     except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
-        pass
+        # Remove from tracking even if we can't kill it (might already be dead)
+        if pid in _active_pvservers:
+            del _active_pvservers[pid]
     
     return False
 
@@ -198,13 +362,14 @@ def link_task_to_existing_pvserver(task_id: str, existing_pvserver: Dict):
 def ensure_pvserver_for_task(task_id: str, case_path: str) -> Dict:
     """
     Ensure a pvserver is running for the given task and case.
+    Uses lazy cleanup and validation for robustness.
     Returns pvserver info or error details.
     """
     try:
-        # 1. Check if case already has running pvserver (this now auto-cleans dead processes)
+        # 1. Check if case already has running pvserver (with validation)
         existing = get_running_pvserver_for_case(case_path)
         if existing:
-            # get_running_pvserver_for_case already verified the process is running
+            # Process is validated in get_running_pvserver_for_case
             link_task_to_existing_pvserver(task_id, existing)
             return {
                 "status": "running",
@@ -214,7 +379,7 @@ def ensure_pvserver_for_task(task_id: str, case_path: str) -> Dict:
                 "reused": True
             }
         
-        # 2. Check concurrent limit
+        # 2. Check concurrent limit (with cleanup)
         if count_running_pvservers() >= MAX_CONCURRENT_PVSERVERS:
             error_msg = f"Max {MAX_CONCURRENT_PVSERVERS} concurrent pvservers reached"
             update_pvserver_status(task_id, 'error', error_message=error_msg)
@@ -227,8 +392,8 @@ def ensure_pvserver_for_task(task_id: str, case_path: str) -> Dict:
             update_pvserver_status(task_id, 'error', error_message=error_msg)
             return {"status": "error", "error_message": error_msg}
         
-        # 4. Start new pvserver
-        pid = start_pvserver(case_path, port)
+        # 4. Start new pvserver with process group management
+        pid = start_pvserver(case_path, port, task_id)
         update_pvserver_status(task_id, 'running', port, pid)
         
         return {
@@ -264,94 +429,18 @@ def cleanup_inactive_pvservers() -> List[str]:
     
     cleaned_up = []
     for server in inactive_servers:
-        if stop_pvserver(server['pvserver_pid']):
-            update_pvserver_status(server['task_id'], 'stopped')
-            cleaned_up.append(f"task_{server['task_id']}_port_{server['pvserver_port']}")
+        # Validate the process is actually running before trying to stop it
+        if validate_pvserver_pid(server['pvserver_pid'], server['pvserver_port']):
+            if stop_pvserver(server['pvserver_pid']):
+                update_pvserver_status(server['task_id'], 'stopped')
+                cleaned_up.append(f"task_{server['task_id']}_port_{server['pvserver_port']}")
+        else:
+            # Process already dead, just update database
+            update_pvserver_status(server['task_id'], 'stopped', 
+                                 error_message="Process died (detected during cleanup)")
+            cleaned_up.append(f"task_{server['task_id']}_port_{server['pvserver_port']}_dead")
     
     return cleaned_up
-
-def cleanup_dead_pvservers() -> List[str]:
-    """Clean up database entries for pvservers that are no longer running"""
-    conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    # Get all tasks marked as having running pvservers
-    cursor.execute("""
-        SELECT task_id, pvserver_pid, pvserver_port, case_path
-        FROM tasks 
-        WHERE pvserver_status = 'running'
-    """)
-    
-    running_records = cursor.fetchall()
-    conn.close()
-    
-    cleaned_up = []
-    for record in running_records:
-        task_id = record['task_id']
-        pid = record['pvserver_pid']
-        port = record['pvserver_port']
-        
-        # Check if process is actually running
-        if not pid or not process_is_running(pid):
-            print(f"🧹 Found dead pvserver: Task {task_id}, PID {pid}, Port {port}")
-            update_pvserver_status(task_id, 'stopped', error_message="Process died unexpectedly")
-            cleaned_up.append(f"task_{task_id}_pid_{pid}_port_{port}")
-    
-    return cleaned_up
-
-def force_cleanup_port(port: int) -> bool:
-    """Force cleanup of a specific port by killing any processes using it and updating database"""
-    print(f"🧹 Force cleaning up port {port}...")
-    
-    # Find any processes using this port
-    killed_processes = []
-    
-    # Method 1: Check our database first
-    conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-        SELECT task_id, pvserver_pid
-        FROM tasks 
-        WHERE pvserver_port = ? AND pvserver_status = 'running'
-    """, (port,))
-    
-    db_records = cursor.fetchall()
-    conn.close()
-    
-    for record in db_records:
-        task_id = record['task_id']
-        pid = record['pvserver_pid']
-        
-        if pid and process_is_running(pid):
-            if stop_pvserver(pid):
-                killed_processes.append(pid)
-                print(f"🔫 Killed pvserver PID {pid} for task {task_id}")
-        
-        # Update database regardless
-        update_pvserver_status(task_id, 'stopped', error_message="Force cleaned up")
-    
-    # Method 2: Use system commands to find any other processes on this port
-    try:
-        import subprocess
-        # Find process using the port
-        result = subprocess.run(['lsof', '-t', f'-i:{port}'], capture_output=True, text=True)
-        if result.returncode == 0:
-            pids = result.stdout.strip().split('\n')
-            for pid_str in pids:
-                if pid_str.strip():
-                    pid = int(pid_str.strip())
-                    if process_is_running(pid):
-                        if stop_pvserver(pid):
-                            killed_processes.append(pid)
-                            print(f"🔫 Killed process PID {pid} using port {port}")
-    except Exception as e:
-        print(f"⚠️  Could not check for processes using port {port}: {e}")
-    
-    print(f"✅ Force cleanup of port {port} complete. Killed {len(killed_processes)} processes.")
-    return len(killed_processes) > 0 or len(db_records) > 0
 
 def get_pvserver_info(task_id: str) -> Optional[Dict]:
     """Get pvserver information for a task"""
@@ -371,8 +460,29 @@ def get_pvserver_info(task_id: str) -> Optional[Dict]:
     
     if result:
         data = dict(result)
+        
+        # If status is running, validate the process
+        if data['pvserver_status'] == 'running' and data['pvserver_pid']:
+            if not validate_pvserver_pid(data['pvserver_pid'], data['pvserver_port']):
+                # Process is dead, update status
+                update_pvserver_status(task_id, 'stopped', 
+                                     error_message="Process died (detected during info lookup)")
+                data['pvserver_status'] = 'stopped'
+                data['pvserver_error_message'] = "Process died (detected during info lookup)"
+        
         if data['pvserver_status'] == 'running':
             data['connection_string'] = f"localhost:{data['pvserver_port']}"
+        
         return data
     
-    return None 
+    return None
+
+def get_active_pvserver_summary() -> Dict:
+    """Get summary of currently active pvservers"""
+    global _active_pvservers
+    
+    return {
+        'tracked_processes': len(_active_pvservers),
+        'signal_handler_setup': _signal_handler_setup,
+        'processes': dict(_active_pvservers)
+    } 

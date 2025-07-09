@@ -72,6 +72,11 @@ def generate_mesh_config(geometry_info: Dict[str, Any], parsed_params: Dict[str,
     # Check if this is external or internal flow
     is_external_flow = flow_context.get("is_external_flow", False)
     
+    # Handle STL geometry
+    if geometry_info.get("source") == "stl":
+        return generate_stl_mesh(geometry_info, parsed_params, mesh_resolution)
+    
+    # Handle parametric geometry
     if geometry_type == GeometryType.CYLINDER:
         return generate_cylinder_mesh(dimensions, mesh_resolution, is_external_flow, flow_context)
     elif geometry_type == GeometryType.AIRFOIL:
@@ -849,6 +854,311 @@ def generate_sphere_ogrid_blocks(diameter: float, domain_size: float, resolution
             "meridional": 1.0
         }
     }
+
+
+def generate_stl_mesh(geometry_info: Dict[str, Any], parsed_params: Dict[str, Any], 
+                     mesh_resolution: str = "medium") -> Dict[str, Any]:
+    """Generate mesh configuration for STL geometry using snappyHexMesh."""
+    
+    stl_surfaces = geometry_info.get("stl_surfaces", [])
+    mesh_recommendations = geometry_info.get("mesh_recommendations", {})
+    flow_context = geometry_info.get("flow_context", {})
+    dimensions = geometry_info["dimensions"]
+    
+    # Extract STL file path from state (assuming it's passed through)
+    stl_file_path = None
+    if "stl_file_path" in parsed_params:
+        stl_file_path = parsed_params["stl_file_path"]
+    
+    # Get characteristic length and domain sizing
+    char_length = dimensions.get("characteristic_length", 1.0)
+    is_external_flow = flow_context.get("is_external_flow", True)
+    domain_size_multiplier = flow_context.get("domain_size_multiplier", 20.0)
+    
+    # Calculate domain dimensions
+    if is_external_flow:
+        # External flow - large domain around STL geometry
+        domain_length = char_length * domain_size_multiplier
+        domain_height = char_length * (domain_size_multiplier / 2)
+        domain_width = char_length * (domain_size_multiplier / 2)
+        
+        # Position STL geometry in domain
+        inlet_distance = flow_context.get("inlet_distance", char_length * 10)
+        outlet_distance = flow_context.get("outlet_distance", char_length * 15)
+        
+        # Domain origin and size
+        domain_origin = [
+            -inlet_distance, 
+            -domain_height/2, 
+            -domain_width/2
+        ]
+        domain_size = [
+            domain_length,
+            domain_height,
+            domain_width
+        ]
+        
+    else:
+        # Internal flow - domain is close to STL geometry size
+        domain_length = dimensions.get("length", char_length) * 1.2
+        domain_height = dimensions.get("height", char_length) * 1.2
+        domain_width = dimensions.get("width", char_length) * 1.2
+        
+        # Center the geometry
+        domain_origin = [
+            -domain_length/2,
+            -domain_height/2,
+            -domain_width/2
+        ]
+        domain_size = [
+            domain_length,
+            domain_height,
+            domain_width
+        ]
+    
+    # Get resolution settings
+    base_resolution = {"coarse": 10, "medium": 20, "fine": 30, "very_fine": 40}.get(mesh_resolution, 20)
+    surface_resolution = base_resolution * 2
+    
+    # Use recommended mesh settings from STL processor if available
+    if mesh_recommendations:
+        base_cell_size = mesh_recommendations.get("base_cell_size", char_length / 20)
+        surface_levels = mesh_recommendations.get("surface_refinement_levels", {"min": 2, "max": 4})
+        layer_settings = mesh_recommendations.get("layer_settings", {
+            "n_layers": 3,
+            "thickness_ratio": 0.1,
+            "expansion_ratio": 1.3
+        })
+        estimated_cells = mesh_recommendations.get("estimated_cells", 100000)
+    else:
+        base_cell_size = char_length / base_resolution
+        surface_levels = {"min": 2, "max": 4}
+        layer_settings = {
+            "n_layers": 3,
+            "thickness_ratio": 0.1,
+            "expansion_ratio": 1.3
+        }
+        estimated_cells = base_resolution ** 3
+    
+    # Calculate background mesh cells
+    n_cells_x = max(int(domain_size[0] / base_cell_size), 10)
+    n_cells_y = max(int(domain_size[1] / base_cell_size), 10)
+    n_cells_z = max(int(domain_size[2] / base_cell_size), 10)
+    
+    # Create mesh configuration
+    mesh_config = {
+        "type": "snappyHexMesh",
+        "mesh_topology": "snappy_stl",
+        "geometry_type": "stl",
+        "is_external_flow": is_external_flow,
+        "is_2d": False,  # STL is always 3D
+        "stl_file_path": stl_file_path,
+        
+        # Background mesh configuration
+        "background_mesh": {
+            "type": "blockMesh",
+            "domain_origin": domain_origin,
+            "domain_size": domain_size,
+            "n_cells_x": n_cells_x,
+            "n_cells_y": n_cells_y,
+            "n_cells_z": n_cells_z,
+            "base_cell_size": base_cell_size
+        },
+        
+        # STL geometry configuration
+        "geometry": {
+            "stl_surfaces": create_stl_surface_definitions(stl_surfaces, stl_file_path),
+            "refinement_regions": create_stl_refinement_regions(dimensions, flow_context)
+        },
+        
+        # snappyHexMesh settings
+        "snappy_settings": {
+            "castellated_mesh": True,
+            "snap": True,
+            "add_layers": is_external_flow,  # Add layers for external flow
+            "refinement_levels": surface_levels,
+            "surface_refinement": {
+                "min_level": surface_levels["min"],
+                "max_level": surface_levels["max"],
+                "feature_angle": 30.0,
+                "resolve_feature_angle": 30.0
+            },
+            "layers": layer_settings if is_external_flow else {},
+            "quality_controls": {
+                "max_non_ortho": 65,
+                "max_boundary_skewness": 20,
+                "max_internal_skewness": 4,
+                "max_concave": 80,
+                "min_flatness": 0.5,
+                "min_vol": 1e-13,
+                "min_tet_quality": 1e-9,
+                "min_area": -1,
+                "min_twist": 0.02,
+                "min_determinant": 0.001,
+                "min_face_weight": 0.02,
+                "min_vol_ratio": 0.01,
+                "min_triangle_twist": -1,
+                "n_smooth_iterations": 3,
+                "n_relax_iter": 5
+            }
+        },
+        
+        # Dimensions and metrics
+        "dimensions": {
+            **dimensions,
+            "domain_length": domain_size[0],
+            "domain_height": domain_size[1], 
+            "domain_width": domain_size[2],
+            "characteristic_length": char_length,
+            "domain_origin": domain_origin,
+            "domain_size": domain_size
+        },
+        
+        "resolution": {
+            "background": base_resolution,
+            "surface": surface_resolution,
+            "base_cell_size": base_cell_size,
+            "surface_levels": surface_levels
+        },
+        
+        "total_cells": estimated_cells,
+        "quality_metrics": {
+            "aspect_ratio": 2.0,  # STL meshes typically have higher aspect ratios
+            "quality_score": 0.85  # Slightly lower than parametric due to complexity
+        },
+        
+        # Boundary conditions mapping
+        "boundary_regions": create_stl_boundary_regions(stl_surfaces, is_external_flow),
+        
+        # Flow context
+        "flow_context": flow_context
+    }
+    
+    return mesh_config
+
+
+def create_stl_surface_definitions(stl_surfaces: list, stl_file_path: str) -> Dict[str, Any]:
+    """Create surface definitions for STL geometry."""
+    surfaces = {}
+    
+    # Add the main STL geometry
+    surfaces["stl_geometry"] = {
+        "type": "triSurfaceMesh",
+        "file": stl_file_path,
+        "regions": {}
+    }
+    
+    # Add surface regions based on STL surface classification
+    for i, surface in enumerate(stl_surfaces):
+        region_name = f"stl_{surface['name']}"
+        surfaces["stl_geometry"]["regions"][region_name] = {
+            "name": region_name,
+            "type": surface["recommended_bc"]["description"]
+        }
+    
+    return surfaces
+
+
+def create_stl_refinement_regions(dimensions: Dict[str, Any], flow_context: Dict[str, Any]) -> Dict[str, Any]:
+    """Create refinement regions around STL geometry."""
+    char_length = dimensions.get("characteristic_length", 1.0)
+    is_external_flow = flow_context.get("is_external_flow", True)
+    
+    regions = {}
+    
+    if is_external_flow:
+        # Create refinement box around STL geometry
+        regions["near_surface"] = {
+            "type": "box",
+            "min": [
+                -char_length * 2,
+                -char_length * 2,
+                -char_length * 2
+            ],
+            "max": [
+                char_length * 4,
+                char_length * 2,
+                char_length * 2
+            ],
+            "levels": [1, 2],
+            "mode": "inside"
+        }
+        
+        # Wake refinement region (downstream)
+        regions["wake"] = {
+            "type": "box",
+            "min": [
+                char_length * 0.5,
+                -char_length * 1.5,
+                -char_length * 1.5
+            ],
+            "max": [
+                char_length * 8,
+                char_length * 1.5,
+                char_length * 1.5
+            ],
+            "levels": [1, 1],
+            "mode": "inside"
+        }
+    else:
+        # Internal flow - refine entire domain
+        regions["internal_flow"] = {
+            "type": "box",
+            "min": [
+                -dimensions.get("length", char_length) * 0.6,
+                -dimensions.get("height", char_length) * 0.6,
+                -dimensions.get("width", char_length) * 0.6
+            ],
+            "max": [
+                dimensions.get("length", char_length) * 0.6,
+                dimensions.get("height", char_length) * 0.6,
+                dimensions.get("width", char_length) * 0.6
+            ],
+            "levels": [1, 2],
+            "mode": "inside"
+        }
+    
+    return regions
+
+
+def create_stl_boundary_regions(stl_surfaces: list, is_external_flow: bool) -> Dict[str, Any]:
+    """Create boundary region definitions for STL surfaces."""
+    boundary_regions = {}
+    
+    # Map STL surfaces to boundary conditions
+    for surface in stl_surfaces:
+        region_name = f"stl_{surface['name']}"
+        bc_info = surface["recommended_bc"]
+        
+        boundary_regions[region_name] = {
+            "type": bc_info["description"],
+            "velocity_bc": bc_info.get("U", "noSlip"),
+            "pressure_bc": bc_info.get("p", "zeroGradient"),
+            "area": surface.get("area", 0.0),
+            "normal": surface.get("normal", [0, 0, 1])
+        }
+    
+    # Add domain boundaries for external flow
+    if is_external_flow:
+        boundary_regions.update({
+            "inlet": {
+                "type": "Velocity inlet",
+                "velocity_bc": "fixedValue",
+                "pressure_bc": "zeroGradient"
+            },
+            "outlet": {
+                "type": "Pressure outlet",
+                "velocity_bc": "zeroGradient",
+                "pressure_bc": "fixedValue"
+            },
+            "sides": {
+                "type": "Wall",
+                "velocity_bc": "slip",
+                "pressure_bc": "zeroGradient"
+            }
+        })
+    
+    return boundary_regions
 
 
 def generate_sphere_internal_mesh(dimensions: Dict[str, float], resolution_multiplier: float, params: Dict[str, Any]) -> Dict[str, Any]:

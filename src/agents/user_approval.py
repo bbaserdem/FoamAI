@@ -1,6 +1,7 @@
 """User Approval Agent - Shows configuration and waits for user approval."""
 
 import json
+import sys
 from pathlib import Path
 from typing import Dict, Any
 from loguru import logger
@@ -8,11 +9,11 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from rich.prompt import Prompt, Confirm
 
 from .state import CFDState, CFDStep
 
-console = Console()
+# Use the same console instance as the CLI
+console = Console(file=sys.stdout)
 
 
 def user_approval_agent(state: CFDState) -> CFDState:
@@ -77,35 +78,32 @@ def user_approval_agent(state: CFDState) -> CFDState:
 
 
 def display_configuration_summary(state: CFDState) -> None:
-    """Display a comprehensive summary of the configuration."""
+    """Display comprehensive configuration summary using rich tables."""
     
-    console.print("\n" + "="*80)
-    console.print(
-        Panel(
-            "[bold blue]SIMULATION CONFIGURATION REVIEW[/bold blue]\n"
-            "Please review the following configuration before proceeding with the simulation.",
-            title="Configuration Review",
-            border_style="blue"
-        )
-    )
+    # Create stderr console to avoid stdout interference
+    stderr_console = Console(file=sys.stderr)
     
-    # Display solver information
-    display_solver_info(state)
+    # Display solver configuration
+    display_solver_config(state, stderr_console)
     
-    # Display mesh information
-    display_mesh_info(state)
+    # Display mesh configuration
+    display_mesh_config(state, stderr_console)
+    
+    # Display STL geometry if present
+    if state.get("geometry_source") == "stl":
+        display_stl_geometry(state, stderr_console)
     
     # Display boundary conditions
-    display_boundary_conditions(state)
+    display_boundary_conditions(state, stderr_console)
     
     # Display simulation parameters
-    display_simulation_parameters(state)
+    display_simulation_parameters(state, stderr_console)
     
-    # Display file locations
-    display_file_locations(state)
+    # Display generated files
+    display_generated_files(state, stderr_console)
 
 
-def display_solver_info(state: CFDState) -> None:
+def display_solver_config(state: CFDState, console: Console) -> None:
     """Display solver selection and settings."""
     solver_settings = state.get("solver_settings", {})
     
@@ -146,54 +144,193 @@ def display_solver_info(state: CFDState) -> None:
         console.print("[yellow]⚠️  No solver settings available[/yellow]")
 
 
-def display_mesh_info(state: CFDState) -> None:
+def display_mesh_config(state: CFDState, console: Console) -> None:
     """Display mesh configuration."""
-    mesh_config = state.get("mesh_config", {})
-    mesh_quality = state.get("mesh_quality", {})
     
-    if mesh_config:
-        table = Table(title="🔲 Mesh Configuration", show_header=True, header_style="bold cyan")
-        table.add_column("Parameter", style="cyan")
-        table.add_column("Value", style="green")
+    mesh_config = state.get("mesh_config", {})
+    if not mesh_config:
+        return
+    
+    # Create mesh table
+    mesh_table = Table(title="🔲 Mesh Configuration", show_header=True)
+    mesh_table.add_column("Property", style="cyan", min_width=20)
+    mesh_table.add_column("Value", style="white", min_width=30)
+    
+    # Basic mesh info
+    mesh_type = mesh_config.get("type", "N/A")
+    mesh_table.add_row("Mesh Type", mesh_type)
+    
+    geometry_type = mesh_config.get("geometry_type", "N/A")
+    mesh_table.add_row("Geometry Type", str(geometry_type))
+    
+    # Handle both STL and parametric mesh configurations
+    if geometry_type == "stl":
+        # STL mesh configuration
+        background_mesh = mesh_config.get("background_mesh", {})
+        if background_mesh:
+            n_cells_x = background_mesh.get("n_cells_x", 0)
+            n_cells_y = background_mesh.get("n_cells_y", 0) 
+            n_cells_z = background_mesh.get("n_cells_z", 0)
+            mesh_table.add_row("Background Cells", f"{n_cells_x} × {n_cells_y} × {n_cells_z}")
+            
+            base_size = background_mesh.get("base_cell_size", 0)
+            if base_size > 0:
+                mesh_table.add_row("Base Cell Size", f"{base_size:.6f} m")
         
-        # Basic mesh info
-        mesh_type = mesh_config.get("type", "Unknown")
-        table.add_row("Mesh Type", str(mesh_type) if mesh_type is not None else "Unknown")
+        # Refinement settings
+        snappy_settings = mesh_config.get("snappy_settings", {})
+        if snappy_settings:
+            refinement_levels = snappy_settings.get("refinement_levels", {})
+            if refinement_levels:
+                min_level = refinement_levels.get("min", 0)
+                max_level = refinement_levels.get("max", 0)
+                mesh_table.add_row("Refinement Levels", f"{min_level} - {max_level}")
+            
+            add_layers = snappy_settings.get("add_layers", False)
+            mesh_table.add_row("Boundary Layers", "✓ Yes" if add_layers else "✗ No")
         
+        # STL file path
+        stl_file_path = mesh_config.get("stl_file_path")
+        if stl_file_path:
+            mesh_table.add_row("STL File", str(stl_file_path))
+    
+    else:
+        # Parametric mesh configuration (existing logic)
+        is_2d = mesh_config.get("is_2d", False)
+        mesh_table.add_row("Dimension", "2D" if is_2d else "3D")
+        
+        is_external = mesh_config.get("is_external_flow", False)
+        mesh_table.add_row("Flow Type", "External" if is_external else "Internal")
+        
+        # Cell counts
         total_cells = mesh_config.get("total_cells", 0)
-        table.add_row("Total Cells", f"{total_cells:,}" if total_cells is not None else "N/A")
+        if total_cells > 0:
+            mesh_table.add_row("Total Cells", f"{total_cells:,}")
         
-        # Geometry info
-        geometry_type = mesh_config.get("geometry_type", "Unknown")
-        if hasattr(geometry_type, 'value'):
-            geometry_type = geometry_type.value
-        table.add_row("Geometry Type", str(geometry_type) if geometry_type is not None else "Unknown")
-        
-        # Dimensions
+        # Domain dimensions
         dimensions = mesh_config.get("dimensions", {})
         if dimensions:
-            for key, value in dimensions.items():
-                if isinstance(value, (int, float)) and value is not None:
-                    table.add_row(f"  {key.replace('_', ' ').title()}", f"{value:.3f} m")
-                elif value is not None:
-                    table.add_row(f"  {key.replace('_', ' ').title()}", str(value))
+            domain_length = dimensions.get("domain_length", 0)
+            domain_height = dimensions.get("domain_height", 0)
+            if domain_length > 0 and domain_height > 0:
+                mesh_table.add_row("Domain Size", f"{domain_length:.2f} × {domain_height:.2f} m")
         
-        # Mesh quality
-        if mesh_quality:
-            quality_score = mesh_quality.get("quality_score", 0)
-            if quality_score is not None:
-                table.add_row("Quality Score", f"{quality_score:.2f}/1.0")
+        # Resolution
+        resolution = mesh_config.get("resolution", {})
+        if resolution:
+            background_res = resolution.get("background", 0)
+            if background_res > 0:
+                mesh_table.add_row("Background Resolution", str(background_res))
+    
+    # Quality metrics (common to both)
+    quality_metrics = mesh_config.get("quality_metrics", {})
+    if quality_metrics:
+        aspect_ratio = quality_metrics.get("aspect_ratio", 0)
+        if aspect_ratio > 0:
+            mesh_table.add_row("Aspect Ratio", f"{aspect_ratio:.2f}")
+        
+        quality_score = quality_metrics.get("quality_score", 0)
+        if quality_score > 0:
+            mesh_table.add_row("Quality Score", f"{quality_score:.2f}")
+    
+    console.print(mesh_table)
+    console.print()
+
+
+def display_stl_geometry(state: CFDState, console: Console) -> None:
+    """Display STL geometry information."""
+    
+    stl_geometry = state.get("stl_geometry", {})
+    geometry_info = state.get("geometry_info", {})
+    
+    if not stl_geometry:
+        return
+    
+    # Create STL geometry table
+    stl_table = Table(title="🔷 STL Geometry Information", show_header=True)
+    stl_table.add_column("Property", style="cyan", min_width=20)
+    stl_table.add_column("Value", style="white", min_width=30)
+    
+    # Basic geometry info
+    stl_table.add_row("File Path", str(stl_geometry.get("file_path", "N/A")))
+    stl_table.add_row("Triangles", str(stl_geometry.get("num_triangles", 0)))
+    stl_table.add_row("Vertices", str(stl_geometry.get("num_vertices", 0)))
+    
+    # Dimensions
+    bbox = stl_geometry.get("bounding_box", {})
+    if bbox:
+        dimensions = bbox.get("dimensions", [0, 0, 0])
+        stl_table.add_row("Dimensions (L×W×H)", f"{dimensions[0]:.3f} × {dimensions[1]:.3f} × {dimensions[2]:.3f} m")
+    
+    char_length = stl_geometry.get("characteristic_length", 0)
+    if char_length > 0:
+        stl_table.add_row("Characteristic Length", f"{char_length:.3f} m")
+    
+    surface_area = stl_geometry.get("surface_area", 0)
+    if surface_area > 0:
+        stl_table.add_row("Surface Area", f"{surface_area:.6f} m²")
+    
+    volume = stl_geometry.get("volume")
+    if volume:
+        stl_table.add_row("Volume", f"{volume:.6f} m³")
+    
+    # Mesh quality
+    is_watertight = stl_geometry.get("is_watertight", False)
+    stl_table.add_row("Watertight", "✓ Yes" if is_watertight else "✗ No")
+    
+    # Flow context
+    flow_context = geometry_info.get("flow_context", {})
+    if flow_context:
+        is_external = flow_context.get("is_external_flow", True)
+        stl_table.add_row("Flow Type", "External" if is_external else "Internal")
+        
+        flow_direction = flow_context.get("flow_direction", "x")
+        stl_table.add_row("Flow Direction", f"{flow_direction.upper()}-axis")
+    
+    # Mesh recommendations
+    mesh_rec = stl_geometry.get("mesh_recommendations", {})
+    if mesh_rec:
+        base_size = mesh_rec.get("base_cell_size", 0)
+        if base_size > 0:
+            stl_table.add_row("Base Cell Size", f"{base_size:.6f} m")
+        
+        estimated_cells = mesh_rec.get("estimated_cells", 0)
+        if estimated_cells > 0:
+            stl_table.add_row("Estimated Cells", f"{estimated_cells:,}")
+    
+    console.print(stl_table)
+    console.print()
+    
+    # Display STL surfaces if available
+    stl_surfaces = geometry_info.get("stl_surfaces", [])
+    if stl_surfaces:
+        surfaces_table = Table(title="🔷 STL Surfaces & Boundary Conditions", show_header=True)
+        surfaces_table.add_column("Surface", style="cyan", min_width=15)
+        surfaces_table.add_column("Type", style="green", min_width=15)
+        surfaces_table.add_column("Triangles", style="white", min_width=10)
+        surfaces_table.add_column("Recommended BC", style="yellow", min_width=15)
+        surfaces_table.add_column("Description", style="white", min_width=20)
+        
+        for surface in stl_surfaces:
+            name = surface.get("name", "Unknown")
+            triangle_count = surface.get("triangle_count", 0)
+            bc_info = surface.get("recommended_bc", {})
+            bc_type = bc_info.get("U", "N/A")
+            description = bc_info.get("description", "N/A")
             
-            aspect_ratio = mesh_quality.get("aspect_ratio", 0)
-            if aspect_ratio is not None and aspect_ratio > 0:
-                table.add_row("Aspect Ratio", f"{aspect_ratio:.2f}")
+            surfaces_table.add_row(
+                name,
+                name.replace("_", " ").title(),
+                str(triangle_count),
+                bc_type,
+                description
+            )
         
-        console.print(table)
-    else:
-        console.print("[yellow]⚠️  No mesh configuration available[/yellow]")
+        console.print(surfaces_table)
+        console.print()
 
 
-def display_boundary_conditions(state: CFDState) -> None:
+def display_boundary_conditions(state: CFDState, console: Console) -> None:
     """Display boundary conditions."""
     boundary_conditions = state.get("boundary_conditions", {})
     
@@ -237,7 +374,7 @@ def display_boundary_conditions(state: CFDState) -> None:
         console.print("[yellow]⚠️  No boundary conditions available[/yellow]")
 
 
-def display_simulation_parameters(state: CFDState) -> None:
+def display_simulation_parameters(state: CFDState, console: Console) -> None:
     """Display key simulation parameters."""
     parsed_params = state.get("parsed_parameters", {})
     
@@ -280,7 +417,7 @@ def display_simulation_parameters(state: CFDState) -> None:
         console.print("[yellow]⚠️  No simulation parameters available[/yellow]")
 
 
-def display_file_locations(state: CFDState) -> None:
+def display_generated_files(state: CFDState, console: Console) -> None:
     """Display file locations."""
     case_directory = state.get("case_directory", "")
     
@@ -316,8 +453,11 @@ def display_file_locations(state: CFDState) -> None:
 
 def get_user_decision() -> str:
     """Get user decision on whether to proceed, make changes, or cancel."""
-    console.print("\n" + "="*80)
-    console.print(
+    # Create a console that outputs to stderr to avoid interference with progress
+    stderr_console = Console(file=sys.stderr)
+    
+    stderr_console.print("\n" + "="*80)
+    stderr_console.print(
         Panel(
             "[bold yellow]What would you like to do?[/bold yellow]\n\n"
             "[green]1. [bold]Approve[/bold] - Proceed with simulation using this configuration[/green]\n"
@@ -328,24 +468,45 @@ def get_user_decision() -> str:
         )
     )
     
+    # Force console output to be displayed
+    stderr_console.file.flush()
+    
     while True:
-        choice = Prompt.ask(
-            "\nEnter your choice",
-            choices=["1", "2", "3", "approve", "changes", "cancel"],
-            default="1"
-        )
-        
-        if choice in ["1", "approve"]:
-            return "approve"
-        elif choice in ["2", "changes"]:
-            return "changes"
-        elif choice in ["3", "cancel"]:
+        try:
+            # Use regular input() for more reliable user interaction
+            print("\nEnter your choice [1/2/3/approve/changes/cancel] (default: 1): ", end="", file=sys.stderr)
+            sys.stderr.flush()
+            choice = input().strip()
+            
+            # Handle empty input (use default)
+            if not choice:
+                choice = "1"
+            
+            # Process the choice
+            if choice.lower() in ["1", "approve"]:
+                return "approve"
+            elif choice.lower() in ["2", "changes"]:
+                return "changes"
+            elif choice.lower() in ["3", "cancel"]:
+                return "cancel"
+            else:
+                print("Invalid choice. Please enter 1, 2, 3, or approve/changes/cancel.", file=sys.stderr)
+                continue
+                
+        except (KeyboardInterrupt, EOFError):
+            print("\nOperation cancelled by user.", file=sys.stderr)
+            return "cancel"
+        except Exception as e:
+            print(f"Error reading input: {e}", file=sys.stderr)
             return "cancel"
 
 
 def get_change_requests() -> str:
     """Get change requests from the user."""
-    console.print(
+    # Create a console that outputs to stderr to avoid interference with progress
+    stderr_console = Console(file=sys.stderr)
+    
+    stderr_console.print(
         Panel(
             "[bold blue]Describe the changes you'd like to make:[/bold blue]\n\n"
             "You can request changes to:\n"
@@ -359,9 +520,22 @@ def get_change_requests() -> str:
         )
     )
     
-    change_requests = Prompt.ask(
-        "\nDescribe your requested changes",
-        default="No specific changes"
-    )
+    # Force console output to be displayed
+    stderr_console.file.flush()
     
-    return change_requests 
+    try:
+        print("\nDescribe your requested changes (press Enter for default): ", end="", file=sys.stderr)
+        sys.stderr.flush()
+        change_requests = input().strip()
+        
+        if not change_requests:
+            change_requests = "No specific changes"
+            
+        return change_requests
+        
+    except (KeyboardInterrupt, EOFError):
+        print("\nOperation cancelled by user.", file=sys.stderr)
+        return "User cancelled"
+    except Exception as e:
+        print(f"Error reading input: {e}", file=sys.stderr)
+        return "Error reading input" 

@@ -1,4 +1,4 @@
-"""Natural Language Interpreter Agent - Parses user prompts into CFD parameters."""
+"""Natural Language Interpreter Agent - Parses user prompts into structured CFD parameters."""
 
 import json
 import re
@@ -11,6 +11,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 
 from .state import CFDState, CFDStep, GeometryType, FlowType, AnalysisType
+from .stl_processor import validate_stl_file, process_stl_file
 
 
 class FlowContext(BaseModel):
@@ -397,163 +398,23 @@ def nl_interpreter_agent(state: CFDState) -> CFDState:
     """
     Natural Language Interpreter Agent.
     
-    Parses user's natural language prompt into structured CFD parameters
-    using OpenAI GPT-4 with structured output parsing.
+    Parses user's natural language prompt into structured CFD parameters,
+    including geometry information, flow conditions, and analysis requirements.
+    Now supports STL file integration for custom geometries.
     """
     try:
         if state["verbose"]:
-            logger.info(f"NL Interpreter: Processing prompt: {state['user_prompt']}")
+            logger.info("NL Interpreter: Starting natural language interpretation")
         
-        # Get settings for API key
-        import sys
-        sys.path.append('src')
-        from foamai.config import get_settings
-        settings = get_settings()
+        user_prompt = state["user_prompt"]
+        geometry_source = state["geometry_source"]
         
-        # Create LLM with structured output
-        llm = ChatOpenAI(
-            api_key=settings.openai_api_key,
-            model="gpt-4o-mini",  # Use mini for faster response during development
-            temperature=0.1,  # Low temperature for consistent parsing
-            max_tokens=2000
-        )
-        
-        # Create output parser
-        parser = PydanticOutputParser(pydantic_object=CFDParameters)
-        
-        # Create prompt template with enhanced instructions
-        prompt = ChatPromptTemplate.from_template("""
-You are an expert CFD engineer. Parse the following natural language description of a fluid dynamics problem into structured parameters.
-
-Extract all relevant information including:
-- Geometry type and dimensions (extract numerical values with units)
-- Flow context (is it flow AROUND an object or THROUGH a channel/pipe?)
-- Flow conditions (velocity, pressure, temperature)
-- Fluid properties (density, viscosity)
-- Boundary conditions
-- Analysis type (steady/unsteady, laminar/turbulent)
-- Solver preferences
-- Mesh preferences
-
-IMPORTANT RULES:
-1. For "flow around" objects (cylinder, sphere, airfoil), set is_external_flow=true and domain_type="unbounded"
-2. For "flow through" or "flow in" objects (pipe, channel), set is_external_flow=false and domain_type="channel"
-3. If neither is specified, use these defaults:
-   - Cylinder, Sphere, Airfoil → external flow (around object)
-   - Pipe, Channel → internal flow (through object)
-4. Extract ALL numerical dimensions mentioned (with unit conversion to meters)
-5. For external flow, set domain_size_multiplier appropriately (typically 20-30x object size)
-6. DEFAULT TO UNSTEADY (TRANSIENT) ANALYSIS unless the user explicitly mentions "steady", "steady-state", or "stationary"
-
-Problem Description: {user_prompt}
-
-Examples of dimension extraction:
-- "10mm diameter cylinder" → diameter: 0.01 (converted to meters)
-- "5 inch pipe" → diameter: 0.127 (converted to meters)
-- "flow around a cylinder" → is_external_flow: true, domain_type: "unbounded"
-- "flow through a pipe" → is_external_flow: false, domain_type: "channel"
-
-Examples of analysis type extraction:
-- "flow around a cylinder" → analysis_type: UNSTEADY (default)
-- "steady flow around a cylinder" → analysis_type: STEADY (explicitly mentioned)
-- "steady-state simulation" → analysis_type: STEADY (explicitly mentioned)
-- "turbulent flow" → analysis_type: UNSTEADY (default)
-- "transient flow" → analysis_type: UNSTEADY (explicitly mentioned)
-
-Examples of simulation time extraction:
-- "simulate for 5 seconds" → simulation_time: 5.0
-- "run for 0.5s" → simulation_time: 0.5
-- "10 second simulation" → simulation_time: 10.0
-- No time specified → simulation_time: null (will default to 1.0s)
-
-Examples of mesh resolution:
-- "coarse mesh" → mesh_resolution: "coarse"
-- "fine resolution" → mesh_resolution: "fine"
-- No mesh specified → mesh_resolution: null (will default to "medium")
-
-{format_instructions}
-
-Return valid JSON that matches the schema exactly.
-""")
-        
-        # Create chain
-        chain = prompt | llm | parser
-        
-        # Process the user prompt
-        result = chain.invoke({
-            "user_prompt": state["user_prompt"],
-            "format_instructions": parser.get_format_instructions()
-        })
-        
-        # Convert to dictionary
-        parsed_params = result.dict()
-        
-        # Extract dimensions from text (as backup/enhancement)
-        text_dimensions = extract_dimensions_from_text(state["user_prompt"], parsed_params["geometry_type"])
-        
-        # Merge extracted dimensions with LLM-parsed dimensions
-        for key, value in text_dimensions.items():
-            if key not in parsed_params["geometry_dimensions"] or parsed_params["geometry_dimensions"][key] is None:
-                parsed_params["geometry_dimensions"][key] = value
-        
-        # Infer flow context if not properly set
-        if "flow_context" not in parsed_params or parsed_params["flow_context"] is None:
-            parsed_params["flow_context"] = infer_flow_context(state["user_prompt"], parsed_params["geometry_type"]).dict()
-        
-        # Apply intelligent defaults for missing dimensions
-        parsed_params["geometry_dimensions"] = apply_intelligent_defaults(
-            parsed_params["geometry_type"],
-            parsed_params["geometry_dimensions"],
-            FlowContext(**parsed_params["flow_context"]),
-            parsed_params.get("reynolds_number")
-        )
-        
-        # Extract geometry information with flow context
-        geometry_info = {
-            "type": parsed_params["geometry_type"],
-            "dimensions": parsed_params["geometry_dimensions"],
-            "mesh_resolution": parsed_params.get("mesh_resolution", "medium"),
-            "flow_context": parsed_params["flow_context"]
-        }
-        
-        # Log results if verbose
-        if state["verbose"]:
-            logger.info(f"NL Interpreter: Extracted geometry: {geometry_info}")
-            logger.info(f"NL Interpreter: Flow context: {parsed_params['flow_context']}")
-            logger.info(f"NL Interpreter: Flow type: {parsed_params['flow_type']}")
-            logger.info(f"NL Interpreter: Analysis type: {parsed_params['analysis_type']}")
-        
-        # Calculate Reynolds number if not provided
-        if not parsed_params.get("reynolds_number") and parsed_params.get("velocity"):
-            reynolds_number = calculate_reynolds_number(parsed_params, geometry_info)
-            if reynolds_number:
-                parsed_params["reynolds_number"] = reynolds_number
-        
-        # Set default fluid properties if not specified
-        parsed_params = set_default_fluid_properties(parsed_params)
-        
-        # Detect multiphase flow indicators
-        multiphase_info = detect_multiphase_flow(state["user_prompt"])
-        
-        # Merge multiphase information into parsed parameters
-        parsed_params["is_multiphase"] = multiphase_info["is_multiphase"]
-        parsed_params["phases"] = multiphase_info["phases"]
-        parsed_params["free_surface"] = multiphase_info["free_surface"]
-        
-        # Detect boundary conditions from prompt
-        boundary_conditions = detect_boundary_conditions(state["user_prompt"])
-        for key, value in boundary_conditions.items():
-            if key not in parsed_params or parsed_params[key] is None:
-                parsed_params[key] = value
-        
-        return {
-            **state,
-            "parsed_parameters": parsed_params,
-            "geometry_info": geometry_info,
-            "original_prompt": state["user_prompt"],  # Pass original prompt for AI solver selection
-            "errors": []
-        }
-        
+        # Handle STL file if present
+        if geometry_source == "stl" and state["stl_file_path"]:
+            return process_stl_workflow(state, user_prompt)
+        else:
+            return process_parametric_workflow(state, user_prompt)
+            
     except Exception as e:
         logger.error(f"NL Interpreter error: {str(e)}")
         return {
@@ -561,6 +422,205 @@ Return valid JSON that matches the schema exactly.
             "errors": state["errors"] + [f"Natural language interpretation failed: {str(e)}"],
             "current_step": CFDStep.ERROR
         }
+
+
+def process_stl_workflow(state: CFDState, user_prompt: str) -> CFDState:
+    """Process workflow with STL file geometry."""
+    if state["verbose"]:
+        logger.info(f"Processing STL workflow with file: {state['stl_file_path']}")
+    
+    # Validate STL file
+    is_valid, warnings = validate_stl_file(state["stl_file_path"])
+    
+    if not is_valid:
+        error_msg = f"STL file validation failed: {'; '.join(warnings)}"
+        logger.error(error_msg)
+        return {
+            **state,
+            "errors": state["errors"] + [error_msg],
+            "current_step": CFDStep.ERROR
+        }
+    
+    # Process STL geometry
+    stl_geometry = process_stl_file(state["stl_file_path"])
+    
+    if not stl_geometry:
+        error_msg = "Failed to process STL geometry"
+        logger.error(error_msg)
+        return {
+            **state,
+            "errors": state["errors"] + [error_msg],
+            "current_step": CFDStep.ERROR
+        }
+    
+    # Parse flow parameters from prompt (same as parametric workflow)
+    parsed_params = parse_flow_parameters(user_prompt)
+    
+    # Determine flow context for STL geometry
+    flow_context = determine_stl_flow_context(user_prompt, stl_geometry)
+    
+    # Create geometry info based on STL
+    geometry_info = create_stl_geometry_info(stl_geometry, flow_context)
+    
+    # Add STL-specific warnings
+    all_warnings = state["warnings"] + warnings
+    if stl_geometry.get("estimated_cells", 0) > 500000:
+        all_warnings.append("STL geometry may result in a large mesh - consider using coarser settings")
+    
+    if state["verbose"]:
+        logger.info(f"STL Interpreter: Processed {stl_geometry['num_triangles']} triangles")
+        logger.info(f"STL Interpreter: Characteristic length: {stl_geometry['characteristic_length']:.3f}m")
+        logger.info(f"STL Interpreter: Flow type: {parsed_params.get('flow_type', 'unknown')}")
+    
+    return {
+        **state,
+        "parsed_parameters": parsed_params,
+        "geometry_info": geometry_info,
+        "stl_geometry": stl_geometry,
+        "warnings": all_warnings,
+        "errors": []
+    }
+
+
+def process_parametric_workflow(state: CFDState, user_prompt: str) -> CFDState:
+    """Process workflow with parametric geometry (original functionality)."""
+    if state["verbose"]:
+        logger.info("Processing parametric geometry workflow")
+    
+    # Parse the user prompt
+    parsed_params = parse_user_prompt(user_prompt)
+    
+    # Extract geometry information
+    geometry_info = extract_geometry_info(parsed_params, user_prompt)
+    
+    # Validate parsed parameters
+    validation_result = validate_parsed_parameters(parsed_params, geometry_info)
+    if not validation_result["valid"]:
+        logger.warning(f"Parameter validation issues: {validation_result['warnings']}")
+        return {
+            **state,
+            "errors": state["errors"] + validation_result["errors"],
+            "warnings": state["warnings"] + validation_result["warnings"]
+        }
+    
+    if state["verbose"]:
+        logger.info(f"NL Interpreter: Geometry type = {geometry_info.get('type', 'unknown')}")
+        logger.info(f"NL Interpreter: Flow type = {parsed_params.get('flow_type', 'unknown')}")
+        logger.info(f"NL Interpreter: Analysis type = {parsed_params.get('analysis_type', 'unknown')}")
+    
+    return {
+        **state,
+        "parsed_parameters": parsed_params,
+        "geometry_info": geometry_info,
+        "warnings": state["warnings"] + validation_result["warnings"],
+        "errors": []
+    }
+
+
+def determine_stl_flow_context(user_prompt: str, stl_geometry: Dict[str, Any]) -> Dict[str, Any]:
+    """Determine flow context for STL geometry based on prompt."""
+    prompt_lower = user_prompt.lower()
+    
+    # Determine if this is internal or external flow
+    is_external_flow = True  # Default assumption
+    
+    # Keywords that suggest internal flow
+    internal_keywords = [
+        "through", "inside", "internal", "pipe", "duct", "channel", 
+        "tube", "passage", "cavity", "inlet", "flow through"
+    ]
+    
+    if any(keyword in prompt_lower for keyword in internal_keywords):
+        is_external_flow = False
+    
+    # Keywords that suggest external flow
+    external_keywords = [
+        "around", "over", "external", "aerodynamic", "wind", "air flow",
+        "flow around", "flow over", "drag", "lift"
+    ]
+    
+    if any(keyword in prompt_lower for keyword in external_keywords):
+        is_external_flow = True
+    
+    # Determine domain sizing based on geometry
+    dimensions = stl_geometry["bounding_box"]["dimensions"]
+    char_length = stl_geometry["characteristic_length"]
+    
+    if is_external_flow:
+        # External flow needs larger domain
+        domain_size_multiplier = 20.0
+        inlet_distance = char_length * 10
+        outlet_distance = char_length * 15
+    else:
+        # Internal flow - domain is the geometry itself
+        domain_size_multiplier = 1.2  # Just slightly larger
+        inlet_distance = char_length * 0.1
+        outlet_distance = char_length * 0.1
+    
+    return {
+        "is_external_flow": is_external_flow,
+        "domain_size_multiplier": domain_size_multiplier,
+        "inlet_distance": inlet_distance,
+        "outlet_distance": outlet_distance,
+        "mesh_resolution": "medium",  # Default, can be overridden
+        "flow_direction": determine_flow_direction(user_prompt, stl_geometry)
+    }
+
+
+def determine_flow_direction(user_prompt: str, stl_geometry: Dict[str, Any]) -> str:
+    """Determine primary flow direction from prompt and geometry."""
+    prompt_lower = user_prompt.lower()
+    
+    # Look for directional indicators in prompt
+    if any(word in prompt_lower for word in ["x-direction", "along x", "horizontal"]):
+        return "x"
+    elif any(word in prompt_lower for word in ["y-direction", "along y", "lateral"]):
+        return "y"
+    elif any(word in prompt_lower for word in ["z-direction", "along z", "vertical"]):
+        return "z"
+    
+    # Default to longest dimension of geometry
+    dimensions = stl_geometry["bounding_box"]["dimensions"]
+    max_dim_idx = dimensions.index(max(dimensions))
+    
+    return ["x", "y", "z"][max_dim_idx]
+
+
+def create_stl_geometry_info(stl_geometry: Dict[str, Any], flow_context: Dict[str, Any]) -> Dict[str, Any]:
+    """Create geometry info structure for STL-based geometry."""
+    
+    # Use a generic "custom" geometry type for STL
+    geometry_type = GeometryType.CUSTOM if hasattr(GeometryType, 'CUSTOM') else "custom"
+    
+    # Extract dimensions from STL bounding box
+    bbox = stl_geometry["bounding_box"]
+    dimensions = {
+        "length": bbox["dimensions"][0],
+        "width": bbox["dimensions"][1], 
+        "height": bbox["dimensions"][2],
+        "characteristic_length": stl_geometry["characteristic_length"],
+        "surface_area": stl_geometry["surface_area"]
+    }
+    
+    # Add volume if available
+    if stl_geometry.get("volume"):
+        dimensions["volume"] = stl_geometry["volume"]
+    
+    return {
+        "type": geometry_type,
+        "dimensions": dimensions,
+        "mesh_resolution": flow_context.get("mesh_resolution", "medium"),
+        "flow_context": flow_context,
+        "stl_surfaces": stl_geometry.get("surfaces", []),
+        "mesh_recommendations": stl_geometry.get("mesh_recommendations", {}),
+        "source": "stl"
+    }
+
+
+def parse_flow_parameters(user_prompt: str) -> Dict[str, Any]:
+    """Parse flow parameters from user prompt (used for both STL and parametric)."""
+    # Use existing parameter parsing logic
+    return parse_user_prompt(user_prompt)
 
 
 def calculate_reynolds_number(params: Dict[str, Any], geometry_info: Dict[str, Any]) -> Optional[float]:

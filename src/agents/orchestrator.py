@@ -304,22 +304,13 @@ def create_initial_state(
         export_images: bool = True,
         output_format: str = "images",
         max_retries: int = 3,
-        user_approval_enabled: bool = True,
-        stl_file = None
+        user_approval_enabled: bool = True
     ) -> CFDState:
     """Create initial state for the CFD workflow."""
-    
-    # Determine geometry source
-    geometry_source = "stl" if stl_file else "parametric"
-    stl_file_path = str(stl_file) if stl_file else None
-    
     return CFDState(
         user_prompt=user_prompt,
         parsed_parameters={},
         geometry_info={},
-        stl_file_path=stl_file_path,
-        stl_geometry=None,
-        geometry_source=geometry_source,
         mesh_config={},
         boundary_conditions={},
         solver_settings={},

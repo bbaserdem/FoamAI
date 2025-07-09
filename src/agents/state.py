@@ -66,11 +66,6 @@ class CFDState(TypedDict):
     parsed_parameters: Dict[str, Any]
     geometry_info: Dict[str, Any]
     
-    # STL file support
-    stl_file_path: Optional[str]
-    stl_geometry: Optional[Dict[str, Any]]
-    geometry_source: str  # "parametric" or "stl"
-    
     # Agent-specific outputs
     mesh_config: Dict[str, Any]
     boundary_conditions: Dict[str, Any]

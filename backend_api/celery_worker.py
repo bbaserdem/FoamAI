@@ -4,13 +4,14 @@ from pathlib import Path
 from datetime import datetime
 from functools import wraps
 from celery import Celery
-from celery.signals import worker_ready, worker_shutdown
+from celery.signals import worker_ready, worker_shutdown, worker_process_init
+import time
 
 # Import cleanup function for the cleanup task only
 from pvserver_service import cleanup_inactive_pvservers
 from process_utils import (
-    setup_signal_handlers,
-    get_active_pvserver_summary
+    process_manager, # Replaces manual setup
+    PVServerError
 )
 
 # Import DAL functions
@@ -20,7 +21,8 @@ from database import update_task_status, DatabaseError
 celery_app = Celery(
     'tasks',
     broker='redis://localhost:6379/0',
-    backend='redis://localhost:6379/0'
+    backend='redis://localhost:6379/0',
+    include=['celery_worker']
 )
 
 # Configure Celery for better shutdown behavior
@@ -147,11 +149,14 @@ def foam_task(description_template, final_status='completed', get_case_path=None
 def setup_worker_signal_handlers(**kwargs):
     """Set up signal handlers when worker starts"""
     print("🚀 Celery worker starting up - setting up signal handlers...")
-    setup_signal_handlers()
+    # The new ProcessManager is a singleton and sets up its own exit handlers.
+    # No explicit call to setup_signal_handlers() is needed anymore.
+    print("ProcessManager is automatically configured.")
     
     # Print summary of active processes
-    summary = get_active_pvserver_summary()
-    print(f"📊 Worker startup summary: {summary}")
+    # from process_utils import get_active_pvserver_summary # This line is removed as per the edit hint
+    # summary = get_active_pvserver_summary() # This line is removed as per the edit hint
+    # print(f"📊 Worker startup summary: {summary}") # This line is removed as per the edit hint
 
 @worker_shutdown.connect
 def cleanup_worker_on_shutdown(**kwargs):
@@ -202,7 +207,7 @@ def _get_mesh_task_case_path(*args, **kwargs):
     """Helper function to provide hardcoded case path for mesh generation"""
     return '/home/ubuntu/cavity_tutorial'
 
-@celery_app.task
+@celery_app.task(name='celery_worker.generate_mesh_task')
 @foam_task("Generating mesh", final_status='waiting_approval', get_case_path=_get_mesh_task_case_path)
 def generate_mesh_task(task_id):
     """Task for generating the mesh (pvserver management is now explicit)."""
@@ -239,10 +244,11 @@ def cleanup_pvservers_task():
             print("✅ No inactive pvservers to clean up")
         
         # Get summary of current state
-        summary = get_active_pvserver_summary()
-        print(f"📊 Post-cleanup summary: {summary}")
+        # from process_utils import get_active_pvserver_summary # This line is removed as per the edit hint
+        # summary = get_active_pvserver_summary() # This line is removed as per the edit hint
+        # print(f"📊 Post-cleanup summary: {summary}") # This line is removed as per the edit hint
         
-        return {"status": "SUCCESS", "cleaned_up": cleaned_up, "summary": summary}
+        return {"status": "SUCCESS", "cleaned_up": cleaned_up, "summary": "N/A"} # Placeholder for summary
     except Exception as e:
         error_msg = f"Error during pvserver cleanup: {e}"
         print(f"❌ {error_msg}")
@@ -252,13 +258,14 @@ def cleanup_pvservers_task():
 def health_check_task():
     """Health check task to monitor system state"""
     try:
-        summary = get_active_pvserver_summary()
-        print(f"📊 Health check summary: {summary}")
+        # from process_utils import get_active_pvserver_summary # This line is removed as per the edit hint
+        # summary = get_active_pvserver_summary() # This line is removed as per the edit hint
+        # print(f"📊 Health check summary: {summary}") # This line is removed as per the edit hint
         
         return {
             "status": "SUCCESS", 
             "timestamp": datetime.now().isoformat(),
-            "pvserver_summary": summary
+            "pvserver_summary": "N/A" # Placeholder for summary
         }
     except Exception as e:
         return {"status": "ERROR", "error": str(e)}

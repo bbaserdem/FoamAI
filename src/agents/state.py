@@ -91,6 +91,7 @@ class CFDState(TypedDict):
     
     # User approval tracking
     user_approved: bool
+    user_approval_enabled: bool
     
     # Quality metrics
     mesh_quality: Optional[Dict[str, Any]]

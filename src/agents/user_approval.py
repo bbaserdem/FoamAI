@@ -1,0 +1,367 @@
+"""User Approval Agent - Shows configuration and waits for user approval."""
+
+import json
+from pathlib import Path
+from typing import Dict, Any
+from loguru import logger
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+from rich.prompt import Prompt, Confirm
+
+from .state import CFDState, CFDStep
+
+console = Console()
+
+
+def user_approval_agent(state: CFDState) -> CFDState:
+    """
+    User Approval Agent.
+    
+    Displays the selected solver, mesh configuration, and hyperparameters
+    to the user and waits for approval or change requests.
+    """
+    try:
+        if state["verbose"]:
+            logger.info("User Approval: Displaying configuration for user review")
+        
+        # Display configuration summary
+        display_configuration_summary(state)
+        
+        # Get user input
+        user_decision = get_user_decision()
+        
+        if user_decision == "approve":
+            if state["verbose"]:
+                logger.info("User Approval: Configuration approved, proceeding to simulation")
+            
+            return {
+                **state,
+                "user_approved": True,
+                "errors": []
+            }
+        elif user_decision == "changes":
+            # User wants to make changes - collect feedback
+            change_requests = get_change_requests()
+            
+            if state["verbose"]:
+                logger.info(f"User Approval: Change requests received: {change_requests}")
+            
+            # For now, we'll go back to solver selection to re-process
+            # In a more sophisticated implementation, we could route to specific agents
+            # based on the type of change requested
+            return {
+                **state,
+                "user_approved": False,
+                "current_step": CFDStep.SOLVER_SELECTION,
+                "warnings": state["warnings"] + [f"User requested changes: {change_requests}"],
+                "errors": []
+            }
+        else:
+            # User cancelled
+            return {
+                **state,
+                "user_approved": False,
+                "current_step": CFDStep.ERROR,
+                "errors": state["errors"] + ["User cancelled the simulation"]
+            }
+        
+    except Exception as e:
+        logger.error(f"User Approval error: {str(e)}")
+        return {
+            **state,
+            "errors": state["errors"] + [f"User approval failed: {str(e)}"],
+            "current_step": CFDStep.ERROR
+        }
+
+
+def display_configuration_summary(state: CFDState) -> None:
+    """Display a comprehensive summary of the configuration."""
+    
+    console.print("\n" + "="*80)
+    console.print(
+        Panel(
+            "[bold blue]SIMULATION CONFIGURATION REVIEW[/bold blue]\n"
+            "Please review the following configuration before proceeding with the simulation.",
+            title="Configuration Review",
+            border_style="blue"
+        )
+    )
+    
+    # Display solver information
+    display_solver_info(state)
+    
+    # Display mesh information
+    display_mesh_info(state)
+    
+    # Display boundary conditions
+    display_boundary_conditions(state)
+    
+    # Display simulation parameters
+    display_simulation_parameters(state)
+    
+    # Display file locations
+    display_file_locations(state)
+
+
+def display_solver_info(state: CFDState) -> None:
+    """Display solver selection and settings."""
+    solver_settings = state.get("solver_settings", {})
+    
+    if solver_settings:
+        table = Table(title="🔧 Solver Configuration", show_header=True, header_style="bold cyan")
+        table.add_column("Parameter", style="cyan")
+        table.add_column("Value", style="green")
+        
+        # Basic solver info
+        solver_name = solver_settings.get("solver", "Unknown")
+        table.add_row("Selected Solver", f"[bold]{solver_name}[/bold]")
+        
+        # Solver type and description
+        solver_type = solver_settings.get("solver_type", "Unknown")
+        table.add_row("Solver Type", str(solver_type))
+        
+        # Time stepping
+        control_dict = solver_settings.get("controlDict", {})
+        if control_dict:
+            start_time = control_dict.get("startTime", 0)
+            end_time = control_dict.get("endTime", 10)
+            delta_t = control_dict.get("deltaT", 0.001)
+            write_interval = control_dict.get("writeInterval", 1)
+            
+            table.add_row("Start Time", f"{start_time} s" if start_time is not None else "N/A")
+            table.add_row("End Time", f"{end_time} s" if end_time is not None else "N/A")
+            table.add_row("Time Step", f"{delta_t} s" if delta_t is not None else "N/A")
+            table.add_row("Write Interval", f"{write_interval} s" if write_interval is not None else "N/A")
+        
+        # Turbulence model
+        turbulence_props = solver_settings.get("turbulenceProperties", {})
+        if turbulence_props:
+            simulation_type = turbulence_props.get("simulationType", "Unknown")
+            table.add_row("Turbulence Model", str(simulation_type) if simulation_type is not None else "N/A")
+        
+        console.print(table)
+    else:
+        console.print("[yellow]⚠️  No solver settings available[/yellow]")
+
+
+def display_mesh_info(state: CFDState) -> None:
+    """Display mesh configuration."""
+    mesh_config = state.get("mesh_config", {})
+    mesh_quality = state.get("mesh_quality", {})
+    
+    if mesh_config:
+        table = Table(title="🔲 Mesh Configuration", show_header=True, header_style="bold cyan")
+        table.add_column("Parameter", style="cyan")
+        table.add_column("Value", style="green")
+        
+        # Basic mesh info
+        mesh_type = mesh_config.get("type", "Unknown")
+        table.add_row("Mesh Type", str(mesh_type) if mesh_type is not None else "Unknown")
+        
+        total_cells = mesh_config.get("total_cells", 0)
+        table.add_row("Total Cells", f"{total_cells:,}" if total_cells is not None else "N/A")
+        
+        # Geometry info
+        geometry_type = mesh_config.get("geometry_type", "Unknown")
+        if hasattr(geometry_type, 'value'):
+            geometry_type = geometry_type.value
+        table.add_row("Geometry Type", str(geometry_type) if geometry_type is not None else "Unknown")
+        
+        # Dimensions
+        dimensions = mesh_config.get("dimensions", {})
+        if dimensions:
+            for key, value in dimensions.items():
+                if isinstance(value, (int, float)) and value is not None:
+                    table.add_row(f"  {key.replace('_', ' ').title()}", f"{value:.3f} m")
+                elif value is not None:
+                    table.add_row(f"  {key.replace('_', ' ').title()}", str(value))
+        
+        # Mesh quality
+        if mesh_quality:
+            quality_score = mesh_quality.get("quality_score", 0)
+            if quality_score is not None:
+                table.add_row("Quality Score", f"{quality_score:.2f}/1.0")
+            
+            aspect_ratio = mesh_quality.get("aspect_ratio", 0)
+            if aspect_ratio is not None and aspect_ratio > 0:
+                table.add_row("Aspect Ratio", f"{aspect_ratio:.2f}")
+        
+        console.print(table)
+    else:
+        console.print("[yellow]⚠️  No mesh configuration available[/yellow]")
+
+
+def display_boundary_conditions(state: CFDState) -> None:
+    """Display boundary conditions."""
+    boundary_conditions = state.get("boundary_conditions", {})
+    
+    if boundary_conditions:
+        table = Table(title="🔄 Boundary Conditions", show_header=True, header_style="bold cyan")
+        table.add_column("Boundary", style="cyan")
+        table.add_column("Type", style="yellow")
+        table.add_column("Value", style="green")
+        
+        # Process each field (U, p, etc.)
+        for field, field_data in boundary_conditions.items():
+            if isinstance(field_data, dict) and "boundaryField" in field_data:
+                boundary_field = field_data["boundaryField"]
+                
+                # Add field header
+                table.add_row(f"[bold]{field.upper()} Field[/bold]", "", "")
+                
+                # Add each boundary
+                for boundary_name, boundary_config in boundary_field.items():
+                    boundary_type = boundary_config.get("type", "Unknown")
+                    
+                    # Get value information
+                    value_info = ""
+                    if "value" in boundary_config:
+                        value = boundary_config["value"]
+                        if value is not None:
+                            if isinstance(value, str):
+                                value_info = value
+                            elif isinstance(value, (list, tuple)):
+                                value_info = f"({', '.join(str(v) for v in value)})"
+                            else:
+                                value_info = str(value)
+                    elif "uniformValue" in boundary_config:
+                        uniform_value = boundary_config["uniformValue"]
+                        value_info = str(uniform_value) if uniform_value is not None else ""
+                    
+                    table.add_row(f"  {boundary_name}", str(boundary_type), value_info)
+        
+        console.print(table)
+    else:
+        console.print("[yellow]⚠️  No boundary conditions available[/yellow]")
+
+
+def display_simulation_parameters(state: CFDState) -> None:
+    """Display key simulation parameters."""
+    parsed_params = state.get("parsed_parameters", {})
+    
+    if parsed_params:
+        table = Table(title="⚙️ Simulation Parameters", show_header=True, header_style="bold cyan")
+        table.add_column("Parameter", style="cyan")
+        table.add_column("Value", style="green")
+        
+        # Flow parameters
+        flow_type = parsed_params.get("flow_type", "Unknown")
+        table.add_row("Flow Type", str(flow_type) if flow_type is not None else "Unknown")
+        
+        analysis_type = parsed_params.get("analysis_type", "Unknown")
+        table.add_row("Analysis Type", str(analysis_type) if analysis_type is not None else "Unknown")
+        
+        # Physical properties
+        velocity = parsed_params.get("velocity")
+        if velocity is not None:
+            table.add_row("Velocity", f"{velocity:.2f} m/s")
+        
+        reynolds_number = parsed_params.get("reynolds_number")
+        if reynolds_number is not None:
+            table.add_row("Reynolds Number", f"{reynolds_number:.0f}")
+        
+        pressure = parsed_params.get("pressure")
+        if pressure is not None:
+            table.add_row("Reference Pressure", f"{pressure:.2f} Pa")
+        
+        # Fluid properties
+        density = parsed_params.get("density")
+        if density is not None:
+            table.add_row("Density", f"{density:.3f} kg/m³")
+        
+        viscosity = parsed_params.get("viscosity")
+        if viscosity is not None:
+            table.add_row("Viscosity", f"{viscosity:.6f} kg/(m·s)")
+        
+        console.print(table)
+    else:
+        console.print("[yellow]⚠️  No simulation parameters available[/yellow]")
+
+
+def display_file_locations(state: CFDState) -> None:
+    """Display file locations."""
+    case_directory = state.get("case_directory", "")
+    
+    if case_directory:
+        console.print(f"\n📁 [bold]Case Directory:[/bold] {case_directory}")
+        
+        # List key files
+        case_path = Path(case_directory)
+        if case_path.exists():
+            key_files = [
+                "system/blockMeshDict",
+                "system/snappyHexMeshDict",
+                "system/controlDict",
+                "system/fvSchemes",
+                "system/fvSolution",
+                "0/U",
+                "0/p",
+                "constant/turbulenceProperties",
+                "constant/transportProperties"
+            ]
+            
+            existing_files = []
+            for file_path in key_files:
+                full_path = case_path / file_path
+                if full_path.exists():
+                    existing_files.append(f"  ✅ {file_path}")
+            
+            if existing_files:
+                console.print("\n[bold]Generated Files:[/bold]")
+                for file_info in existing_files:
+                    console.print(file_info)
+
+
+def get_user_decision() -> str:
+    """Get user decision on whether to proceed, make changes, or cancel."""
+    console.print("\n" + "="*80)
+    console.print(
+        Panel(
+            "[bold yellow]What would you like to do?[/bold yellow]\n\n"
+            "[green]1. [bold]Approve[/bold] - Proceed with simulation using this configuration[/green]\n"
+            "[blue]2. [bold]Request Changes[/bold] - Modify the configuration[/blue]\n"
+            "[red]3. [bold]Cancel[/bold] - Cancel the simulation[/red]",
+            title="User Decision",
+            border_style="yellow"
+        )
+    )
+    
+    while True:
+        choice = Prompt.ask(
+            "\nEnter your choice",
+            choices=["1", "2", "3", "approve", "changes", "cancel"],
+            default="1"
+        )
+        
+        if choice in ["1", "approve"]:
+            return "approve"
+        elif choice in ["2", "changes"]:
+            return "changes"
+        elif choice in ["3", "cancel"]:
+            return "cancel"
+
+
+def get_change_requests() -> str:
+    """Get change requests from the user."""
+    console.print(
+        Panel(
+            "[bold blue]Describe the changes you'd like to make:[/bold blue]\n\n"
+            "You can request changes to:\n"
+            "• Solver selection (e.g., 'use transient solver instead')\n"
+            "• Mesh resolution (e.g., 'make mesh finer')\n"
+            "• Boundary conditions (e.g., 'increase inlet velocity')\n"
+            "• Simulation parameters (e.g., 'run for longer time')\n\n"
+            "Be as specific as possible about what you want to change.",
+            title="Change Requests",
+            border_style="blue"
+        )
+    )
+    
+    change_requests = Prompt.ask(
+        "\nDescribe your requested changes",
+        default="No specific changes"
+    )
+    
+    return change_requests 

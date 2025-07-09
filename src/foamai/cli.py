@@ -20,9 +20,10 @@ def cli():
 @click.argument('prompt', type=str)
 @click.option('--output-format', default='images', help='Output format (images, paraview, data)')
 @click.option('--no-export-images', is_flag=True, help='Disable visualization image export')
+@click.option('--no-user-approval', is_flag=True, help='Skip user approval step and proceed directly to simulation')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
 @click.option('--max-retries', default=3, help='Maximum retry attempts')
-def solve(prompt: str, output_format: str, no_export_images: bool, verbose: bool, max_retries: int):
+def solve(prompt: str, output_format: str, no_export_images: bool, no_user_approval: bool, verbose: bool, max_retries: int):
     """Solve a CFD problem from natural language description."""
     
     # Import here to avoid circular imports and startup time
@@ -36,12 +37,14 @@ def solve(prompt: str, output_format: str, no_export_images: bool, verbose: bool
     
     # Display initial problem setup
     export_images = not no_export_images  # Convert negative flag to positive
+    user_approval_enabled = not no_user_approval  # Convert negative flag to positive
     console.print(
         Panel(
             f"[bold blue]FoamAI CFD Solver[/bold blue]\n\n"
             f"[green]Problem:[/green] {prompt}\n"
             f"[green]Output Format:[/green] {output_format}\n"
             f"[green]Export Images:[/green] {export_images}\n"
+            f"[green]User Approval:[/green] {user_approval_enabled}\n"
             f"[green]Verbose:[/green] {verbose}\n"
             f"[green]Max Retries:[/green] {max_retries}",
             title="CFD Problem Setup",
@@ -56,7 +59,8 @@ def solve(prompt: str, output_format: str, no_export_images: bool, verbose: bool
             verbose=verbose,
             export_images=export_images,
             output_format=output_format,
-            max_retries=max_retries
+            max_retries=max_retries,
+            user_approval_enabled=user_approval_enabled
         )
         
         # Create workflow

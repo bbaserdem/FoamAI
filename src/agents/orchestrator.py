@@ -203,7 +203,8 @@ def handle_normal_progression(state: CFDState) -> CFDState:
         CFDStep.MESH_GENERATION: CFDStep.BOUNDARY_CONDITIONS,
         CFDStep.BOUNDARY_CONDITIONS: CFDStep.SOLVER_SELECTION,
         CFDStep.SOLVER_SELECTION: CFDStep.CASE_WRITING,
-        CFDStep.CASE_WRITING: CFDStep.SIMULATION,
+        CFDStep.CASE_WRITING: CFDStep.USER_APPROVAL if state.get("user_approval_enabled", True) else CFDStep.SIMULATION,
+        CFDStep.USER_APPROVAL: CFDStep.SIMULATION,
         CFDStep.SIMULATION: CFDStep.VISUALIZATION,
         CFDStep.VISUALIZATION: CFDStep.COMPLETE,
     }
@@ -228,6 +229,7 @@ def determine_next_agent(state: CFDState) -> str:
         CFDStep.BOUNDARY_CONDITIONS: "boundary_condition",
         CFDStep.SOLVER_SELECTION: "solver_selector",
         CFDStep.CASE_WRITING: "case_writer",
+        CFDStep.USER_APPROVAL: "user_approval",
         CFDStep.SIMULATION: "simulation_executor",
         CFDStep.VISUALIZATION: "visualization",
         CFDStep.COMPLETE: "end",
@@ -244,6 +246,7 @@ def create_cfd_workflow():
     from .boundary_condition import boundary_condition_agent
     from .solver_selector import solver_selector_agent
     from .case_writer import case_writer_agent
+    from .user_approval import user_approval_agent
     from .simulation_executor import simulation_executor_agent
     from .visualization import visualization_agent
     
@@ -257,6 +260,7 @@ def create_cfd_workflow():
     workflow.add_node("boundary_condition", boundary_condition_agent)
     workflow.add_node("solver_selector", solver_selector_agent)
     workflow.add_node("case_writer", case_writer_agent)
+    workflow.add_node("user_approval", user_approval_agent)
     workflow.add_node("simulation_executor", simulation_executor_agent)
     workflow.add_node("visualization", visualization_agent)
     
@@ -273,6 +277,7 @@ def create_cfd_workflow():
             "boundary_condition": "boundary_condition",
             "solver_selector": "solver_selector",
             "case_writer": "case_writer",
+            "user_approval": "user_approval",
             "simulation_executor": "simulation_executor",
             "visualization": "visualization",
             "end": END,
@@ -285,6 +290,7 @@ def create_cfd_workflow():
     workflow.add_edge("boundary_condition", "orchestrator")
     workflow.add_edge("solver_selector", "orchestrator")
     workflow.add_edge("case_writer", "orchestrator")
+    workflow.add_edge("user_approval", "orchestrator")
     workflow.add_edge("simulation_executor", "orchestrator")
     workflow.add_edge("visualization", "orchestrator")
     
@@ -297,7 +303,8 @@ def create_initial_state(
         verbose: bool = False,
         export_images: bool = True,
         output_format: str = "images",
-        max_retries: int = 3
+        max_retries: int = 3,
+        user_approval_enabled: bool = True
     ) -> CFDState:
     """Create initial state for the CFD workflow."""
     return CFDState(
@@ -317,6 +324,8 @@ def create_initial_state(
         retry_count=0,
         max_retries=max_retries,
         error_recovery_attempts=None,
+        user_approved=False,
+        user_approval_enabled=user_approval_enabled,
         mesh_quality=None,
         convergence_metrics=None,
         verbose=verbose,

@@ -7,8 +7,8 @@ on:
     branches: [ main, master ]
 
 env:
-  REGISTRY: docker.io
-  DOCKER_ORG: foamai
+  REGISTRY: ghcr.io
+  DOCKER_ORG: ${{ github.repository_owner }}
 
 jobs:
   build:
@@ -38,13 +38,13 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name: Log in to Docker Hub
+    - name: Log in to GitHub Container Registry
       if: github.event_name != 'pull_request'
       uses: docker/login-action@v3
       with:
         registry: ${{ env.REGISTRY }}
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Extract metadata
       id: meta
@@ -117,8 +117,8 @@ jobs:
         if [ "${{ github.event_name }}" != "pull_request" ]; then
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Published Images 📦" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ env.DOCKER_ORG }}/openfoam:latest\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ env.DOCKER_ORG }}/api:latest\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ env.DOCKER_ORG }}/pvserver:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`ghcr.io/${{ env.DOCKER_ORG }}/openfoam:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`ghcr.io/${{ env.DOCKER_ORG }}/api:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`ghcr.io/${{ env.DOCKER_ORG }}/pvserver:latest\`" >> $GITHUB_STEP_SUMMARY
           echo "- Tagged with commit SHA: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
         fi 

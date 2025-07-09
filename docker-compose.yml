@@ -1,12 +1,12 @@
 # Docker Compose Configuration for FoamAI CFD Assistant
 # Manages three containerized services: API, OpenFOAM solver, and ParaView server
-# Updated to use AWS ECR instead of Docker Hub due to service disruptions
+# Updated to use GitHub Container Registry (ghcr.io) for reliable image hosting
 version: '3.8'
 
 services:
   # FastAPI Backend Service
   api:
-    image: ${ECR_API_URL:-843135096105.dkr.ecr.us-west-2.amazonaws.com/foamai/api}:latest
+    image: ${GHCR_API_URL:-ghcr.io/batuhan/foamai/api}:latest
     container_name: foamai-api
     ports:
       - "8000:8000"
@@ -27,7 +27,7 @@ services:
 
   # OpenFOAM CFD Solver Service
   openfoam:
-    image: ${ECR_OPENFOAM_URL:-843135096105.dkr.ecr.us-west-2.amazonaws.com/foamai/openfoam}:latest
+    image: ${GHCR_OPENFOAM_URL:-ghcr.io/batuhan/foamai/openfoam}:latest
     container_name: foamai-openfoam
     volumes:
       - simulation_data:/data
@@ -48,7 +48,7 @@ services:
 
   # ParaView Server for Remote Visualization
   pvserver:
-    image: ${ECR_PVSERVER_URL:-843135096105.dkr.ecr.us-west-2.amazonaws.com/foamai/pvserver}:latest
+    image: ${GHCR_PVSERVER_URL:-ghcr.io/batuhan/foamai/pvserver}:latest
     container_name: foamai-pvserver
     ports:
       - "11111:11111"

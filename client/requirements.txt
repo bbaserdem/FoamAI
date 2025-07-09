@@ -1,0 +1,9 @@
+PySide6>=6.5.0
+requests>=2.31.0
+paraview>=5.11.0
+vtk>=9.2.0
+numpy>=1.24.0
+asyncio-mqtt>=0.13.0
+python-dotenv>=1.0.0
+Flask>=2.3.0
+Flask-CORS>=4.0.0 

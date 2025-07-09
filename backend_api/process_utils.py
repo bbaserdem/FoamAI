@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict
 from database import update_pvserver_status, DatabaseError
+from process_validator import validate_pvserver_pid
 
 # Global tracking for signal handler
 _active_pvservers = {}
@@ -110,48 +111,6 @@ def _update_dead_pvserver_status(task_id: str, status: int):
             )
     except Exception as e:
         print(f"❌ Error updating database for dead process {task_id}: {e}")
-
-def validate_pvserver_pid(pid: int, expected_port: int = None) -> bool:
-    """
-    Validate that a PID is actually a running pvserver process
-    Optionally check if it's using the expected port
-    """
-    if not pid:
-        return False
-    
-    try:
-        if not psutil.pid_exists(pid):
-            return False
-        
-        process = psutil.Process(pid)
-        
-        # Check if it's actually a pvserver process
-        if process.name() != 'pvserver':
-            return False
-        
-        # If we have an expected port, validate it
-        if expected_port:
-            cmdline = process.cmdline()
-            found_port = None
-            
-            for arg in cmdline:
-                if f'--server-port={expected_port}' in str(arg):
-                    found_port = expected_port
-                    break
-                elif str(arg) == '--server-port' and cmdline.index(arg) + 1 < len(cmdline):
-                    try:
-                        found_port = int(cmdline[cmdline.index(arg) + 1])
-                    except ValueError:
-                        pass
-                    break
-            
-            if found_port != expected_port:
-                return False
-        
-        return True
-        
-    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-        return False
 
 def process_is_running(pid: int) -> bool:
     """Check if a process with given PID is still running"""

@@ -6,7 +6,50 @@ maintaining separation of concerns.
 """
 
 from typing import Dict, List
-from process_utils import validate_pvserver_pid
+import psutil
+
+def validate_pvserver_pid(pid: int, expected_port: int = None) -> bool:
+    """
+    Validate that a PID is actually a running pvserver process.
+    Optionally check if it's using the expected port.
+    """
+    if not pid:
+        return False
+    
+    try:
+        if not psutil.pid_exists(pid):
+            return False
+        
+        process = psutil.Process(pid)
+        
+        # Check if it's actually a pvserver process
+        if 'pvserver' not in process.name():
+            return False
+        
+        # If we have an expected port, validate it
+        if expected_port:
+            cmdline = process.cmdline()
+            found_port = None
+            
+            # Look for '--server-port=PORT' or '--server-port PORT'
+            port_arg_str = f'--server-port={expected_port}'
+            if port_arg_str in cmdline:
+                found_port = expected_port
+            else:
+                try:
+                    idx = cmdline.index('--server-port')
+                    if idx + 1 < len(cmdline):
+                        found_port = int(cmdline[idx + 1])
+                except (ValueError, IndexError):
+                    pass
+            
+            if found_port != expected_port:
+                return False
+        
+        return True
+        
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return False
 
 
 class ProcessValidator:

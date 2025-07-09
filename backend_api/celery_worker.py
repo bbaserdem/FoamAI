@@ -6,7 +6,7 @@ from datetime import datetime
 from celery import Celery
 
 # Import our pvserver management functions
-from pvserver_manager import ensure_pvserver_for_task, cleanup_inactive_pvservers
+from pvserver_manager import ensure_pvserver_for_task, cleanup_inactive_pvservers, cleanup_dead_pvservers
 
 # Configure Celery to use Redis as the message broker
 celery_app = Celery(
@@ -216,12 +216,25 @@ def run_openfoam_command_task(task_id, case_path, command, description="Running 
 
 @celery_app.task
 def cleanup_pvservers_task():
-    """Periodic task to clean up inactive pvservers"""
+    """Periodic task to clean up inactive and dead pvservers"""
     try:
-        cleaned_up = cleanup_inactive_pvservers()
-        if cleaned_up:
-            print(f"Cleaned up inactive pvservers: {cleaned_up}")
-        return {"status": "SUCCESS", "cleaned_up": cleaned_up}
+        # Clean up old inactive servers
+        inactive_cleaned = cleanup_inactive_pvservers()
+        if inactive_cleaned:
+            print(f"Cleaned up inactive pvservers: {inactive_cleaned}")
+        
+        # Clean up dead servers (process died but DB still says running)
+        dead_cleaned = cleanup_dead_pvservers()
+        if dead_cleaned:
+            print(f"Cleaned up dead pvservers: {dead_cleaned}")
+        
+        total_cleaned = inactive_cleaned + dead_cleaned
+        return {
+            "status": "SUCCESS", 
+            "inactive_cleaned": inactive_cleaned,
+            "dead_cleaned": dead_cleaned,
+            "total_cleaned": total_cleaned
+        }
     except Exception as e:
         print(f"Error during pvserver cleanup: {e}")
         return {"status": "ERROR", "error": str(e)}

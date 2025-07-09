@@ -13,6 +13,43 @@ from typing import List, Dict, Optional
 
 DATABASE_PATH = 'tasks.db'
 
+def get_system_pvservers_simple() -> List[Dict]:
+    """Simple method to get pvserver processes using basic commands"""
+    system_processes = []
+    
+    try:
+        # Use pgrep to find pvserver processes
+        result = subprocess.run(['pgrep', '-f', 'pvserver'], capture_output=True, text=True)
+        if result.returncode == 0:
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                if pid.strip():
+                    try:
+                        # Get command line for this PID
+                        cmdline_result = subprocess.run(['ps', '-p', pid.strip(), '-o', 'cmd='], capture_output=True, text=True)
+                        if cmdline_result.returncode == 0:
+                            cmdline = cmdline_result.stdout.strip()
+                            
+                            # Extract port
+                            port = None
+                            port_match = re.search(r'--server-port[=\s](\d+)', cmdline)
+                            if port_match:
+                                port = int(port_match.group(1))
+                            
+                            system_processes.append({
+                                'pid': int(pid.strip()),
+                                'port': port,
+                                'cmdline': cmdline,
+                                'create_time': None,
+                                'status': 'running'
+                            })
+                    except:
+                        continue
+    except Exception as e:
+        print(f"❌ Error with simple process scanning: {e}")
+    
+    return system_processes
+
 def get_system_pvservers() -> List[Dict]:
     """Get all running pvserver processes from the system"""
     print("🔍 Scanning system for running pvserver processes...")
@@ -23,30 +60,49 @@ def get_system_pvservers() -> List[Dict]:
         # Method 1: Using psutil
         for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
             try:
-                if proc.info['name'] == 'pvserver' or (proc.info['cmdline'] and 'pvserver' in proc.info['cmdline'][0]):
+                # Check if we have valid process info
+                if not proc.info or not proc.info.get('name'):
+                    continue
+                
+                # Check if cmdline is available and not None
+                cmdline = proc.info.get('cmdline')
+                if not cmdline:
+                    continue
+                
+                # Check if this is a pvserver process
+                if proc.info['name'] == 'pvserver' or (cmdline and len(cmdline) > 0 and 'pvserver' in cmdline[0]):
                     # Extract port from command line
                     port = None
-                    cmdline = proc.info['cmdline']
                     for arg in cmdline:
-                        if '--server-port=' in arg:
-                            port = int(arg.split('=')[1])
+                        if '--server-port=' in str(arg):
+                            port = int(str(arg).split('=')[1])
                             break
-                        elif arg == '--server-port' and cmdline.index(arg) + 1 < len(cmdline):
+                        elif str(arg) == '--server-port' and cmdline.index(arg) + 1 < len(cmdline):
                             port = int(cmdline[cmdline.index(arg) + 1])
                             break
+                    
+                    # Get creation time safely
+                    create_time = None
+                    if proc.info.get('create_time'):
+                        create_time = datetime.fromtimestamp(proc.info['create_time'])
                     
                     system_processes.append({
                         'pid': proc.info['pid'],
                         'port': port,
-                        'cmdline': ' '.join(cmdline),
-                        'create_time': datetime.fromtimestamp(proc.info['create_time']),
+                        'cmdline': ' '.join(str(arg) for arg in cmdline),
+                        'create_time': create_time,
                         'status': 'running'
                     })
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
+            except Exception as e:
+                # Skip processes that cause other errors
+                continue
                 
     except Exception as e:
         print(f"❌ Error scanning processes with psutil: {e}")
+        print("🔄 Falling back to simple process scanning...")
+        return get_system_pvservers_simple()
     
     # Method 2: Using ps command as backup
     try:

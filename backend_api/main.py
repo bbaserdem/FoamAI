@@ -7,7 +7,7 @@ from datetime import datetime
 import json
 
 from celery_worker import celery_app, generate_mesh_task, run_solver_task, run_openfoam_command_task, cleanup_pvservers_task
-from pvserver_manager import get_pvserver_info, cleanup_inactive_pvservers
+from pvserver_manager import get_pvserver_info, cleanup_inactive_pvservers, cleanup_dead_pvservers, force_cleanup_port
 
 app = FastAPI(title="FoamAI API", version="1.0.0")
 
@@ -244,16 +244,53 @@ async def run_openfoam_command(request: OpenFOAMCommandRequest):
 
 @app.post("/api/cleanup_pvservers")
 async def cleanup_pvservers():
-    """Manually trigger cleanup of inactive pvservers."""
+    """Manually trigger cleanup of inactive and dead pvservers."""
     try:
-        cleaned_up = cleanup_inactive_pvservers()
+        inactive_cleaned = cleanup_inactive_pvservers()
+        dead_cleaned = cleanup_dead_pvservers()
+        total_cleaned = inactive_cleaned + dead_cleaned
+        
         return {
             "status": "success",
-            "message": f"Cleaned up {len(cleaned_up)} inactive pvservers",
-            "cleaned_up": cleaned_up
+            "message": f"Cleaned up {len(total_cleaned)} pvservers ({len(inactive_cleaned)} inactive, {len(dead_cleaned)} dead)",
+            "inactive_cleaned": inactive_cleaned,
+            "dead_cleaned": dead_cleaned,
+            "total_cleaned": total_cleaned
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to cleanup pvservers: {str(e)}")
+
+@app.post("/api/cleanup_dead_pvservers")
+async def cleanup_dead_pvservers_endpoint():
+    """Manually trigger cleanup of dead pvservers only."""
+    try:
+        dead_cleaned = cleanup_dead_pvservers()
+        return {
+            "status": "success",
+            "message": f"Cleaned up {len(dead_cleaned)} dead pvservers",
+            "dead_cleaned": dead_cleaned
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to cleanup dead pvservers: {str(e)}")
+
+@app.post("/api/force_cleanup_port/{port}")
+async def force_cleanup_port_endpoint(port: int):
+    """Force cleanup of a specific port by killing processes and updating database."""
+    try:
+        if port < 11111 or port > 11116:
+            raise HTTPException(status_code=400, detail="Port must be in range 11111-11116")
+        
+        cleaned = force_cleanup_port(port)
+        return {
+            "status": "success",
+            "message": f"Force cleanup of port {port} {'completed' if cleaned else 'found nothing to clean'}",
+            "port": port,
+            "cleaned": cleaned
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to force cleanup port {port}: {str(e)}")
 
 @app.get("/api/pvserver_info/{task_id}")
 async def get_pvserver_info_endpoint(task_id: str):

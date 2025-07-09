@@ -2,7 +2,7 @@
 
 ## 1. Objective
 
-The goal of this project is to create the backend infrastructure for FlowGen, an open-source AI agent that makes Computational Fluid Dynamics (CFD) more accessible. The backend will interpret natural language commands from a desktop client, automate the setup and execution of OpenFOAM simulations, and serve the results for visualization.
+The goal of this project is to create the backend infrastructure for FoamAI, an open-source AI agent that makes Computational Fluid Dynamics (CFD) more accessible. The backend will interpret natural language commands from a desktop client, automate the setup and execution of OpenFOAM simulations, and serve the results for visualization.
 
 This PRD outlines the requirements for an MVP that proves the core asynchronous workflow for a single user and a single simulation template.
 

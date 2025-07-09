@@ -1,495 +1,214 @@
+import logging
 from typing import Optional, Dict, List
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # Import configuration
 from config import MAX_CONCURRENT_PVSERVERS, CLEANUP_THRESHOLD_HOURS
 
 # Import our utility modules
-from process_utils import (
-    validate_pvserver_pid, start_pvserver, stop_pvserver, 
-    get_active_pvserver_summary, setup_signal_handlers,
-    PVServerError
-)
+from process_utils import PVServerError, process_manager
 from port_utils import (
     port_is_available, find_available_port, PortInUseError,
     get_port_range, get_available_port_count
 )
 from database import (
-    # Original DAL functions
-    get_running_pvservers, count_running_pvservers, get_running_pvserver_for_case,
-    update_pvserver_status, cleanup_stale_pvserver_entry, get_pvserver_info,
-    get_inactive_pvservers, link_task_to_pvserver, DatabaseError,
-    create_task, update_task_status,
-    # Enhanced DAL functions with validation
-    get_running_pvservers_validated, get_running_pvserver_for_case_validated,
-    get_pvserver_info_validated, count_running_pvservers_validated,
-    cleanup_stale_pvserver_entries
+    get_running_pvservers, get_running_pvserver_for_case,
+    get_pvserver_info, count_running_pvservers,
+    link_task_to_pvserver, DatabaseError, TaskNotFoundError,
+    create_task, update_task_status, get_inactive_pvservers,
+    set_pvserver_running, set_pvserver_error, set_pvserver_stopped
 )
 
-# Import ProcessValidator for specific validation needs
 from process_validator import validator
+
+logger = logging.getLogger(__name__)
 
 class PVServerServiceError(Exception):
     """Custom exception for PVServer service-related errors"""
     pass
 
-def cleanup_stale_database_entries():
-    """Clean up database entries for dead processes (lazy cleanup)"""
-    print("🧹 Performing lazy cleanup of stale database entries...")
-    
-    try:
-        # Use the enhanced DAL function for automatic cleanup
-        cleaned_up = cleanup_stale_pvserver_entries()
-        
-        if cleaned_up:
-            print(f"✅ Cleaned up {len(cleaned_up)} stale database entries")
-        else:
-            print("✅ No stale entries found")
-        
-        return cleaned_up
-    
-    except DatabaseError as e:
-        print(f"❌ Database error during cleanup: {e}")
-        return []
+# --- Private Helper Functions ---
 
-def count_running_pvservers_with_validation() -> int:
-    """Count currently running pvservers (with validation)"""
+def _check_concurrency_limit():
+    """Checks if the max number of pvservers has been reached, raising an error if so."""
     try:
-        # Use the enhanced DAL function which automatically validates
-        return count_running_pvservers_validated()
+        if count_running_pvservers() >= MAX_CONCURRENT_PVSERVERS:
+            msg = f"Max concurrent pvservers limit ({MAX_CONCURRENT_PVSERVERS}) reached."
+            logger.warning(msg)
+            raise PVServerServiceError(msg)
     except DatabaseError as e:
-        print(f"❌ Database error counting pvservers: {e}")
-        return 0
+        raise PVServerServiceError(f"Database error checking concurrency: {e}")
 
-def get_running_pvserver_for_case_with_validation(case_path: str) -> Optional[Dict]:
-    """Get running pvserver info for a specific case directory (with validation)"""
-    try:
-        # Use the enhanced DAL function which automatically validates and cleans up
-        result = get_running_pvserver_for_case_validated(case_path)
-        
-        if result:
-            print(f"✅ Found validated pvserver for case {case_path}")
-        else:
-            print(f"🔄 No running pvserver found for case {case_path}")
-        
-        return result
-    
-    except DatabaseError as e:
-        print(f"❌ Database error getting pvserver for case {case_path}: {e}")
-        return None
+def _find_and_validate_port(port: Optional[int] = None) -> int:
+    """Finds an available port or validates a specific one, raising an error if unavailable."""
+    if port:
+        if not port_is_available(port):
+            msg = f"Specified port {port} is not available."
+            logger.error(msg)
+            raise PVServerServiceError(msg)
+        return port
+    else:
+        available_port = find_available_port()
+        if not available_port:
+            msg = "No available ports in the configured range."
+            logger.error(msg)
+            raise PVServerServiceError(msg)
+        return available_port
 
-def link_task_to_existing_pvserver(task_id: str, existing_pvserver: Dict):
-    """Link a task to an existing pvserver for the same case"""
-    link_task_to_pvserver(
-        task_id, 
-        existing_pvserver['pvserver_port'], 
-        existing_pvserver['pvserver_pid']
-    )
+# --- Public Service Functions ---
 
 def ensure_pvserver_for_task(task_id: str, case_path: str) -> Dict:
     """
-    Ensure a pvserver is running for the given task and case.
-    Uses lazy cleanup and validation for robustness.
-    Returns pvserver info or error details.
-    
-    Args:
-        task_id: The task ID requiring a pvserver
-        case_path: Path to the OpenFOAM case directory
-        
-    Returns:
-        Dict: Status and details of the pvserver operation
+    Ensures a pvserver is running for a given task and case. Reuses an existing
+    server for the same case if available. Raises PVServerServiceError on failure.
     """
     try:
-        # 1. Check if case already has running pvserver (with validation)
-        existing = get_running_pvserver_for_case_with_validation(case_path)
+        existing = get_running_pvserver_for_case(case_path)
         if existing:
-            # Process is validated in get_running_pvserver_for_case_with_validation
-            link_task_to_existing_pvserver(task_id, existing)
+            logger.info(f"Task {task_id}: Reusing pvserver on port {existing['pvserver_port']} for case {case_path}")
+            link_task_to_pvserver(task_id, existing['pvserver_port'], existing['pvserver_pid'])
             return {
-                "status": "running",
+                "status": "reused",
                 "port": existing['pvserver_port'],
                 "pid": existing['pvserver_pid'],
                 "connection_string": f"localhost:{existing['pvserver_port']}",
-                "reused": True
             }
-        
-        # 2. Check concurrent limit (with cleanup)
-        if count_running_pvservers_with_validation() >= MAX_CONCURRENT_PVSERVERS:
-            error_msg = f"Max {MAX_CONCURRENT_PVSERVERS} concurrent pvservers reached"
-            update_pvserver_status(task_id, 'error', error_message=error_msg)
-            return {"status": "error", "error_message": error_msg}
-        
-        # 3. Find available port
-        port = find_available_port()
-        if not port:
-            error_msg = "All ports in configured range are in use"
-            update_pvserver_status(task_id, 'error', error_message=error_msg)
-            return {"status": "error", "error_message": error_msg}
-        
-        # 4. Check port availability one more time (race condition protection)
-        if not port_is_available(port):
-            raise PortInUseError(f"Port {port} is not available")
-        
-        # 5. Start new pvserver with process group management
-        pid = start_pvserver(case_path, port, task_id)
-        update_pvserver_status(task_id, 'running', port, pid)
+
+        _check_concurrency_limit()
+        port = _find_and_validate_port()
+
+        logger.info(f"Task {task_id}: Starting new pvserver on port {port} for case {case_path}")
+        pid = process_manager.start_pvserver(case_path, port, task_id)
+        set_pvserver_running(task_id, port, pid)
         
         return {
-            "status": "running",
+            "status": "started",
             "port": port,
             "pid": pid,
             "connection_string": f"localhost:{port}",
-            "reused": False
         }
-        
-    except (PVServerError, PortInUseError) as e:
-        error_msg = str(e)
-        update_pvserver_status(task_id, 'error', error_message=error_msg)
-        return {"status": "error", "error_message": error_msg}
+    except (PVServerError, PortInUseError, DatabaseError, PVServerServiceError) as e:
+        error_msg = f"Failed to ensure pvserver for task {task_id}: {e}"
+        logger.error(error_msg)
+        set_pvserver_error(task_id, str(e))
+        raise PVServerServiceError(error_msg) from e
     except Exception as e:
-        error_msg = f"Unexpected error: {str(e)}"
-        update_pvserver_status(task_id, 'error', error_message=error_msg)
-        return {"status": "error", "error_message": error_msg}
+        error_msg = f"Unexpected error in ensure_pvserver_for_task for {task_id}: {e}"
+        logger.exception(error_msg)
+        set_pvserver_error(task_id, str(e))
+        raise PVServerServiceError(error_msg) from e
 
-def cleanup_inactive_pvservers() -> List[str]:
-    """Clean up pvservers that have been inactive for too long"""
-    try:
-        # Find pvservers older than threshold using DAL
-        inactive_servers = get_inactive_pvservers(CLEANUP_THRESHOLD_HOURS)
-        
-        cleaned_up = []
-        for server in inactive_servers:
-            task_id = server['task_id']
-            pid = server['pvserver_pid'] 
-            port = server['pvserver_port']
-            
-            # Use validator to check if process is running
-            if validator.validate_single_record(server):
-                # Process is running, try to stop it
-                if stop_pvserver(pid):
-                    update_pvserver_status(task_id, 'stopped')
-                    cleaned_up.append(f"task_{task_id}_port_{port}")
-                    print(f"✅ Stopped inactive pvserver: Task {task_id}, PID {pid}, Port {port}")
-                else:
-                    print(f"❌ Failed to stop pvserver: Task {task_id}, PID {pid}")
-            else:
-                # Process already dead, just update database
-                update_pvserver_status(task_id, 'stopped', 
-                                     error_message="Process died (detected during cleanup)")
-                cleaned_up.append(f"task_{task_id}_port_{port}_dead")
-                print(f"🔄 Cleaned up dead pvserver: Task {task_id}, PID {pid}, Port {port}")
-        
-        if cleaned_up:
-            print(f"✅ Cleaned up {len(cleaned_up)} inactive pvservers")
-        else:
-            print("✅ No inactive pvservers to clean up")
-        
-        return cleaned_up
-    
-    except DatabaseError as e:
-        print(f"❌ Database error during cleanup: {e}")
-        return []
-
-def get_pvserver_info_with_validation(task_id: str) -> Optional[Dict]:
-    """Get pvserver information for a task with process validation"""
-    try:
-        # Use the enhanced DAL function which automatically validates and updates status
-        return get_pvserver_info_validated(task_id)
-    
-    except DatabaseError as e:
-        print(f"❌ Database error getting pvserver info for task {task_id}: {e}")
-        return None
-
-def get_service_status() -> Dict:
-    """Get comprehensive service status information"""
-    try:
-        # Get process tracking info
-        process_summary = get_active_pvserver_summary()
-        
-        # Get port availability
-        port_range = get_port_range()
-        available_ports = get_available_port_count()
-        
-        # Get database counts
-        running_count = count_running_pvservers()
-        
-        return {
-            "process_tracking": process_summary,
-            "port_management": {
-                "range": port_range,
-                "available_ports": available_ports,
-                "total_ports": port_range[1] - port_range[0] + 1
-            },
-            "database_status": {
-                "running_pvservers": running_count,
-                "max_concurrent": MAX_CONCURRENT_PVSERVERS,
-                "cleanup_threshold_hours": CLEANUP_THRESHOLD_HOURS
-            },
-            "service_health": {
-                "can_start_new": available_ports > 0 and running_count < MAX_CONCURRENT_PVSERVERS,
-                "ports_exhausted": available_ports == 0,
-                "concurrent_limit_reached": running_count >= MAX_CONCURRENT_PVSERVERS
-            }
-        }
-    
-    except Exception as e:
-        return {
-            "error": f"Failed to get service status: {str(e)}",
-            "service_health": {
-                "can_start_new": False,
-                "ports_exhausted": True,
-                "concurrent_limit_reached": True
-            }
-        }
-
-def force_cleanup_all_pvservers() -> Dict:
-    """Force cleanup of all tracked pvservers (emergency function)"""
-    try:
-        # Get all running pvservers from database
-        running_servers = get_running_pvservers()
-        
-        stopped_count = 0
-        cleaned_count = 0
-        errors = []
-        
-        for server in running_servers:
-            task_id = server['task_id']
-            pid = server['pvserver_pid']
-            port = server['pvserver_port']
-            
-            try:
-                # Use validator to check if process is running
-                if validator.validate_single_record(server):
-                    # Process is running, try to stop it
-                    if stop_pvserver(pid):
-                        stopped_count += 1
-                    else:
-                        errors.append(f"Failed to stop PID {pid}")
-                
-                # Update database regardless
-                update_pvserver_status(task_id, 'stopped', 
-                                     error_message="Forced cleanup")
-                cleaned_count += 1
-                
-            except Exception as e:
-                errors.append(f"Error processing task {task_id}: {str(e)}")
-        
-        return {
-            "status": "completed",
-            "processes_stopped": stopped_count,
-            "database_entries_cleaned": cleaned_count,
-            "errors": errors,
-            "total_processed": len(running_servers)
-        }
-    
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": f"Failed to force cleanup: {str(e)}"
-        }
-
-# Direct PVServer Management Functions (for API endpoints)
-
-def start_pvserver_for_case(case_path: str, port: int = None) -> Dict:
+def start_pvserver_for_case(case_path: str, port: Optional[int] = None) -> Dict:
     """
-    Start a pvserver for a specific case, optionally on a specific port
-    
-    Args:
-        case_path: Path to the OpenFOAM case directory
-        port: Optional specific port to use, auto-finds if None
-        
-    Returns:
-        Dict: Status and details of the pvserver operation
+    Starts a pvserver for a specific case, reusing if possible. This is for direct,
+    non-task-related requests. Raises PVServerServiceError on failure.
     """
     try:
-        # 1. Check if case already has a running pvserver
-        existing = get_running_pvserver_for_case_with_validation(case_path)
+        existing = get_running_pvserver_for_case(case_path)
         if existing:
+            logger.info(f"Reusing existing pvserver on port {existing['pvserver_port']} for case {case_path}")
             return {
-                "status": "running",
-                "port": existing['pvserver_port'],
-                "pid": existing['pvserver_pid'],
-                "connection_string": f"localhost:{existing['pvserver_port']}",
-                "case_path": case_path,
-                "message": f"PVServer already running for case {case_path}",
-                "reused": True
+                "status": "running", "port": existing['pvserver_port'], "pid": existing['pvserver_pid'],
+                "connection_string": f"localhost:{existing['pvserver_port']}", "case_path": case_path,
+                "message": "Reused existing server.", "reused": True
             }
-        
-        # 2. Check concurrent limit
-        if count_running_pvservers_with_validation() >= MAX_CONCURRENT_PVSERVERS:
-            return {
-                "status": "error",
-                "case_path": case_path,
-                "message": f"Max {MAX_CONCURRENT_PVSERVERS} concurrent pvservers reached",
-                "error_message": f"Max {MAX_CONCURRENT_PVSERVERS} concurrent pvservers reached"
-            }
-        
-        # 3. Get port (either specified or auto-find)
-        if port:
-            if not port_is_available(port):
-                return {
-                    "status": "error",
-                    "case_path": case_path,
-                    "message": f"Port {port} is not available",
-                    "error_message": f"Port {port} is not available"
-                }
-        else:
-            port = find_available_port()
-            if not port:
-                return {
-                    "status": "error",
-                    "case_path": case_path,
-                    "message": "All ports in configured range are in use",
-                    "error_message": "All ports in configured range are in use"
-                }
-        
-        # 4. Create a temporary task ID for this direct pvserver start
-        temp_task_id = f"direct_pvserver_{port}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
-        # 5. Create the task with case_path
-        create_task(temp_task_id, "pending", f"Direct pvserver start for {case_path}")
-        update_task_status(temp_task_id, "pending", f"Starting pvserver on port {port}", case_path=case_path)
-        
-        # 6. Start the pvserver
-        pid = start_pvserver(case_path, port, temp_task_id)
-        update_pvserver_status(temp_task_id, 'running', port, pid)
-        
-        return {
-            "status": "running",
-            "port": port,
-            "pid": pid,
-            "connection_string": f"localhost:{port}",
-            "case_path": case_path,
-            "message": f"PVServer started successfully on port {port}",
-            "reused": False
-        }
-        
-    except (PVServerError, PortInUseError) as e:
-        return {
-            "status": "error",
-            "case_path": case_path,
-            "message": str(e),
-            "error_message": str(e)
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "case_path": case_path,
-            "message": f"Unexpected error: {str(e)}",
-            "error_message": f"Unexpected error: {str(e)}"
-        }
 
-def list_active_pvservers() -> Dict:
-    """
-    List all active pvservers with their details
-    
-    Returns:
-        Dict: List of active pvservers and summary information
-    """
-    try:
-        # Get all validated running pvservers (automatically cleans up stale entries)
-        running_servers = get_running_pvservers_validated()
+        _check_concurrency_limit()
+        validated_port = _find_and_validate_port(port)
+
+        temp_task_id = f"direct_{validated_port}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        create_task(temp_task_id, "pending", f"Direct pvserver for {case_path}")
+        update_task_status(temp_task_id, "running", f"Starting pvserver on port {validated_port}", case_path=case_path)
         
-        # Format the data
-        pvservers = []
-        for server in running_servers:
-            pvservers.append({
-                "task_id": server['task_id'],
-                "port": server['pvserver_port'],
-                "pid": server['pvserver_pid'],
-                "case_path": server.get('case_path', 'Unknown'),
-                "connection_string": f"localhost:{server['pvserver_port']}",
-                "created_at": server.get('created_at', 'Unknown'),
-                "status": "running"
-            })
+        pid = process_manager.start_pvserver(case_path, validated_port, temp_task_id)
+        set_pvserver_running(temp_task_id, validated_port, pid)
         
-        # Get port information
-        port_range = get_port_range()
-        available_ports = get_available_port_count()
-        
+        logger.info(f"Started new pvserver on port {validated_port} for case {case_path}")
         return {
-            "pvservers": pvservers,
-            "total_count": len(pvservers),
-            "port_range": port_range,
-            "available_ports": available_ports
+            "status": "running", "port": validated_port, "pid": pid,
+            "connection_string": f"localhost:{validated_port}", "case_path": case_path,
+            "message": "Started new server.", "reused": False
         }
-        
-    except Exception as e:
-        return {
-            "pvservers": [],
-            "total_count": 0,
-            "port_range": get_port_range(),
-            "available_ports": 0,
-            "error": f"Failed to list pvservers: {str(e)}"
-        }
+    except (PVServerError, PortInUseError, DatabaseError, PVServerServiceError) as e:
+        logger.error(f"Failed to start pvserver for case {case_path}: {e}")
+        raise PVServerServiceError(f"Failed to start pvserver: {e}") from e
 
 def stop_pvserver_by_port(port: int) -> Dict:
     """
-    Stop a pvserver running on a specific port
-    
-    Args:
-        port: Port number of the pvserver to stop
-        
-    Returns:
-        Dict: Status and details of the stop operation
+    Stops a pvserver on a specific port. Raises PVServerServiceError on failure.
     """
+    # TODO: This is inefficient. Add a get_pvserver_by_port function to the DAL.
     try:
-        # Find the pvserver running on this port
-        running_servers = get_running_pvservers()
-        target_server = None
-        
-        for server in running_servers:
-            if server['pvserver_port'] == port:
-                target_server = server
-                break
-        
-        if not target_server:
-            return {
-                "status": "error",
-                "port": port,
-                "message": f"No pvserver found running on port {port}",
-                "error_message": f"No pvserver found running on port {port}"
-            }
-        
-        task_id = target_server['task_id']
-        pid = target_server['pvserver_pid']
-        
-        # Use validator to check if process is actually running
-        if not validator.validate_single_record(target_server):
-            # Process is dead, just clean up database
-            update_pvserver_status(task_id, 'stopped', 
-                                 error_message="Process was already dead")
-            return {
-                "status": "success",
-                "port": port,
-                "message": f"PVServer on port {port} was already stopped (cleaned up database entry)"
-            }
-        
-        # Stop the process
-        if stop_pvserver(pid):
-            update_pvserver_status(task_id, 'stopped')
-            return {
-                "status": "success",
-                "port": port,
-                "message": f"PVServer on port {port} stopped successfully"
-            }
-        else:
-            return {
-                "status": "error",
-                "port": port,
-                "message": f"Failed to stop PVServer on port {port}",
-                "error_message": f"Failed to stop PVServer on port {port}"
-            }
-            
-    except Exception as e:
-        return {
-            "status": "error",
-            "port": port,
-            "message": f"Unexpected error stopping pvserver: {str(e)}",
-            "error_message": f"Unexpected error stopping pvserver: {str(e)}"
-        }
+        servers = get_running_pvservers()
+        target = next((s for s in servers if s.get('pvserver_port') == port), None)
 
-# Legacy compatibility - these functions maintain the same interface as the original pvserver_manager
-def process_is_running(pid: int) -> bool:
-    """Check if a process with given PID is still running"""
-    return validate_pvserver_pid(pid) 
+        if not target:
+            raise PVServerServiceError(f"No active pvserver found on port {port}")
+
+        task_id, pid = target['task_id'], target['pvserver_pid']
+        logger.info(f"Stopping pvserver on port {port} (PID: {pid}, Task: {task_id})")
+
+        if process_manager.stop_pvserver(pid):
+            set_pvserver_stopped(task_id, "Stopped via API call.")
+            logger.info(f"Successfully stopped pvserver on port {port}")
+            return {"status": "success", "port": port, "message": "Server stopped."}
+        else:
+            raise PVServerServiceError(f"Failed to stop process for server on port {port}")
+            
+    except (DatabaseError, PVServerError, PVServerServiceError) as e:
+        logger.error(f"Error stopping pvserver on port {port}: {e}")
+        raise PVServerServiceError(f"Error stopping pvserver on port {port}: {e}") from e
+
+def list_active_pvservers() -> Dict:
+    """Lists all active pvservers. Raises PVServerServiceError on failure."""
+    try:
+        servers = get_running_pvservers()
+        formatted_servers = [
+            {
+                "task_id": s['task_id'], "port": s['pvserver_port'], "pid": s['pvserver_pid'],
+                "case_path": s.get('case_path', 'Unknown'), "status": "running",
+                "connection_string": f"localhost:{s['pvserver_port']}",
+                "created_at": s.get('created_at', 'Unknown'),
+            } for s in servers
+        ]
+        return {
+            "pvservers": formatted_servers, "total_count": len(formatted_servers),
+            "port_range": get_port_range(),
+            "available_ports": get_available_port_count()
+        }
+    except (DatabaseError, Exception) as e:
+        logger.exception("Failed to list active pvservers")
+        raise PVServerServiceError(f"Failed to list pvservers: {e}") from e
+
+def cleanup_inactive_pvservers() -> List[str]:
+    """Cleans up pvservers inactive for longer than the configured threshold."""
+    logger.info("Starting cleanup of inactive pvservers...")
+    try:
+        inactive = get_inactive_pvservers(CLEANUP_THRESHOLD_HOURS)
+        cleaned_up = []
+        for server in inactive:
+            task_id, pid, port = server['task_id'], server['pvserver_pid'], server['pvserver_port']
+            
+            if validator.is_running(server):
+                logger.info(f"Stopping inactive running pvserver: Task {task_id}, Port {port}")
+                if process_manager.stop_pvserver(pid):
+                    set_pvserver_stopped(task_id, "Cleaned up due to inactivity.")
+                    cleaned_up.append(f"stopped_task_{task_id}")
+            else:
+                logger.info(f"Cleaning up dead pvserver DB entry: Task {task_id}")
+                set_pvserver_stopped(task_id, "Cleaned up (process was dead).")
+                cleaned_up.append(f"cleaned_dead_task_{task_id}")
+        
+        logger.info(f"Cleanup complete. Processed {len(cleaned_up)} inactive servers.")
+        return cleaned_up
+    except DatabaseError as e:
+        logger.error(f"Database error during cleanup: {e}")
+        return []
+
+def get_pvserver_info_with_validation(task_id: str) -> Optional[Dict]:
+    """Gets validated pvserver info for a task."""
+    try:
+        return get_pvserver_info(task_id)
+    except DatabaseError as e:
+        logger.error(f"Database error getting info for task {task_id}: {e}")
+        raise PVServerServiceError(f"Could not get pvserver info for task {task_id}") from e 

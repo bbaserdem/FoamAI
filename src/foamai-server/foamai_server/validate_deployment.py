@@ -19,6 +19,11 @@ from pathlib import Path
 
 # Configuration - Update these for your EC2 instance
 EC2_HOST = "3.139.77.134"  # Replace with your EC2 host
+# Import configuration
+from config import EC2_HOST as CONFIG_EC2_HOST
+
+# Configuration
+EC2_HOST = CONFIG_EC2_HOST  # Use host from config
 API_BASE_URL = f"http://{EC2_HOST}:8000/api"
 PARAVIEW_HOST = EC2_HOST
 PARAVIEW_PORT = 11111

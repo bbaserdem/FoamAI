@@ -1,9 +1,14 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Tuple
+from typing import Optional
 import uuid
 from datetime import datetime
 import json
+
+from schemas import (
+    SubmitScenarioRequest, ApprovalRequest, OpenFOAMCommandRequest, StartPVServerRequest, ProjectRequest,
+    PVServerInfo, PVServerStartResponse, PVServerListResponse, PVServerStopResponse,
+    TaskStatusResponse, SubmitScenarioResponse, ResultsResponse, ProjectResponse, ProjectListResponse
+)
 
 from celery_worker import celery_app, generate_mesh_task, run_solver_task, run_openfoam_command_task, cleanup_pvservers_task
 from pvserver_service import (
@@ -22,95 +27,6 @@ from database import (
 
 app = FastAPI(title="FoamAI API", version="1.0.0")
 
-# Request models
-class SubmitScenarioRequest(BaseModel):
-    scenario_description: str = Field(..., description="Description of the CFD scenario")
-    mesh_complexity: str = Field(default="medium", description="Mesh complexity level (low, medium, high)")
-    solver_type: str = Field(default="incompressible", description="Solver type")
-
-class ApprovalRequest(BaseModel):
-    approved: bool = Field(..., description="Whether the mesh is approved")
-    comments: Optional[str] = Field(None, description="Optional comments")
-
-class OpenFOAMCommandRequest(BaseModel):
-    command: str = Field(..., description="OpenFOAM command to run")
-    case_path: str = Field(..., description="Path to the OpenFOAM case directory")
-    description: Optional[str] = Field(None, description="Description of what the command does")
-
-class StartPVServerRequest(BaseModel):
-    case_path: str = Field(..., description="Path to the OpenFOAM case directory")
-    port: Optional[int] = Field(None, description="Specific port to use (optional, auto-finds if not specified)")
-
-class ProjectRequest(BaseModel):
-    project_name: str = Field(..., description="The name for the new project. Allowed characters: alphanumeric, underscores, dashes, periods.")
-
-# Response models
-class PVServerInfo(BaseModel):
-    status: str = Field(..., description="PVServer status (running, stopped, error)")
-    port: Optional[int] = Field(None, description="Port number if running")
-    pid: Optional[int] = Field(None, description="Process ID if running")
-    connection_string: Optional[str] = Field(None, description="Connection string for ParaView")
-    reused: Optional[bool] = Field(None, description="Whether existing server was reused")
-    error_message: Optional[str] = Field(None, description="Error message if failed")
-
-class PVServerStartResponse(BaseModel):
-    status: str = Field(..., description="Operation status")
-    port: Optional[int] = Field(None, description="Port number if successful")
-    pid: Optional[int] = Field(None, description="Process ID if successful")
-    connection_string: Optional[str] = Field(None, description="Connection string for ParaView")
-    case_path: str = Field(..., description="Case path used")
-    message: str = Field(..., description="Status message")
-    error_message: Optional[str] = Field(None, description="Error message if failed")
-
-class PVServerListResponse(BaseModel):
-    pvservers: List[Dict] = Field(..., description="List of active pvservers")
-    total_count: int = Field(..., description="Total number of active pvservers")
-    port_range: Tuple[int, int] = Field(..., description="Available port range")
-    available_ports: int = Field(..., description="Number of available ports")
-
-class PVServerStopResponse(BaseModel):
-    status: str = Field(..., description="Operation status")
-    port: int = Field(..., description="Port that was stopped")
-    message: str = Field(..., description="Status message")
-    error_message: Optional[str] = Field(None, description="Error message if failed")
-
-class TaskStatusResponse(BaseModel):
-    task_id: str
-    status: str
-    message: str
-    file_path: Optional[str] = None
-    case_path: Optional[str] = None
-    pvserver: Optional[PVServerInfo] = None
-    created_at: Optional[str] = None
-
-class SubmitScenarioResponse(BaseModel):
-    task_id: str
-    status: str
-    message: str
-
-class ResultsResponse(BaseModel):
-    task_id: str
-    status: str
-    message: str
-    file_path: Optional[str] = None
-    case_path: Optional[str] = None
-    output: Optional[str] = None
-    pvserver: Optional[PVServerInfo] = None
-
-class ProjectResponse(BaseModel):
-    status: str = Field(..., description="Status of the project creation")
-    project_name: str = Field(..., description="Name of the created project")
-    path: str = Field(..., description="Full path to the new project directory")
-    message: str = Field(..., description="A descriptive message")
-
-class ProjectListResponse(BaseModel):
-    projects: List[str] = Field(..., description="A list of existing project names")
-    count: int = Field(..., description="The number of projects found")
-
-# Database functions now replaced by DAL - keeping these for reference during migration
-# def create_task_in_db() -> replaced by database.create_task()
-# def get_task_from_db() -> replaced by database.get_task()
-
 def format_pvserver_info(task_data: dict) -> Optional[PVServerInfo]:
     """Format pvserver information from database data."""
     if not task_data.get('pvserver_status'):
@@ -127,6 +43,21 @@ def format_pvserver_info(task_data: dict) -> Optional[PVServerInfo]:
         pvserver_info.connection_string = f"localhost:{pvserver_info.port}"
     
     return pvserver_info
+
+# Centralized exception handlers
+@app.exception_handler(ProjectError)
+async def project_error_handler(request, exc: ProjectError):
+    """Handle all project-related errors with appropriate HTTP status codes."""
+    from fastapi.responses import JSONResponse
+    
+    if isinstance(exc, InvalidProjectNameError):
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    elif isinstance(exc, ProjectExistsError):
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+    elif isinstance(exc, ProjectConfigurationError):
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    else:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 @app.get("/")
 async def root():
@@ -146,36 +77,20 @@ async def get_version():
 
 @app.post("/api/projects", response_model=ProjectResponse, status_code=201)
 async def create_new_project(request: ProjectRequest):
-    """
-    Creates a new project directory under the FOAM_RUN path.
-    """
-    try:
-        project_path = create_project(request.project_name)
-        return ProjectResponse(
-            status="success",
-            project_name=request.project_name,
-            path=str(project_path),
-            message=f"Project '{request.project_name}' created successfully."
-        )
-    except InvalidProjectNameError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except ProjectExistsError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    except ProjectConfigurationError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except ProjectError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """Creates a new project directory under the FOAM_RUN path."""
+    project_path = create_project(request.project_name)
+    return ProjectResponse(
+        status="success",
+        project_name=request.project_name,
+        path=str(project_path),
+        message=f"Project '{request.project_name}' created successfully."
+    )
 
 @app.get("/api/projects", response_model=ProjectListResponse)
 async def get_project_list():
-    """
-    Lists all existing projects in the FOAM_RUN directory.
-    """
-    try:
-        projects = list_projects()
-        return ProjectListResponse(projects=projects, count=len(projects))
-    except ProjectConfigurationError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """Lists all existing projects in the FOAM_RUN directory."""
+    projects = list_projects()
+    return ProjectListResponse(projects=projects, count=len(projects))
 
 # --- CFD Task Endpoints ---
 
@@ -248,12 +163,6 @@ async def approve_mesh(task_id: str, request: ApprovalRequest):
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.post("/api/reject_mesh")
-async def reject_mesh(task_id: str, request: ApprovalRequest):
-    """Reject the generated mesh (alternative endpoint)."""
-    request.approved = False
-    return await approve_mesh(task_id, request)
-
 @app.get("/api/results/{task_id}", response_model=ResultsResponse)
 async def get_results(task_id: str):
     """Get the results of a completed task."""
@@ -303,6 +212,8 @@ async def run_openfoam_command(request: OpenFOAMCommandRequest):
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to run OpenFOAM command: {str(e)}")
+
+# --- PVServer Management Endpoints ---
 
 @app.post("/api/cleanup_pvservers")
 async def cleanup_pvservers():

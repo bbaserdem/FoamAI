@@ -164,7 +164,7 @@ def cleanup_inactive_pvservers() -> List[str]:
             port = server['pvserver_port']
             
             # Use validator to check if process is running
-            if validator.validate_single_record(server):
+            if validator.is_running(server):
                 # Process is running, try to stop it
                 if stop_pvserver(pid):
                     update_pvserver_status(task_id, 'stopped')
@@ -259,7 +259,7 @@ def force_cleanup_all_pvservers() -> Dict:
             
             try:
                 # Use validator to check if process is running
-                if validator.validate_single_record(server):
+                if validator.is_running(server):
                     # Process is running, try to stop it
                     if stop_pvserver(pid):
                         stopped_count += 1
@@ -455,7 +455,7 @@ def stop_pvserver_by_port(port: int) -> Dict:
         pid = target_server['pvserver_pid']
         
         # Use validator to check if process is actually running
-        if not validator.validate_single_record(target_server):
+        if not validator.is_running(target_server):
             # Process is dead, just clean up database
             update_pvserver_status(task_id, 'stopped', 
                                  error_message="Process was already dead")

@@ -1,5 +1,4 @@
 import subprocess
-import sqlite3
 import socket
 import os
 import psutil
@@ -10,7 +9,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List
 
-DATABASE_PATH = 'tasks.db'
+# Import DAL functions
+from database import (
+    get_running_pvservers, count_running_pvservers, get_running_pvserver_for_case,
+    update_pvserver_status, cleanup_stale_pvserver_entry, get_pvserver_info,
+    get_inactive_pvservers, link_task_to_pvserver, DatabaseError
+)
 
 # Configuration
 PVSERVER_PORT_RANGE = (11111, 11116)  # 6 ports: 11111-11116
@@ -137,93 +141,71 @@ def cleanup_stale_database_entries():
     """Clean up database entries for dead processes (lazy cleanup)"""
     print("🧹 Performing lazy cleanup of stale database entries...")
     
-    conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    # Get all running pvserver records
-    cursor.execute("""
-        SELECT task_id, pvserver_pid, pvserver_port, case_path
-        FROM tasks 
-        WHERE pvserver_status = 'running'
-    """)
-    
-    running_records = cursor.fetchall()
-    cleaned_up = []
-    
-    for record in running_records:
-        task_id = record['task_id']
-        pid = record['pvserver_pid']
-        port = record['pvserver_port']
+    try:
+        # Get all running pvserver records using DAL
+        running_records = get_running_pvservers()
+        cleaned_up = []
         
-        # Validate the process is actually running
-        if not validate_pvserver_pid(pid, port):
-            print(f"🔄 Cleaning up stale entry: Task {task_id}, PID {pid}, Port {port}")
+        for record in running_records:
+            task_id = record['task_id']
+            pid = record['pvserver_pid']
+            port = record['pvserver_port']
             
-            # Update status to stopped
-            cursor.execute("""
-                UPDATE tasks 
-                SET pvserver_status = 'stopped', 
-                    pvserver_last_activity = ?, 
-                    pvserver_error_message = 'Process died (cleaned up by lazy cleanup)'
-                WHERE task_id = ?
-            """, (datetime.now(), task_id))
-            
-            cleaned_up.append(f"task_{task_id}_port_{port}")
+            # Validate the process is actually running
+            if not validate_pvserver_pid(pid, port):
+                print(f"🔄 Cleaning up stale entry: Task {task_id}, PID {pid}, Port {port}")
+                
+                # Update status to stopped using DAL
+                if cleanup_stale_pvserver_entry(task_id, 'Process died (cleaned up by lazy cleanup)'):
+                    cleaned_up.append(f"task_{task_id}_port_{port}")
+                else:
+                    print(f"❌ Failed to cleanup stale entry for task {task_id}")
+        
+        if cleaned_up:
+            print(f"✅ Cleaned up {len(cleaned_up)} stale database entries")
+        else:
+            print("✅ No stale entries found")
+        
+        return cleaned_up
     
-    conn.commit()
-    conn.close()
-    
-    if cleaned_up:
-        print(f"✅ Cleaned up {len(cleaned_up)} stale database entries")
-    else:
-        print("✅ No stale entries found")
-    
-    return cleaned_up
+    except DatabaseError as e:
+        print(f"❌ Database error during cleanup: {e}")
+        return []
 
 def count_running_pvservers() -> int:
     """Count currently running pvservers (with validation)"""
     # First clean up stale entries
     cleanup_stale_database_entries()
     
-    # Then count what's actually running
-    conn = sqlite3.connect(DATABASE_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT COUNT(*) FROM tasks WHERE pvserver_status = 'running'"
-    )
-    count = cursor.fetchone()[0]
-    conn.close()
-    return count
+    # Then count what's actually running using DAL
+    try:
+        from database import count_running_pvservers as dal_count_running_pvservers
+        return dal_count_running_pvservers()
+    except DatabaseError as e:
+        print(f"❌ Database error counting pvservers: {e}")
+        return 0
 
 def get_running_pvserver_for_case(case_path: str) -> Optional[Dict]:
     """Get running pvserver info for a specific case directory (with validation)"""
-    conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    try:
+        from database import get_running_pvserver_for_case as dal_get_running_pvserver_for_case
+        result = dal_get_running_pvserver_for_case(case_path)
+        
+        if result:
+            # Validate the process is actually running
+            if validate_pvserver_pid(result['pvserver_pid'], result['pvserver_port']):
+                return result
+            else:
+                # Process is dead, clean it up
+                print(f"🔄 Found dead pvserver for case {case_path}, cleaning up...")
+                update_pvserver_status(result['task_id'], 'stopped', 
+                                     error_message="Process died (detected during case lookup)")
+        
+        return None
     
-    cursor.execute("""
-        SELECT task_id, pvserver_port, pvserver_pid, pvserver_started_at 
-        FROM tasks 
-        WHERE case_path = ? AND pvserver_status = 'running'
-        ORDER BY pvserver_started_at DESC
-        LIMIT 1
-    """, (case_path,))
-    
-    result = cursor.fetchone()
-    conn.close()
-    
-    if result:
-        # Validate the process is actually running
-        if validate_pvserver_pid(result['pvserver_pid'], result['pvserver_port']):
-            return dict(result)
-        else:
-            # Process is dead, clean it up
-            print(f"🔄 Found dead pvserver for case {case_path}, cleaning up...")
-            update_pvserver_status(result['task_id'], 'stopped', 
-                                 error_message="Process died (detected during case lookup)")
-    
-    return None
+    except DatabaseError as e:
+        print(f"❌ Database error getting pvserver for case {case_path}: {e}")
+        return None
 
 def process_is_running(pid: int) -> bool:
     """Check if a process with given PID is still running"""
@@ -320,41 +302,12 @@ def stop_pvserver(pid: int) -> bool:
     
     return False
 
-def update_pvserver_status(task_id: str, status: str, port: int = None, pid: int = None, error_message: str = None):
-    """Update pvserver status in database"""
-    conn = sqlite3.connect(DATABASE_PATH)
-    cursor = conn.cursor()
-    
-    now = datetime.now()
-    
-    if status == 'running':
-        cursor.execute("""
-            UPDATE tasks 
-            SET pvserver_status = ?, pvserver_port = ?, pvserver_pid = ?, 
-                pvserver_started_at = ?, pvserver_last_activity = ?, pvserver_error_message = NULL
-            WHERE task_id = ?
-        """, (status, port, pid, now, now, task_id))
-    elif status == 'error':
-        cursor.execute("""
-            UPDATE tasks 
-            SET pvserver_status = ?, pvserver_error_message = ?, pvserver_last_activity = ?
-            WHERE task_id = ?
-        """, (status, error_message, now, task_id))
-    else:  # stopped
-        cursor.execute("""
-            UPDATE tasks 
-            SET pvserver_status = ?, pvserver_last_activity = ?
-            WHERE task_id = ?
-        """, (status, now, task_id))
-    
-    conn.commit()
-    conn.close()
+# update_pvserver_status function now imported from database.py (DAL)
 
 def link_task_to_existing_pvserver(task_id: str, existing_pvserver: Dict):
     """Link a task to an existing pvserver for the same case"""
-    update_pvserver_status(
+    link_task_to_pvserver(
         task_id, 
-        'running', 
         existing_pvserver['pvserver_port'], 
         existing_pvserver['pvserver_pid']
     )
@@ -411,71 +364,57 @@ def ensure_pvserver_for_task(task_id: str, case_path: str) -> Dict:
 
 def cleanup_inactive_pvservers() -> List[str]:
     """Clean up pvservers that have been inactive for too long"""
-    conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    try:
+        # Find pvservers older than threshold using DAL
+        inactive_servers = get_inactive_pvservers(CLEANUP_THRESHOLD_HOURS)
+        
+        cleaned_up = []
+        for server in inactive_servers:
+            # Validate the process is actually running before trying to stop it
+            if validate_pvserver_pid(server['pvserver_pid'], server['pvserver_port']):
+                if stop_pvserver(server['pvserver_pid']):
+                    update_pvserver_status(server['task_id'], 'stopped')
+                    cleaned_up.append(f"task_{server['task_id']}_port_{server['pvserver_port']}")
+            else:
+                # Process already dead, just update database
+                update_pvserver_status(server['task_id'], 'stopped', 
+                                     error_message="Process died (detected during cleanup)")
+                cleaned_up.append(f"task_{server['task_id']}_port_{server['pvserver_port']}_dead")
+        
+        return cleaned_up
     
-    # Find pvservers older than threshold
-    cutoff_time = datetime.now() - timedelta(hours=CLEANUP_THRESHOLD_HOURS)
-    cursor.execute("""
-        SELECT task_id, pvserver_pid, pvserver_port
-        FROM tasks 
-        WHERE pvserver_status = 'running' 
-        AND pvserver_started_at < ?
-    """, (cutoff_time,))
-    
-    inactive_servers = cursor.fetchall()
-    conn.close()
-    
-    cleaned_up = []
-    for server in inactive_servers:
-        # Validate the process is actually running before trying to stop it
-        if validate_pvserver_pid(server['pvserver_pid'], server['pvserver_port']):
-            if stop_pvserver(server['pvserver_pid']):
-                update_pvserver_status(server['task_id'], 'stopped')
-                cleaned_up.append(f"task_{server['task_id']}_port_{server['pvserver_port']}")
-        else:
-            # Process already dead, just update database
-            update_pvserver_status(server['task_id'], 'stopped', 
-                                 error_message="Process died (detected during cleanup)")
-            cleaned_up.append(f"task_{server['task_id']}_port_{server['pvserver_port']}_dead")
-    
-    return cleaned_up
+    except DatabaseError as e:
+        print(f"❌ Database error during cleanup: {e}")
+        return []
 
 def get_pvserver_info(task_id: str) -> Optional[Dict]:
     """Get pvserver information for a task"""
-    conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-        SELECT pvserver_port, pvserver_pid, pvserver_status, 
-               pvserver_started_at, pvserver_error_message
-        FROM tasks 
-        WHERE task_id = ?
-    """, (task_id,))
-    
-    result = cursor.fetchone()
-    conn.close()
-    
-    if result:
-        data = dict(result)
+    try:
+        from database import get_pvserver_info as dal_get_pvserver_info
+        result = dal_get_pvserver_info(task_id)
         
-        # If status is running, validate the process
-        if data['pvserver_status'] == 'running' and data['pvserver_pid']:
-            if not validate_pvserver_pid(data['pvserver_pid'], data['pvserver_port']):
-                # Process is dead, update status
-                update_pvserver_status(task_id, 'stopped', 
-                                     error_message="Process died (detected during info lookup)")
-                data['pvserver_status'] = 'stopped'
-                data['pvserver_error_message'] = "Process died (detected during info lookup)"
+        if result:
+            data = result
+            
+            # If status is running, validate the process
+            if data['pvserver_status'] == 'running' and data['pvserver_pid']:
+                if not validate_pvserver_pid(data['pvserver_pid'], data['pvserver_port']):
+                    # Process is dead, update status
+                    update_pvserver_status(task_id, 'stopped', 
+                                         error_message="Process died (detected during info lookup)")
+                    data['pvserver_status'] = 'stopped'
+                    data['pvserver_error_message'] = "Process died (detected during info lookup)"
+            
+            if data['pvserver_status'] == 'running':
+                data['connection_string'] = f"localhost:{data['pvserver_port']}"
+            
+            return data
         
-        if data['pvserver_status'] == 'running':
-            data['connection_string'] = f"localhost:{data['pvserver_port']}"
-        
-        return data
+        return None
     
-    return None
+    except DatabaseError as e:
+        print(f"❌ Database error getting pvserver info for task {task_id}: {e}")
+        return None
 
 def get_active_pvserver_summary() -> Dict:
     """Get summary of currently active pvservers"""

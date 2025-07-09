@@ -1,5 +1,4 @@
 import subprocess
-import sqlite3
 import os
 from pathlib import Path
 from datetime import datetime
@@ -14,14 +13,15 @@ from pvserver_manager import (
     get_active_pvserver_summary
 )
 
+# Import DAL functions
+from database import update_task_status, DatabaseError
+
 # Configure Celery to use Redis as the message broker
 celery_app = Celery(
     'tasks',
     broker='redis://localhost:6379/0',
     backend='redis://localhost:6379/0'
 )
-
-DATABASE_PATH = 'tasks.db'
 
 @worker_ready.connect
 def setup_worker_signal_handlers(**kwargs):
@@ -33,35 +33,7 @@ def setup_worker_signal_handlers(**kwargs):
     summary = get_active_pvserver_summary()
     print(f"📊 Worker startup summary: {summary}")
 
-def update_task_status(task_id, status, message, file_path=None, case_path=None):
-    """Helper function to update task status in the database."""
-    conn = sqlite3.connect(DATABASE_PATH)
-    cursor = conn.cursor()
-    
-    # Prepare the update query based on what fields we have
-    if file_path and case_path:
-        cursor.execute(
-            "UPDATE tasks SET status = ?, message = ?, file_path = ?, case_path = ? WHERE task_id = ?",
-            (status, message, file_path, case_path, task_id)
-        )
-    elif file_path:
-        cursor.execute(
-            "UPDATE tasks SET status = ?, message = ?, file_path = ? WHERE task_id = ?",
-            (status, message, file_path, task_id)
-        )
-    elif case_path:
-        cursor.execute(
-            "UPDATE tasks SET status = ?, message = ?, case_path = ? WHERE task_id = ?",
-            (status, message, case_path, task_id)
-        )
-    else:
-        cursor.execute(
-            "UPDATE tasks SET status = ?, message = ? WHERE task_id = ?",
-            (status, message, task_id)
-        )
-    
-    conn.commit()
-    conn.close()
+# update_task_status function now imported from database.py (DAL)
 
 def ensure_foam_file(case_path):
     """

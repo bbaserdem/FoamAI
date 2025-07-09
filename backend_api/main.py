@@ -1,17 +1,18 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional
-import sqlite3
 import uuid
 from datetime import datetime
 import json
 
 from celery_worker import celery_app, generate_mesh_task, run_solver_task, run_openfoam_command_task, cleanup_pvservers_task
 from pvserver_manager import get_pvserver_info, cleanup_inactive_pvservers
+from database import (
+    create_task, get_task, update_task_rejection, 
+    DatabaseError, TaskNotFoundError
+)
 
 app = FastAPI(title="FoamAI API", version="1.0.0")
-
-DATABASE_PATH = 'tasks.db'
 
 # Request models
 class SubmitScenarioRequest(BaseModel):
@@ -60,32 +61,9 @@ class ResultsResponse(BaseModel):
     output: Optional[str] = None
     pvserver: Optional[PVServerInfo] = None
 
-def create_task_in_db(task_id: str, initial_status: str = "pending", initial_message: str = "Task created"):
-    """Create a new task in the database."""
-    conn = sqlite3.connect(DATABASE_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        INSERT INTO tasks (task_id, status, message, created_at)
-        VALUES (?, ?, ?, ?)
-    ''', (task_id, initial_status, initial_message, datetime.now()))
-    
-    conn.commit()
-    conn.close()
-
-def get_task_from_db(task_id: str) -> dict:
-    """Get task information from the database."""
-    conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    cursor.execute('SELECT * FROM tasks WHERE task_id = ?', (task_id,))
-    row = cursor.fetchone()
-    conn.close()
-    
-    if row:
-        return dict(row)
-    return None
+# Database functions now replaced by DAL - keeping these for reference during migration
+# def create_task_in_db() -> replaced by database.create_task()
+# def get_task_from_db() -> replaced by database.get_task()
 
 def format_pvserver_info(task_data: dict) -> Optional[PVServerInfo]:
     """Format pvserver information from database data."""
@@ -124,8 +102,9 @@ async def submit_scenario(request: SubmitScenarioRequest):
     try:
         task_id = str(uuid.uuid4())
         
-        # Create task in database
-        create_task_in_db(task_id, "pending", "Scenario submitted, starting mesh generation...")
+        # Create task in database using DAL
+        if not create_task(task_id, "pending", "Scenario submitted, starting mesh generation..."):
+            raise HTTPException(status_code=500, detail="Failed to create task in database")
         
         # Start mesh generation task
         generate_mesh_task.delay(task_id)
@@ -135,58 +114,60 @@ async def submit_scenario(request: SubmitScenarioRequest):
             status="pending",
             message="Scenario submitted successfully. Mesh generation started."
         )
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to submit scenario: {str(e)}")
 
 @app.get("/api/task_status/{task_id}", response_model=TaskStatusResponse)
 async def get_task_status(task_id: str):
     """Get the status of a specific task."""
-    task_data = get_task_from_db(task_id)
-    
-    if not task_data:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    pvserver_info = format_pvserver_info(task_data)
-    
-    return TaskStatusResponse(
-        task_id=task_id,
-        status=task_data['status'],
-        message=task_data['message'],
-        file_path=task_data.get('file_path'),
-        case_path=task_data.get('case_path'),
-        pvserver=pvserver_info,
-        created_at=task_data.get('created_at')
-    )
+    try:
+        task_data = get_task(task_id)
+        
+        if not task_data:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        pvserver_info = format_pvserver_info(task_data)
+        
+        return TaskStatusResponse(
+            task_id=task_id,
+            status=task_data['status'],
+            message=task_data['message'],
+            file_path=task_data.get('file_path'),
+            case_path=task_data.get('case_path'),
+            pvserver=pvserver_info,
+            created_at=task_data.get('created_at')
+        )
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.post("/api/approve_mesh")
 async def approve_mesh(task_id: str, request: ApprovalRequest):
     """Approve or reject the generated mesh."""
-    task_data = get_task_from_db(task_id)
-    
-    if not task_data:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    if task_data['status'] != 'waiting_approval':
-        raise HTTPException(status_code=400, detail="Task is not waiting for approval")
-    
-    if request.approved:
-        # Start solver task
-        case_path = task_data.get('case_path', '/home/ubuntu/cavity_tutorial')
-        run_solver_task.delay(task_id, case_path)
+    try:
+        task_data = get_task(task_id)
         
-        return {"message": "Mesh approved. Simulation started.", "task_id": task_id}
-    else:
-        # Update task status to rejected
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE tasks SET status = ?, message = ? WHERE task_id = ?",
-            ('rejected', f'Mesh rejected. Comments: {request.comments or "None"}', task_id)
-        )
-        conn.commit()
-        conn.close()
+        if not task_data:
+            raise HTTPException(status_code=404, detail="Task not found")
         
-        return {"message": "Mesh rejected.", "task_id": task_id}
+        if task_data['status'] != 'waiting_approval':
+            raise HTTPException(status_code=400, detail="Task is not waiting for approval")
+        
+        if request.approved:
+            # Start solver task
+            case_path = task_data.get('case_path', '/home/ubuntu/cavity_tutorial')
+            run_solver_task.delay(task_id, case_path)
+            
+            return {"message": "Mesh approved. Simulation started.", "task_id": task_id}
+        else:
+            # Update task status to rejected using DAL
+            if not update_task_rejection(task_id, request.comments):
+                raise HTTPException(status_code=500, detail="Failed to update task status")
+            
+            return {"message": "Mesh rejected.", "task_id": task_id}
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.post("/api/reject_mesh")
 async def reject_mesh(task_id: str, request: ApprovalRequest):
@@ -197,22 +178,25 @@ async def reject_mesh(task_id: str, request: ApprovalRequest):
 @app.get("/api/results/{task_id}", response_model=ResultsResponse)
 async def get_results(task_id: str):
     """Get the results of a completed task."""
-    task_data = get_task_from_db(task_id)
-    
-    if not task_data:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    pvserver_info = format_pvserver_info(task_data)
-    
-    return ResultsResponse(
-        task_id=task_id,
-        status=task_data['status'],
-        message=task_data['message'],
-        file_path=task_data.get('file_path'),
-        case_path=task_data.get('case_path'),
-        output=None,  # Could be enhanced to store actual output
-        pvserver=pvserver_info
-    )
+    try:
+        task_data = get_task(task_id)
+        
+        if not task_data:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        pvserver_info = format_pvserver_info(task_data)
+        
+        return ResultsResponse(
+            task_id=task_id,
+            status=task_data['status'],
+            message=task_data['message'],
+            file_path=task_data.get('file_path'),
+            case_path=task_data.get('case_path'),
+            output=None,  # Could be enhanced to store actual output
+            pvserver=pvserver_info
+        )
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.post("/api/run_openfoam_command")
 async def run_openfoam_command(request: OpenFOAMCommandRequest):
@@ -220,9 +204,10 @@ async def run_openfoam_command(request: OpenFOAMCommandRequest):
     try:
         task_id = str(uuid.uuid4())
         
-        # Create task in database
+        # Create task in database using DAL
         description = request.description or f"Running command: {request.command}"
-        create_task_in_db(task_id, "pending", f"Command submitted: {request.command}")
+        if not create_task(task_id, "pending", f"Command submitted: {request.command}"):
+            raise HTTPException(status_code=500, detail="Failed to create task in database")
         
         # Start the command task
         run_openfoam_command_task.delay(
@@ -239,6 +224,8 @@ async def run_openfoam_command(request: OpenFOAMCommandRequest):
             "command": request.command,
             "case_path": request.case_path
         }
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to run OpenFOAM command: {str(e)}")
 
@@ -258,17 +245,20 @@ async def cleanup_pvservers():
 @app.get("/api/pvserver_info/{task_id}")
 async def get_pvserver_info_endpoint(task_id: str):
     """Get detailed pvserver information for a task."""
-    task_data = get_task_from_db(task_id)
-    
-    if not task_data:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    pvserver_info = format_pvserver_info(task_data)
-    
-    if not pvserver_info:
-        raise HTTPException(status_code=404, detail="No pvserver information available for this task")
-    
-    return pvserver_info
+    try:
+        task_data = get_task(task_id)
+        
+        if not task_data:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        pvserver_info = format_pvserver_info(task_data)
+        
+        if not pvserver_info:
+            raise HTTPException(status_code=404, detail="No pvserver information available for this task")
+        
+        return pvserver_info
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 # Error handlers
 @app.exception_handler(404)

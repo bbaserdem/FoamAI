@@ -2,6 +2,11 @@
 """
 Simple deployment validation script for FoamAI backend API.
 Tests basic functionality after deployment to EC2, including new pvserver management endpoints.
+
+IMPORTANT: As of the latest version, pvserver management is now EXPLICIT only.
+- Old routes (submit_scenario, approve_mesh, run_openfoam_command) no longer automatically start pvservers
+- Use the new explicit pvserver management endpoints (/api/start_pvserver, /api/pvservers, etc.)
+- This eliminates the original problem of multiple pvservers being created for the same case
 """
 
 import requests
@@ -457,9 +462,9 @@ def test_pvserver_management_workflow():
     print("✅ PVServer management workflow test completed successfully!")
     return True
 
-def test_full_workflow():
-    """Test the complete workflow end-to-end"""
-    print("\n🔄 Testing complete workflow...")
+def test_openfoam_only_workflow():
+    """Test the OpenFOAM workflow without automatic pvserver management"""
+    print("\n🔄 Testing OpenFOAM-only workflow (no automatic pvserver)...")
     
     # Step 1: Submit scenario
     task_id = test_submit_scenario()
@@ -470,18 +475,16 @@ def test_full_workflow():
     if not test_task_status(task_id):
         return False
     
-    # Step 3: Test PVServer info
-    test_pvserver_info(task_id)
-    
-    # Step 4: Approve mesh
+    # Step 3: Approve mesh
     if not test_mesh_approval(task_id):
         return False
     
-    # Step 5: Wait for simulation completion
+    # Step 4: Wait for simulation completion
     if not test_task_status(task_id):
         return False
     
-    print("✅ Complete workflow test passed!")
+    print("✅ OpenFOAM-only workflow test passed!")
+    print("ℹ️  Note: No pvserver was automatically started. Use explicit pvserver management for visualization.")
     return True
 
 def main():
@@ -506,7 +509,7 @@ def main():
         ("API Health", test_api_health),
         ("PVServer Management Workflow", test_pvserver_management_workflow),
         ("Cleanup Endpoint", test_cleanup_endpoint),
-        ("Full Workflow", test_full_workflow),
+        ("OpenFOAM-Only Workflow", test_openfoam_only_workflow),
     ]
     
     passed = 0
@@ -524,6 +527,21 @@ def main():
     
     if passed == total:
         print("🎉 All validation tests passed! Deployment is ready.")
+        
+        # Start a pvserver for the cavity case so it's ready for use
+        print(f"\n{'='*20} Final Setup {'='*20}")
+        print("🚀 Starting pvserver for cavity case to leave it ready for use...")
+        
+        start_result = test_start_pvserver()
+        if start_result["success"]:
+            print(f"✅ PVServer is now running on port {start_result['port']}")
+            print(f"🔗 Connection string: {start_result['connection_string']}")
+            print(f"🏠 Case path: {CAVITY_CASE_PATH}")
+            print("\n💡 Use the cleanup script to stop all pvservers when done:")
+            print("   python stop_all_pvservers.py")
+        else:
+            print("⚠️  Could not start final pvserver, but tests passed")
+        
         return 0
     else:
         print("⚠️  Some tests failed. Check the output above.")

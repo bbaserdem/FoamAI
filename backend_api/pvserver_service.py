@@ -1,6 +1,9 @@
 from typing import Optional, Dict, List
 from datetime import datetime, timedelta
 
+# Import configuration
+from config import MAX_CONCURRENT_PVSERVERS, CLEANUP_THRESHOLD_HOURS
+
 # Import our utility modules
 from process_utils import (
     validate_pvserver_pid, start_pvserver, stop_pvserver, 
@@ -12,15 +15,19 @@ from port_utils import (
     get_port_range, get_available_port_count
 )
 from database import (
+    # Original DAL functions
     get_running_pvservers, count_running_pvservers, get_running_pvserver_for_case,
     update_pvserver_status, cleanup_stale_pvserver_entry, get_pvserver_info,
     get_inactive_pvservers, link_task_to_pvserver, DatabaseError,
-    create_task, update_task_status
+    create_task, update_task_status,
+    # Enhanced DAL functions with validation
+    get_running_pvservers_validated, get_running_pvserver_for_case_validated,
+    get_pvserver_info_validated, count_running_pvservers_validated,
+    cleanup_stale_pvserver_entries
 )
 
-# Configuration
-MAX_CONCURRENT_PVSERVERS = 6
-CLEANUP_THRESHOLD_HOURS = 4
+# Import ProcessValidator for specific validation needs
+from process_validator import validator
 
 class PVServerServiceError(Exception):
     """Custom exception for PVServer service-related errors"""
@@ -31,24 +38,8 @@ def cleanup_stale_database_entries():
     print("🧹 Performing lazy cleanup of stale database entries...")
     
     try:
-        # Get all running pvserver records using DAL
-        running_records = get_running_pvservers()
-        cleaned_up = []
-        
-        for record in running_records:
-            task_id = record['task_id']
-            pid = record['pvserver_pid']
-            port = record['pvserver_port']
-            
-            # Validate the process is actually running
-            if not validate_pvserver_pid(pid, port):
-                print(f"🔄 Cleaning up stale entry: Task {task_id}, PID {pid}, Port {port}")
-                
-                # Update status to stopped using DAL
-                if cleanup_stale_pvserver_entry(task_id, 'Process died (cleaned up by lazy cleanup)'):
-                    cleaned_up.append(f"task_{task_id}_port_{port}")
-                else:
-                    print(f"❌ Failed to cleanup stale entry for task {task_id}")
+        # Use the enhanced DAL function for automatic cleanup
+        cleaned_up = cleanup_stale_pvserver_entries()
         
         if cleaned_up:
             print(f"✅ Cleaned up {len(cleaned_up)} stale database entries")
@@ -63,12 +54,9 @@ def cleanup_stale_database_entries():
 
 def count_running_pvservers_with_validation() -> int:
     """Count currently running pvservers (with validation)"""
-    # First clean up stale entries
-    cleanup_stale_database_entries()
-    
-    # Then count what's actually running using DAL
     try:
-        return count_running_pvservers()
+        # Use the enhanced DAL function which automatically validates
+        return count_running_pvservers_validated()
     except DatabaseError as e:
         print(f"❌ Database error counting pvservers: {e}")
         return 0
@@ -76,19 +64,15 @@ def count_running_pvservers_with_validation() -> int:
 def get_running_pvserver_for_case_with_validation(case_path: str) -> Optional[Dict]:
     """Get running pvserver info for a specific case directory (with validation)"""
     try:
-        result = get_running_pvserver_for_case(case_path)
+        # Use the enhanced DAL function which automatically validates and cleans up
+        result = get_running_pvserver_for_case_validated(case_path)
         
         if result:
-            # Validate the process is actually running
-            if validate_pvserver_pid(result['pvserver_pid'], result['pvserver_port']):
-                return result
-            else:
-                # Process is dead, clean it up
-                print(f"🔄 Found dead pvserver for case {case_path}, cleaning up...")
-                update_pvserver_status(result['task_id'], 'stopped', 
-                                     error_message="Process died (detected during case lookup)")
+            print(f"✅ Found validated pvserver for case {case_path}")
+        else:
+            print(f"🔄 No running pvserver found for case {case_path}")
         
-        return None
+        return result
     
     except DatabaseError as e:
         print(f"❌ Database error getting pvserver for case {case_path}: {e}")
@@ -179,8 +163,9 @@ def cleanup_inactive_pvservers() -> List[str]:
             pid = server['pvserver_pid'] 
             port = server['pvserver_port']
             
-            # Validate the process is actually running before trying to stop it
-            if validate_pvserver_pid(pid, port):
+            # Use validator to check if process is running
+            if validator.validate_single_record(server):
+                # Process is running, try to stop it
                 if stop_pvserver(pid):
                     update_pvserver_status(task_id, 'stopped')
                     cleaned_up.append(f"task_{task_id}_port_{port}")
@@ -208,26 +193,8 @@ def cleanup_inactive_pvservers() -> List[str]:
 def get_pvserver_info_with_validation(task_id: str) -> Optional[Dict]:
     """Get pvserver information for a task with process validation"""
     try:
-        result = get_pvserver_info(task_id)
-        
-        if result:
-            data = result
-            
-            # If status is running, validate the process
-            if data['pvserver_status'] == 'running' and data['pvserver_pid']:
-                if not validate_pvserver_pid(data['pvserver_pid'], data['pvserver_port']):
-                    # Process is dead, update status
-                    update_pvserver_status(task_id, 'stopped', 
-                                         error_message="Process died (detected during info lookup)")
-                    data['pvserver_status'] = 'stopped'
-                    data['pvserver_error_message'] = "Process died (detected during info lookup)"
-            
-            if data['pvserver_status'] == 'running':
-                data['connection_string'] = f"localhost:{data['pvserver_port']}"
-            
-            return data
-        
-        return None
+        # Use the enhanced DAL function which automatically validates and updates status
+        return get_pvserver_info_validated(task_id)
     
     except DatabaseError as e:
         print(f"❌ Database error getting pvserver info for task {task_id}: {e}")
@@ -291,8 +258,9 @@ def force_cleanup_all_pvservers() -> Dict:
             port = server['pvserver_port']
             
             try:
-                # Try to stop the process
-                if validate_pvserver_pid(pid, port):
+                # Use validator to check if process is running
+                if validator.validate_single_record(server):
+                    # Process is running, try to stop it
                     if stop_pvserver(pid):
                         stopped_count += 1
                     else:
@@ -419,26 +387,21 @@ def list_active_pvservers() -> Dict:
         Dict: List of active pvservers and summary information
     """
     try:
-        # Clean up stale entries first
-        cleanup_stale_database_entries()
-        
-        # Get all running pvservers
-        running_servers = get_running_pvservers()
+        # Get all validated running pvservers (automatically cleans up stale entries)
+        running_servers = get_running_pvservers_validated()
         
         # Format the data
         pvservers = []
         for server in running_servers:
-            # Validate the process is still running
-            if validate_pvserver_pid(server['pvserver_pid'], server['pvserver_port']):
-                pvservers.append({
-                    "task_id": server['task_id'],
-                    "port": server['pvserver_port'],
-                    "pid": server['pvserver_pid'],
-                    "case_path": server.get('case_path', 'Unknown'),
-                    "connection_string": f"localhost:{server['pvserver_port']}",
-                    "created_at": server.get('created_at', 'Unknown'),
-                    "status": "running"
-                })
+            pvservers.append({
+                "task_id": server['task_id'],
+                "port": server['pvserver_port'],
+                "pid": server['pvserver_pid'],
+                "case_path": server.get('case_path', 'Unknown'),
+                "connection_string": f"localhost:{server['pvserver_port']}",
+                "created_at": server.get('created_at', 'Unknown'),
+                "status": "running"
+            })
         
         # Get port information
         port_range = get_port_range()
@@ -491,8 +454,8 @@ def stop_pvserver_by_port(port: int) -> Dict:
         task_id = target_server['task_id']
         pid = target_server['pvserver_pid']
         
-        # Check if process is actually running
-        if not validate_pvserver_pid(pid, port):
+        # Use validator to check if process is actually running
+        if not validator.validate_single_record(target_server):
             # Process is dead, just clean up database
             update_pvserver_status(task_id, 'stopped', 
                                  error_message="Process was already dead")

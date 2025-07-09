@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 from pathlib import Path
 
-DATABASE_PATH = 'tasks.db'
+from config import DATABASE_PATH
 
 class DatabaseError(Exception):
     """Custom exception for database-related errors"""
@@ -292,6 +292,115 @@ def migrate_existing_operations():
             raise DatabaseError(f"Missing database columns: {missing_columns}")
         
         return True
+
+# =============================================================================
+# ENHANCED DAL FUNCTIONS WITH PROCESS VALIDATION
+# =============================================================================
+
+def get_running_pvservers_validated() -> List[Dict]:
+    """
+    Get all running pvserver records with automatic process validation.
+    Dead processes are automatically cleaned up.
+    
+    Returns:
+        List[Dict]: List of verified running pvserver records
+    """
+    from process_validator import validator
+    
+    # Get all records marked as running
+    records = get_running_pvservers()
+    
+    # Validate and clean up dead processes
+    return validator.validate_record_list(records, cleanup_callback=cleanup_stale_pvserver_entry)
+
+def get_running_pvserver_for_case_validated(case_path: str) -> Optional[Dict]:
+    """
+    Get running pvserver info for a specific case directory with validation.
+    Dead processes are automatically cleaned up.
+    
+    Args:
+        case_path: Path to the case directory
+        
+    Returns:
+        Optional[Dict]: Validated pvserver record or None if not found/dead
+    """
+    from process_validator import validator
+    
+    # Get the record from database
+    record = get_running_pvserver_for_case(case_path)
+    
+    if record:
+        # Validate and clean up if dead
+        if validator.validate_and_cleanup_stale(record):
+            return record
+    
+    return None
+
+def get_pvserver_info_validated(task_id: str) -> Optional[Dict]:
+    """
+    Get pvserver information for a task with automatic validation.
+    Dead processes are automatically marked as stopped.
+    
+    Args:
+        task_id: The task ID
+        
+    Returns:
+        Optional[Dict]: Validated pvserver info or None if not found
+    """
+    from process_validator import validator
+    
+    # Get the record from database
+    record = get_pvserver_info(task_id)
+    
+    if record:
+        # If it's marked as running, validate the process
+        if record.get('pvserver_status') == 'running':
+            # Create a record format that validator expects
+            validation_record = {
+                'task_id': task_id,
+                'pvserver_pid': record.get('pvserver_pid'),
+                'pvserver_port': record.get('pvserver_port')
+            }
+            
+            # Validate and update status if dead
+            if not validator.validate_and_update_status(validation_record):
+                # Process is dead, update the record
+                record['pvserver_status'] = 'stopped'
+                record['pvserver_error_message'] = "Process died (detected during info lookup)"
+        
+        # Add connection string for running processes
+        if record.get('pvserver_status') == 'running':
+            record['connection_string'] = f"localhost:{record['pvserver_port']}"
+        
+        return record
+    
+    return None
+
+def count_running_pvservers_validated() -> int:
+    """
+    Count currently running pvservers with automatic cleanup of dead processes.
+    
+    Returns:
+        int: Number of actually running pvservers
+    """
+    # Get validated records (this will clean up dead processes)
+    validated_records = get_running_pvservers_validated()
+    return len(validated_records)
+
+def cleanup_stale_pvserver_entries() -> List[str]:
+    """
+    Clean up all stale database entries for dead processes.
+    
+    Returns:
+        List[str]: List of cleaned up task identifiers
+    """
+    from process_validator import validator
+    
+    # Get all records marked as running
+    records = get_running_pvservers()
+    
+    # Clean up stale records
+    return validator.cleanup_stale_records(records)
 
 if __name__ == "__main__":
     # Test the database connection and schema

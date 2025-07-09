@@ -5,6 +5,7 @@ from typing import Optional, Dict, List, Any
 from pathlib import Path
 
 from config import DATABASE_PATH
+from process_validator import validator
 
 class DatabaseError(Exception):
     """Custom exception for database-related errors"""
@@ -305,13 +306,21 @@ def get_running_pvservers_validated() -> List[Dict]:
     Returns:
         List[Dict]: List of verified running pvserver records
     """
-    from process_validator import validator
-    
     # Get all records marked as running
     records = get_running_pvservers()
+    validated_records = []
     
-    # Validate and clean up dead processes
-    return validator.validate_record_list(records, cleanup_callback=cleanup_stale_pvserver_entry)
+    for record in records:
+        if validator.is_running(record):
+            validated_records.append(record)
+        else:
+            # Process is dead, clean it up
+            cleanup_stale_pvserver_entry(
+                record['task_id'], 
+                "Process died (detected during validated list retrieval)"
+            )
+            
+    return validated_records
 
 def get_running_pvserver_for_case_validated(case_path: str) -> Optional[Dict]:
     """
@@ -324,15 +333,18 @@ def get_running_pvserver_for_case_validated(case_path: str) -> Optional[Dict]:
     Returns:
         Optional[Dict]: Validated pvserver record or None if not found/dead
     """
-    from process_validator import validator
-    
     # Get the record from database
     record = get_running_pvserver_for_case(case_path)
     
     if record:
         # Validate and clean up if dead
-        if validator.validate_and_cleanup_stale(record):
+        if validator.is_running(record):
             return record
+        else:
+            cleanup_stale_pvserver_entry(
+                record['task_id'],
+                f"Process for case {case_path} died (detected during lookup)"
+            )
     
     return None
 
@@ -347,8 +359,6 @@ def get_pvserver_info_validated(task_id: str) -> Optional[Dict]:
     Returns:
         Optional[Dict]: Validated pvserver info or None if not found
     """
-    from process_validator import validator
-    
     # Get the record from database
     record = get_pvserver_info(task_id)
     
@@ -363,13 +373,21 @@ def get_pvserver_info_validated(task_id: str) -> Optional[Dict]:
             }
             
             # Validate and update status if dead
-            if not validator.validate_and_update_status(validation_record):
-                # Process is dead, update the record
-                record['pvserver_status'] = 'stopped'
-                record['pvserver_error_message'] = "Process died (detected during info lookup)"
+            if not validator.is_running(validation_record):
+                # Process is dead, update the record status
+                update_pvserver_status(
+                    task_id, 
+                    'stopped', 
+                    error_message="Process died (detected during info lookup)"
+                )
+                # Refresh data to be accurate
+                record = get_pvserver_info(task_id)
         
         # Add connection string for running processes
-        if record.get('pvserver_status') == 'running':
+        if record and record.get('pvserver_status') == 'running':
+            # Ensure we have a dict to modify
+            if not isinstance(record, dict):
+                record = dict(record)
             record['connection_string'] = f"localhost:{record['pvserver_port']}"
         
         return record
@@ -394,13 +412,19 @@ def cleanup_stale_pvserver_entries() -> List[str]:
     Returns:
         List[str]: List of cleaned up task identifiers
     """
-    from process_validator import validator
-    
     # Get all records marked as running
     records = get_running_pvservers()
+    cleaned_up_ids = []
     
-    # Clean up stale records
-    return validator.cleanup_stale_records(records)
+    for record in records:
+        if not validator.is_running(record):
+            cleanup_stale_pvserver_entry(
+                record['task_id'],
+                "Process died (detected during full stale cleanup)"
+            )
+            cleaned_up_ids.append(record['task_id'])
+            
+    return cleaned_up_ids
 
 if __name__ == "__main__":
     # Test the database connection and schema

@@ -8,7 +8,8 @@ import json
 from celery_worker import celery_app, generate_mesh_task, run_solver_task, run_openfoam_command_task, cleanup_pvservers_task
 from pvserver_service import (
     get_pvserver_info_with_validation, cleanup_inactive_pvservers,
-    start_pvserver_for_case, list_active_pvservers, stop_pvserver_by_port
+    start_pvserver_for_case, list_active_pvservers, stop_pvserver_by_port,
+    PVServerServiceError
 )
 from project_service import (
     create_project, list_projects,
@@ -321,6 +322,8 @@ async def cleanup_pvservers():
             "message": f"Cleaned up {len(cleaned_up)} inactive pvservers",
             "cleaned_up": cleaned_up
         }
+    except PVServerServiceError as e:
+        raise HTTPException(status_code=500, detail=f"A service error occurred during cleanup: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to cleanup pvservers: {str(e)}")
 
@@ -344,6 +347,8 @@ async def get_pvserver_info_endpoint(task_id: str):
         )
         
         return pvserver_info
+    except PVServerServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
@@ -352,9 +357,6 @@ async def start_pvserver_endpoint(request: StartPVServerRequest):
     """Start a pvserver for a specific case directory."""
     try:
         result = start_pvserver_for_case(request.case_path, request.port)
-        
-        if result["status"] == "error":
-            raise HTTPException(status_code=400, detail=result["message"])
         
         return PVServerStartResponse(
             status=result["status"],
@@ -365,6 +367,8 @@ async def start_pvserver_endpoint(request: StartPVServerRequest):
             message=result["message"],
             error_message=result.get("error_message")
         )
+    except PVServerServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start pvserver: {str(e)}")
 
@@ -374,15 +378,14 @@ async def list_pvservers_endpoint():
     try:
         result = list_active_pvservers()
         
-        if "error" in result:
-            raise HTTPException(status_code=500, detail=result["error"])
-        
         return PVServerListResponse(
             pvservers=result["pvservers"],
             total_count=result["total_count"],
             port_range=result["port_range"],
             available_ports=result["available_ports"]
         )
+    except PVServerServiceError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list pvservers: {str(e)}")
 
@@ -392,15 +395,14 @@ async def stop_pvserver_endpoint(port: int):
     try:
         result = stop_pvserver_by_port(port)
         
-        if result["status"] == "error":
-            raise HTTPException(status_code=400, detail=result["message"])
-        
         return PVServerStopResponse(
             status=result["status"],
             port=result["port"],
             message=result["message"],
             error_message=result.get("error_message")
         )
+    except PVServerServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to stop pvserver: {str(e)}")
 

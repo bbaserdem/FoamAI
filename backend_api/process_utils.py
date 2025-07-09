@@ -105,7 +105,7 @@ class ProcessManager:
 
     def stop_pvserver(self, pid: int, is_shutdown: bool = False) -> bool:
         """
-        Stop a pvserver process by its PID.
+        Stop a pvserver process by its PID. Allows stopping untracked PIDs.
         
         Args:
             pid: Process ID to stop.
@@ -114,11 +114,13 @@ class ProcessManager:
         Returns:
             bool: True if process was stopped successfully, False otherwise.
         """
-        if not is_shutdown:
-            with self._lock:
-                if pid not in self._active_pvservers:
-                    print(f"⚠️ PID {pid} not tracked by ProcessManager. Skipping stop.")
-                    return False
+        # This check is removed to allow cleanup scripts to stop processes
+        # that are not tracked by the current ProcessManager instance.
+        # if not is_shutdown:
+        #     with self._lock:
+        #         if pid not in self._active_pvservers:
+        #             print(f"⚠️ PID {pid} not tracked by ProcessManager. Skipping stop.")
+        #             return False
 
         try:
             if not psutil.pid_exists(pid):
@@ -145,6 +147,7 @@ class ProcessManager:
             print(f"❌ Error stopping pvserver PID {pid}: {e}")
             return False
         finally:
+            # If the process was tracked, always remove it from the dict.
             with self._lock:
                 if pid in self._active_pvservers:
                     del self._active_pvservers[pid]

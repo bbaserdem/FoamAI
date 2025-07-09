@@ -182,14 +182,9 @@ async def get_project_list():
 @app.post("/api/submit_scenario", response_model=SubmitScenarioResponse)
 async def submit_scenario(request: SubmitScenarioRequest):
     """Submit a CFD scenario for processing."""
+    task_id = str(uuid.uuid4())
     try:
-        task_id = str(uuid.uuid4())
-        
-        # Create task in database using DAL
-        if not create_task(task_id, "pending", "Scenario submitted, starting mesh generation..."):
-            raise HTTPException(status_code=500, detail="Failed to create task in database")
-        
-        # Start mesh generation task
+        create_task(task_id, "pending", "Scenario submitted, starting mesh generation...")
         generate_mesh_task.delay(task_id)
         
         return SubmitScenarioResponse(
@@ -200,6 +195,7 @@ async def submit_scenario(request: SubmitScenarioRequest):
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
+        # Catch other potential errors, e.g., Celery connection issues
         raise HTTPException(status_code=500, detail=f"Failed to submit scenario: {str(e)}")
 
 @app.get("/api/task_status/{task_id}", response_model=TaskStatusResponse)
@@ -244,11 +240,11 @@ async def approve_mesh(task_id: str, request: ApprovalRequest):
             
             return {"message": "Mesh approved. Simulation started.", "task_id": task_id}
         else:
-            # Update task status to rejected using DAL
-            if not update_task_rejection(task_id, request.comments):
-                raise HTTPException(status_code=500, detail="Failed to update task status")
-            
+            update_task_rejection(task_id, request.comments)
             return {"message": "Mesh rejected.", "task_id": task_id}
+            
+    except TaskNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Task with ID '{task_id}' not found.")
     except DatabaseError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
@@ -284,15 +280,11 @@ async def get_results(task_id: str):
 @app.post("/api/run_openfoam_command")
 async def run_openfoam_command(request: OpenFOAMCommandRequest):
     """Run a custom OpenFOAM command."""
+    task_id = str(uuid.uuid4())
     try:
-        task_id = str(uuid.uuid4())
-        
-        # Create task in database using DAL
         description = request.description or f"Running command: {request.command}"
-        if not create_task(task_id, "pending", f"Command submitted: {request.command}"):
-            raise HTTPException(status_code=500, detail="Failed to create task in database")
+        create_task(task_id, "pending", f"Command submitted: {request.command}")
         
-        # Start the command task
         run_openfoam_command_task.delay(
             task_id, 
             request.case_path, 

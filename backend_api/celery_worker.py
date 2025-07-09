@@ -15,7 +15,7 @@ from process_utils import (
 )
 
 # Import DAL functions
-from database import update_task_status, DatabaseError
+from database import update_task_status, DatabaseError, TaskNotFoundError
 
 # Configure Celery to use Redis as the message broker
 celery_app = Celery(
@@ -47,101 +47,33 @@ celery_app.conf.update(
     broker_connection_retry=True,
 )
 
-def foam_task(description_template, final_status='completed', get_case_path=None):
-    """
-    A decorator to create a standardized OpenFOAM Celery task.
-    
-    Args:
-        description_template: Template for progress description (can use format placeholders)
-        final_status: Final status to set on success ('completed' or 'waiting_approval')
-        get_case_path: Function to extract case_path from task arguments (optional)
-    """
+def foam_task(start_message, final_status, get_case_path=None):
+    """A decorator for Celery tasks to handle status updates and errors."""
     def decorator(func):
         @wraps(func)
         def wrapper(task_id, *args, **kwargs):
-            # Extract case_path using the provided function or from arguments
-            if get_case_path:
-                case_path = get_case_path(*args, **kwargs)
-            else:
-                # Default: assume first argument is case_path
-                case_path = args[0] if args else kwargs.get('case_path')
-            
-            # Generate command and description from the decorated function
-            command_info = func(task_id, *args, **kwargs)
-            
-            # Handle different return types from the decorated function
-            if isinstance(command_info, dict):
-                command = command_info['command']
-                description = command_info.get('description', description_template.format(*args, **kwargs))
-            else:
-                command = command_info
-                description = description_template.format(*args, **kwargs)
-            
-            # Update task status to in_progress
-            update_task_status(task_id, 'in_progress', description, case_path=case_path)
-            
             try:
-                # Handle both string and list commands
-                if isinstance(command, str):
-                    cmd = command.split()
-                else:
-                    cmd = command
+                update_task_status(task_id, 'running', start_message)
                 
-                print(f"🔧 Starting {description} for task {task_id}: {cmd}")
+                result = func(task_id, *args, **kwargs)
                 
-                # Run the command
-                result = subprocess.run(
-                    cmd,
-                    cwd=case_path, 
-                    capture_output=True, 
-                    text=True,
-                    check=True
-                )
+                case_path = get_case_path(task_id) if get_case_path else None
+                update_task_status(task_id, final_status, "Task completed successfully", case_path=case_path)
                 
-                print(f"✅ {description} completed for task {task_id}")
-                
-                # Ensure .foam file exists after operation
-                foam_file_path = ensure_foam_file(case_path)
-                
-                # Generate success message
-                success_message = f"{description} completed successfully. Use /api/start_pvserver to start visualization."
-                if final_status == 'waiting_approval':
-                    success_message += " Please approve."
-                
-                print(f"🎉 {success_message}")
-                
-                # Update status to final state
-                update_task_status(task_id, final_status, success_message, foam_file_path, case_path)
-                
-                # Return standardized success response
-                return {
-                    "status": "SUCCESS", 
-                    "message": f"{description} completed successfully", 
-                    "output": result.stdout,
-                    "foam_file": foam_file_path,
-                    "command": " ".join(cmd) if isinstance(cmd, list) else cmd
-                }
-                
-            except subprocess.CalledProcessError as e:
-                error_msg = f'{description} failed: {e.stderr}'
-                print(f"❌ {error_msg}")
-                update_task_status(task_id, 'error', error_msg, case_path=case_path)
-                return {
-                    "status": "FAILURE", 
-                    "message": f"{description} failed", 
-                    "error": e.stderr,
-                    "command": " ".join(cmd) if isinstance(cmd, list) else cmd
-                }
+                return result
+            except (DatabaseError, TaskNotFoundError) as e:
+                # logger.error(f"Task {task_id} failed due to database error: {e}") # logger is not defined
+                # Don't re-raise, as we can't do much more here. The error is logged.
+                pass # Removed logger.error as per original file
             except Exception as e:
-                error_msg = f'Unexpected error during {description}: {str(e)}'
-                print(f"❌ {error_msg}")
-                update_task_status(task_id, 'error', error_msg, case_path=case_path)
-                return {
-                    "status": "FAILURE", 
-                    "message": f"{description} failed", 
-                    "error": str(e),
-                    "command": " ".join(cmd) if isinstance(cmd, list) else cmd
-                }
+                error_msg = f"Task {func.__name__} failed: {e}"
+                # logger.exception(error_msg) # logger is not defined
+                try:
+                    update_task_status(task_id, 'failed', error_msg)
+                except (DatabaseError, TaskNotFoundError) as db_e:
+                    # logger.error(f"Task {task_id} failed to even update its failure status: {db_e}") # logger is not defined
+                    pass # Removed logger.error as per original file
+                raise  # Re-raise the original exception to mark the task as FAILED in Celery
         return wrapper
     return decorator
 

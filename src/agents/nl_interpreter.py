@@ -294,6 +294,105 @@ def apply_intelligent_defaults(geometry_type: GeometryType, dimensions: Dict[str
     return dimensions
 
 
+def detect_boundary_conditions(prompt: str) -> Dict[str, Any]:
+    """Detect boundary condition specifications from the prompt."""
+    conditions = {}
+    prompt_lower = prompt.lower()
+    
+    # Inlet velocity patterns
+    velocity_pattern = r'(?:inlet\s+)?velocity\s*[:=]?\s*([\d.]+)\s*(?:m/s|meter[s]?/second)?'
+    if match := re.search(velocity_pattern, prompt_lower):
+        conditions["inlet_velocity"] = float(match.group(1))
+    
+    # Pressure patterns
+    pressure_pattern = r'(?:outlet\s+)?pressure\s*[:=]?\s*([\d.]+)\s*(?:pa|pascal)?'
+    if match := re.search(pressure_pattern, prompt_lower):
+        conditions["outlet_pressure"] = float(match.group(1))
+    
+    # Temperature patterns
+    temp_pattern = r'temperature\s*[:=]?\s*([\d.]+)\s*(?:k|kelvin|c|celsius)?'
+    if match := re.search(temp_pattern, prompt_lower):
+        temp = float(match.group(1))
+        # Convert Celsius to Kelvin if needed
+        if 'c' in match.group(0).lower() and temp < 100:  # Likely Celsius
+            temp += 273.15
+        conditions["temperature"] = temp
+    
+    return conditions
+
+
+def detect_multiphase_flow(prompt: str) -> Dict[str, Any]:
+    """Detect multiphase flow indicators from the prompt using word boundaries."""
+    import re
+    prompt_lower = prompt.lower()
+    multiphase_info = {
+        "is_multiphase": False,
+        "phases": [],
+        "free_surface": False
+    }
+    
+    # Keywords that indicate multiphase flow with word boundaries
+    multiphase_keywords = [
+        r"\bwater\b", r"\bliquid\b", r"\boil\b", r"\bgas\b", r"\binterface\b",
+        r"\bfree surface\b", r"\bvof\b", r"\bvolume of fluid\b", r"\bmultiphase\b",
+        r"\bdam break\b", r"\bwave\b", r"\bdroplet\b", r"\bbubble\b", r"\bsplash\b",
+        r"\bfilling\b", r"\bdraining\b", r"\bsloshing\b", r"\bmarine\b", r"\bnaval\b",
+        r"\btwo-phase\b", r"\btwo phase\b"
+    ]
+    
+    # Check for multiphase keywords
+    found_keywords = []
+    for keyword in multiphase_keywords:
+        if re.search(keyword, prompt_lower):
+            found_keywords.append(keyword)
+    
+    # Identify specific phases mentioned using word boundaries
+    phases = []
+    # Water/liquid detection
+    if any(re.search(pattern, prompt_lower) for pattern in [r"\bwater\b", r"\bliquid\b"]):
+        phases.append("water")
+    
+    # Air/gas detection - special handling for "air" to avoid false positives
+    air_detected = False
+    if re.search(r"\bair\b", prompt_lower):
+        # Check if it's in context of multiphase flow (with other fluids)
+        other_fluids = [r"\bwater\b", r"water", r"\bliquid\b", r"liquid", r"\boil\b"]
+        if any(re.search(fluid, prompt_lower) for fluid in other_fluids):
+            air_detected = True
+        # Check for explicit multiphase contexts
+        multiphase_contexts = [
+            r"\bair.*water\b", r"\bwater.*air\b", r"water.*air", r"air.*water",
+            r"\btwo.*phase\b", r"\bfree surface\b", r"\bdam break\b", r"\bwave\b"
+        ]
+        if any(re.search(context, prompt_lower) for context in multiphase_contexts):
+            air_detected = True
+    
+    # Gas detection (broader than air)
+    if re.search(r"\bgas\b", prompt_lower) or air_detected:
+        phases.append("air")
+    
+    # Oil detection
+    if re.search(r"\boil\b", prompt_lower):
+        phases.append("oil")
+    
+    # Check for free surface indicators
+    free_surface_keywords = [r"\bfree surface\b", r"\bdam break\b", r"\bwave\b", r"\bsloshing\b", r"\binterface\b"]
+    if any(re.search(keyword, prompt_lower) for keyword in free_surface_keywords):
+        multiphase_info["free_surface"] = True
+    
+    # Determine if this is multiphase
+    explicit_multiphase = any(re.search(pattern, prompt_lower) for pattern in [r"\bmultiphase\b", r"\btwo-phase\b", r"\btwo phase\b", r"\bvof\b"])
+    
+    if len(phases) >= 2 or explicit_multiphase or multiphase_info["free_surface"]:
+        multiphase_info["is_multiphase"] = True
+        if not phases:  # Default to water-air if no specific phases mentioned
+            phases = ["water", "air"]
+    
+    multiphase_info["phases"] = phases
+    
+    return multiphase_info
+
+
 def nl_interpreter_agent(state: CFDState) -> CFDState:
     """
     Natural Language Interpreter Agent.
@@ -432,6 +531,20 @@ Return valid JSON that matches the schema exactly.
         
         # Set default fluid properties if not specified
         parsed_params = set_default_fluid_properties(parsed_params)
+        
+        # Detect multiphase flow indicators
+        multiphase_info = detect_multiphase_flow(state["user_prompt"])
+        
+        # Merge multiphase information into parsed parameters
+        parsed_params["is_multiphase"] = multiphase_info["is_multiphase"]
+        parsed_params["phases"] = multiphase_info["phases"]
+        parsed_params["free_surface"] = multiphase_info["free_surface"]
+        
+        # Detect boundary conditions from prompt
+        boundary_conditions = detect_boundary_conditions(state["user_prompt"])
+        for key, value in boundary_conditions.items():
+            if key not in parsed_params or parsed_params[key] is None:
+                parsed_params[key] = value
         
         return {
             **state,

@@ -12,6 +12,7 @@ class CFDStep(str, Enum):
     BOUNDARY_CONDITIONS = "boundary_conditions"
     SOLVER_SELECTION = "solver_selection"
     CASE_WRITING = "case_writing"
+    USER_APPROVAL = "user_approval"
     SIMULATION = "simulation"
     VISUALIZATION = "visualization"
     COMPLETE = "complete"
@@ -33,11 +34,13 @@ class SolverType(str, Enum):
     """Available OpenFOAM solvers."""
     SIMPLE_FOAM = "simpleFoam"
     PIMPLE_FOAM = "pimpleFoam"
+    INTER_FOAM = "interFoam"  # Multiphase flow solver
+    RHO_PIMPLE_FOAM = "rhoPimpleFoam"  # Compressible transient solver
+    CHT_MULTI_REGION_FOAM = "chtMultiRegionFoam"  # Conjugate heat transfer
+    REACTING_FOAM = "reactingFoam"  # Reactive flows with combustion
     # Future additions:
     # RHOSIMPLE_FOAM = "rhoSimpleFoam"  # Compressible steady
-    # RHOPIMPLE_FOAM = "rhoPimpleFoam"  # Compressible transient
-    # INTER_FOAM = "interFoam"          # Multiphase
-    # BUOYANT_SIMPLE_FOAM = "buoyantSimpleFoam"  # Heat transfer
+    # BUOYANT_SIMPLE_FOAM = "buoyantSimpleFoam"  # Heat transfer with buoyancy
 
 
 class FlowType(str, Enum):
@@ -85,6 +88,9 @@ class CFDState(TypedDict):
     retry_count: int
     max_retries: int
     error_recovery_attempts: Optional[Dict[str, bool]]
+    
+    # User approval tracking
+    user_approved: bool
     
     # Quality metrics
     mesh_quality: Optional[Dict[str, Any]]

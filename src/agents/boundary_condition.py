@@ -1,48 +1,46 @@
 """Boundary Condition Agent - Generates OpenFOAM boundary conditions."""
 
+from typing import Dict, Any, Optional, List
+from pathlib import Path
+import re
 import json
-from typing import Dict, Any, Optional
+import openai
 from loguru import logger
 
-from .state import CFDState, CFDStep, GeometryType, FlowType, AnalysisType
-
+from .state import CFDState, CFDStep, FlowType, GeometryType, AnalysisType, SolverType
 
 def boundary_condition_agent(state: CFDState) -> CFDState:
-    """
-    Boundary Condition Agent.
-    
-    Generates OpenFOAM boundary condition files (0/ directory contents)
-    based on flow parameters and geometry information.
-    """
+    """Generate boundary conditions for CFD simulation."""
     try:
-        if state["verbose"]:
-            logger.info("Boundary Condition: Starting boundary condition generation")
+        logger.info("Boundary Condition: Starting boundary condition generation")
         
+        # Extract parameters from state
         parsed_params = state["parsed_parameters"]
         geometry_info = state["geometry_info"]
         mesh_config = state["mesh_config"]
         
-        # Generate boundary conditions
-        boundary_conditions = generate_boundary_conditions(parsed_params, geometry_info, mesh_config)
+        # Generate boundary conditions with intelligent mapping
+        boundary_conditions = generate_boundary_conditions_with_mapping(
+            parsed_params, geometry_info, mesh_config, state
+        )
         
         # Validate boundary conditions
-        validation_result = validate_boundary_conditions(boundary_conditions, parsed_params)
-        if not validation_result["valid"]:
-            logger.warning(f"Boundary condition validation issues: {validation_result['warnings']}")
-            return {
-                **state,
-                "errors": state["errors"] + validation_result["errors"],
-                "warnings": state["warnings"] + validation_result["warnings"]
-            }
+        validation = validate_boundary_conditions(boundary_conditions, parsed_params)
         
-        if state["verbose"]:
-            logger.info(f"Boundary Condition: Generated {len(boundary_conditions)} field files")
-        
-        return {
+        state = {
             **state,
             "boundary_conditions": boundary_conditions,
-            "errors": []
+            "current_step": CFDStep.BOUNDARY_CONDITIONS,
+            "warnings": state.get("warnings", []) + validation.get("warnings", [])
         }
+        
+        if not validation["valid"]:
+            state["errors"] = state["errors"] + validation["errors"]
+            state["current_step"] = CFDStep.ERROR
+        
+        logger.info(f"Boundary Condition: Generated {len(boundary_conditions)} field files")
+        
+        return state
         
     except Exception as e:
         logger.error(f"Boundary Condition error: {str(e)}")
@@ -51,6 +49,362 @@ def boundary_condition_agent(state: CFDState) -> CFDState:
             "errors": state["errors"] + [f"Boundary condition generation failed: {str(e)}"],
             "current_step": CFDStep.ERROR
         }
+
+
+def read_mesh_patches(case_directory: Path) -> List[str]:
+    """Read actual mesh patches from the boundary file."""
+    patches_info = read_mesh_patches_with_types(case_directory)
+    return [info['name'] for info in patches_info]
+
+
+def read_mesh_patches_with_types(case_directory: Path) -> List[Dict[str, str]]:
+    """Read actual mesh patches with their types from the boundary file."""
+    try:
+        boundary_file = case_directory / "constant" / "polyMesh" / "boundary"
+        if not boundary_file.exists():
+            logger.warning(f"Boundary file not found: {boundary_file}")
+            return []
+        
+        with open(boundary_file, 'r') as f:
+            content = f.read()
+        
+        # Extract patch names and types by finding patch blocks
+        patches = []
+        lines = content.split('\n')
+        
+        for i, line in enumerate(lines):
+            line = line.strip()
+            
+            # Look for patch name (alphabetic word on its own line)
+            if (line and not line.startswith('//') and not line.startswith('/*') and 
+                line.isalpha() and line not in ['FoamFile']):
+                
+                # Check if the next line has an opening brace
+                if i + 1 < len(lines) and lines[i + 1].strip() == '{':
+                    patch_name = line
+                    
+                    # Look for type in the following lines
+                    patch_type = None
+                    for j in range(i + 2, min(i + 10, len(lines))):  # Look ahead from after the brace
+                        if 'type' in lines[j]:
+                            type_match = re.search(r'type\s+(\w+);', lines[j])
+                            if type_match:
+                                patch_type = type_match.group(1)
+                                break
+                    
+                    if patch_type:
+                        patches.append({
+                            'name': patch_name,
+                            'type': patch_type
+                        })
+                        logger.debug(f"Found patch: {patch_name} (type: {patch_type})")
+        
+        logger.info(f"Read {len(patches)} mesh patches: {[p['name'] for p in patches]}")
+        return patches
+        
+    except Exception as e:
+        logger.error(f"Error reading mesh patches: {str(e)}")
+        return []
+
+
+def map_boundary_conditions_to_patches(
+    boundary_conditions: Dict[str, Any], 
+    actual_patches: List[str],
+    geometry_type: GeometryType,
+    case_directory: Path = None
+) -> Dict[str, Any]:
+    """Map generated boundary conditions to actual mesh patches with proper type handling."""
+    
+    # Get patch types if case directory is provided
+    patch_types = {}
+    if case_directory:
+        patches_info = read_mesh_patches_with_types(case_directory)
+        patch_types = {info['name']: info['type'] for info in patches_info}
+    
+    # Define mapping rules for different geometries
+    patch_mappings = {
+        GeometryType.PIPE: {
+            # Pipe already works - direct mapping
+            "inlet": ["inlet"],
+            "outlet": ["outlet"], 
+            "walls": ["walls", "wall"]
+        },
+        GeometryType.CYLINDER: {
+            "inlet": ["inlet"],
+            "outlet": ["outlet"],
+            "cylinder": ["cylinder"],
+            "walls": ["top", "bottom"],  # Map generic walls to top/bottom
+            "sides": ["front", "back"]   # Map generic sides to front/back
+        },
+        GeometryType.SPHERE: {
+            "inlet": ["inlet"],
+            "outlet": ["outlet"],
+            "sphere": ["sphere"],
+            "walls": ["top", "bottom"],
+            "sides": ["front", "back"]
+        },
+        GeometryType.CUBE: {
+            "inlet": ["inlet"],
+            "outlet": ["outlet"],
+            "cube": ["cube"],
+            "walls": ["top", "bottom"],
+            "sides": ["front", "back"]
+        },
+        GeometryType.AIRFOIL: {
+            "inlet": ["inlet"],
+            "outlet": ["outlet"],
+            "airfoil": ["airfoil"],
+            "farfield": ["farfield"],
+            "sides": ["sides"]
+        },
+        GeometryType.CHANNEL: {
+            "inlet": ["inlet"],
+            "outlet": ["outlet"],
+            "walls": ["walls", "top", "bottom"],
+            "sides": ["sides", "front", "back"]
+        }
+    }
+    
+    mapping = patch_mappings.get(geometry_type, {})
+    mapped_conditions = {}
+    
+    logger.info(f"Mapping boundary conditions for {geometry_type} with patches: {actual_patches}")
+    
+    # For each field in boundary conditions
+    for field_name, field_data in boundary_conditions.items():
+        if "boundaryField" not in field_data:
+            mapped_conditions[field_name] = field_data
+            continue
+            
+        new_boundary_field = {}
+        
+        # Map each boundary condition to actual patches
+        for bc_name, bc_data in field_data["boundaryField"].items():
+            target_patches = mapping.get(bc_name, [bc_name])  # Default to original name
+            
+            # Find which target patches actually exist in the mesh
+            existing_patches = [p for p in target_patches if p in actual_patches]
+            
+            if existing_patches:
+                # Apply the boundary condition to all existing patches
+                for patch in existing_patches:
+                    # Get the patch type and adjust boundary condition if needed
+                    patch_type = patch_types.get(patch, "patch")
+                    bc_data_adjusted = adjust_boundary_condition_for_patch_type(
+                        bc_data, patch_type, field_name, patch
+                    )
+                    new_boundary_field[patch] = bc_data_adjusted
+            else:
+                # If no mapping found, keep original if it exists in mesh
+                if bc_name in actual_patches:
+                    patch_type = patch_types.get(bc_name, "patch")
+                    bc_data_adjusted = adjust_boundary_condition_for_patch_type(
+                        bc_data, patch_type, field_name, bc_name
+                    )
+                    new_boundary_field[bc_name] = bc_data_adjusted
+                else:
+                    logger.warning(f"No patch found for boundary condition {bc_name} in field {field_name}")
+        
+        # Create the mapped field
+        mapped_conditions[field_name] = {
+            **field_data,
+            "boundaryField": new_boundary_field
+        }
+    
+    return mapped_conditions
+
+
+def adjust_boundary_condition_for_patch_type(
+    bc_data: Dict[str, Any],
+    patch_type: str,
+    field_name: str,
+    patch_name: str
+) -> Dict[str, Any]:
+    """Adjust boundary condition type based on mesh patch type."""
+    
+    # Handle symmetry patches
+    if patch_type == "symmetry":
+        # For symmetry patches, use symmetry instead of zeroGradient
+        if bc_data.get("type") == "zeroGradient":
+            logger.info(f"Adjusting {field_name} boundary condition for symmetry patch {patch_name}: zeroGradient -> symmetry")
+            return {"type": "symmetry"}
+        # For velocity fields on symmetry, use symmetry instead of noSlip
+        elif bc_data.get("type") == "noSlip":
+            logger.info(f"Adjusting {field_name} boundary condition for symmetry patch {patch_name}: noSlip -> symmetry")
+            return {"type": "symmetry"}
+        # For fixedValue on symmetry, use symmetry (symmetry overrides fixed values)
+        elif bc_data.get("type") == "fixedValue":
+            logger.info(f"Adjusting {field_name} boundary condition for symmetry patch {patch_name}: fixedValue -> symmetry")
+            return {"type": "symmetry"}
+    
+    # Handle empty patches (for 2D cases)
+    elif patch_type == "empty":
+        logger.info(f"Adjusting {field_name} boundary condition for empty patch {patch_name}: {bc_data.get('type')} -> empty")
+        return {"type": "empty"}
+    
+    # For other patch types, keep the original boundary condition
+    return bc_data
+
+
+def get_ai_boundary_conditions(
+    solver_type: SolverType,
+    geometry_info: Dict[str, Any], 
+    parsed_params: Dict[str, Any],
+    actual_patches: List[str]
+) -> Dict[str, Dict[str, Any]]:
+    """Use OpenAI to determine appropriate boundary conditions for complex solvers."""
+    
+    try:
+        # Prepare context for AI
+        context = {
+            "solver": solver_type.value if hasattr(solver_type, 'value') else str(solver_type),
+            "geometry": str(geometry_info.get("type", "unknown")),
+            "patches": actual_patches,
+            "velocity": parsed_params.get("velocity", 1.0),
+            "temperature": parsed_params.get("temperature", 293.15),
+            "pressure": parsed_params.get("pressure", 101325),
+            "reynolds_number": parsed_params.get("reynolds_number"),
+            "mach_number": parsed_params.get("mach_number")
+        }
+        
+        prompt = f"""
+You are an OpenFOAM CFD expert. Generate appropriate boundary conditions for:
+
+Solver: {context['solver']}
+Geometry: {context['geometry']}
+Available patches: {context['patches']}
+
+Physical conditions:
+- Velocity: {context['velocity']} m/s
+- Temperature: {context['temperature']} K
+- Pressure: {context['pressure']} Pa
+- Reynolds number: {context['reynolds_number']}
+- Mach number: {context['mach_number']}
+
+For each patch, specify the boundary condition type and values for the main fields:
+- Velocity (U)
+- Pressure (p or p_rgh)
+- Temperature (T) if applicable
+- Turbulence fields (k, omega, epsilon, nut) if applicable
+- Species fields if applicable
+
+Return ONLY a valid JSON object with this structure:
+{{
+    "patch_name": {{
+        "U": {{"type": "boundary_type", "value": "value_if_needed"}},
+        "p": {{"type": "boundary_type", "value": "value_if_needed"}},
+        "T": {{"type": "boundary_type", "value": "value_if_needed"}}
+    }}
+}}
+
+Common boundary types:
+- fixedValue: for specified values
+- zeroGradient: for zero normal gradient
+- noSlip: for wall velocity
+- empty: for 2D boundaries
+- inletOutlet: for pressure outlets
+- symmetry: for symmetric boundaries
+"""
+
+        try:
+            client = openai.OpenAI()
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=1000
+            )
+            
+            ai_response = response.choices[0].message.content.strip()
+            logger.info(f"AI boundary condition response: {ai_response}")
+            
+            # Parse JSON response
+            boundary_conditions = json.loads(ai_response)
+            return boundary_conditions
+            
+        except Exception as e:
+            logger.warning(f"OpenAI API error: {str(e)}")
+            return {}
+            
+    except Exception as e:
+        logger.error(f"Error in AI boundary condition generation: {str(e)}")
+        return {}
+
+
+def generate_boundary_conditions_with_mapping(
+    parsed_params: Dict[str, Any], 
+    geometry_info: Dict[str, Any], 
+    mesh_config: Dict[str, Any],
+    state: CFDState
+) -> Dict[str, Any]:
+    """Generate boundary conditions with intelligent patch mapping."""
+    
+    # First, generate standard boundary conditions
+    boundary_conditions = generate_boundary_conditions(parsed_params, geometry_info, mesh_config)
+    
+    # Check if we can read actual mesh patches (post-mesh generation)
+    case_directory = state.get("case_directory")
+    if case_directory and Path(case_directory).exists():
+        actual_patches = read_mesh_patches(Path(case_directory))
+        
+        if actual_patches:
+            geometry_type = geometry_info.get("type")
+            
+            # Map boundary conditions to actual patches
+            mapped_conditions = map_boundary_conditions_to_patches(
+                boundary_conditions, actual_patches, geometry_type
+            )
+            
+            # For complex solvers, enhance with AI boundary conditions
+            solver_info = state.get("solver_settings", {})
+            solver_type = solver_info.get("solver_type")
+            
+            if solver_type in [SolverType.RHO_PIMPLE_FOAM, SolverType.CHT_MULTI_REGION_FOAM, SolverType.REACTING_FOAM]:
+                logger.info(f"Enhancing boundary conditions with AI for {solver_type}")
+                
+                ai_conditions = get_ai_boundary_conditions(
+                    solver_type, geometry_info, parsed_params, actual_patches
+                )
+                
+                if ai_conditions:
+                    # Merge AI-generated conditions with mapped conditions
+                    mapped_conditions = merge_ai_boundary_conditions(
+                        mapped_conditions, ai_conditions, actual_patches
+                    )
+            
+            return mapped_conditions
+    
+    return boundary_conditions
+
+
+def merge_ai_boundary_conditions(
+    existing_conditions: Dict[str, Any],
+    ai_conditions: Dict[str, Dict[str, Any]], 
+    actual_patches: List[str]
+) -> Dict[str, Any]:
+    """Merge AI-generated boundary conditions with existing ones."""
+    
+    # For each field in existing conditions
+    for field_name, field_data in existing_conditions.items():
+        if "boundaryField" not in field_data:
+            continue
+            
+        # Update boundary conditions based on AI recommendations
+        for patch_name in actual_patches:
+            if patch_name in ai_conditions and field_name in ai_conditions[patch_name]:
+                ai_bc = ai_conditions[patch_name][field_name]
+                
+                # Update the boundary condition for this patch and field
+                if patch_name in field_data["boundaryField"]:
+                    existing_bc = field_data["boundaryField"][patch_name]
+                    
+                    # Merge AI recommendations with existing structure
+                    updated_bc = {**existing_bc, **ai_bc}
+                    field_data["boundaryField"][patch_name] = updated_bc
+                    
+                    logger.info(f"Updated {field_name}.{patch_name} with AI boundary condition: {ai_bc}")
+    
+    return existing_conditions
 
 
 def generate_boundary_conditions(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any], mesh_config: Dict[str, Any]) -> Dict[str, Any]:
@@ -76,8 +430,32 @@ def generate_boundary_conditions(parsed_params: Dict[str, Any], geometry_info: D
         })
     
     # Add temperature field if needed
-    if parsed_params.get("temperature"):
+    # Temperature is required for compressible flows, heat transfer, and reacting flows
+    # Check for temperature-related keywords in the original prompt
+    original_prompt = parsed_params.get("original_prompt", "").lower()
+    
+    has_temperature_keywords = any(keyword in original_prompt for keyword in [
+        "temperature", "heat", "thermal", "compressible", "high-speed", "mach", 
+        "combustion", "flame", "reaction", "burning", "ignition", "conjugate"
+    ])
+    
+    velocity = parsed_params.get("velocity", 1.0)
+    high_speed = velocity and velocity > 50  # High speed indicates compressible flow (lowered threshold)
+    
+    needs_temperature = (
+        parsed_params.get("temperature") is not None or
+        has_temperature_keywords or
+        high_speed or
+        parsed_params.get("is_compressible", False) or 
+        parsed_params.get("has_heat_transfer", False) or
+        parsed_params.get("has_reactive_flow", False)
+    )
+    
+    logger.info(f"Temperature detection: prompt='{original_prompt}', velocity={velocity}, high_speed={high_speed}, keywords={has_temperature_keywords}, needs_temperature={needs_temperature}")
+    
+    if needs_temperature:
         boundary_conditions["T"] = generate_temperature_field(parsed_params, geometry_info, mesh_config)
+        logger.info(f"Generated temperature field for geometry {geometry_info.get('type')}")
     
     return boundary_conditions
 
@@ -1526,6 +1904,66 @@ def generate_temperature_field(parsed_params: Dict[str, Any], geometry_info: Dic
                 "type": "empty"
             }
         }
+    elif geometry_type == GeometryType.CYLINDER:
+        # External flow around cylinder - use snappyHexMesh patch names
+        mesh_topology = mesh_config.get("mesh_topology", "structured")
+        is_2d = mesh_config.get("is_2d", True)
+        
+        logger.info(f"Cylinder temperature field: mesh_topology={mesh_topology}, is_2d={is_2d}")
+        
+        if mesh_topology == "snappy":
+            temp_field["boundaryField"] = {
+                "cylinder": {
+                    "type": "zeroGradient"
+                },
+                "inlet": {
+                    "type": "fixedValue",
+                    "value": f"uniform {temperature}"
+                },
+                "outlet": {
+                    "type": "zeroGradient"
+                },
+                "top": {
+                    "type": "zeroGradient"
+                },
+                "bottom": {
+                    "type": "zeroGradient"
+                },
+                "front": {
+                    "type": "empty" if is_2d else "zeroGradient"
+                },
+                "back": {
+                    "type": "empty" if is_2d else "zeroGradient"
+                }
+            }
+        else:
+            # O-grid topology
+            temp_field["boundaryField"] = {
+                "cylinder": {
+                    "type": "zeroGradient"
+                },
+                "left": {
+                    "type": "fixedValue",
+                    "value": f"uniform {temperature}"
+                },
+                "right": {
+                    "type": "zeroGradient"
+                },
+                "up": {
+                    "type": "zeroGradient"
+                },
+                "down": {
+                    "type": "zeroGradient"
+                },
+                "front": {
+                    "type": "empty"
+                },
+                "back": {
+                    "type": "empty"
+                }
+            }
+        
+        logger.info(f"Generated cylinder temperature field with patches: {list(temp_field['boundaryField'].keys())}")
     elif geometry_type == GeometryType.SPHERE:
         # External flow with snappyHexMesh - use background mesh patch names
         temp_field["boundaryField"] = {

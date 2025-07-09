@@ -5,7 +5,7 @@ import json
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from loguru import logger
 
 from .state import CFDState, CFDStep
@@ -28,11 +28,14 @@ def case_writer_agent(state: CFDState) -> CFDState:
         # Write mesh configuration
         write_mesh_files(case_directory, state)
         
-        # Write boundary condition files
-        write_boundary_condition_files(case_directory, state)
+        # Update state with case directory for boundary condition mapping
+        updated_state = {**state, "case_directory": str(case_directory)}
+        
+        # Write boundary condition files with intelligent mapping
+        write_boundary_condition_files_with_mapping(case_directory, updated_state)
         
         # Write solver configuration files
-        write_solver_files(case_directory, state)
+        write_solver_files(case_directory, updated_state)
         
         # Validate case completeness
         validation_result = validate_case_structure(case_directory)
@@ -48,8 +51,7 @@ def case_writer_agent(state: CFDState) -> CFDState:
             logger.info(f"Case Writer: Case assembled at {case_directory}")
         
         return {
-            **state,
-            "case_directory": str(case_directory),
+            **updated_state,
             "work_directory": str(case_directory.parent),
             "errors": []
         }
@@ -499,23 +501,23 @@ def generate_airfoil_blockmesh_dict(dimensions: Dict[str, float], resolution: Di
         "boundary": {
             "inlet": {
                 "type": "patch",
-                "faces": ["(inlet faces)"]
+                "faces": ["(0 4 7 3)"]
             },
             "outlet": {
                 "type": "patch",
-                "faces": ["(outlet faces)"]
+                "faces": ["(1 2 6 5)"]
             },
             "airfoil": {
                 "type": "wall",
-                "faces": ["(airfoil faces)"]
+                "faces": ["(0 1 2 3)", "(4 5 6 7)"]
             },
             "farfield": {
                 "type": "patch",
-                "faces": ["(farfield faces)"]
+                "faces": ["(0 1 5 4)", "(3 2 6 7)"]
             },
             "sides": {
                 "type": "empty",
-                "faces": ["(2D faces)"]
+                "faces": ["(0 3 2 1)", "(4 5 6 7)"]
             }
         },
         "mergePatchPairs": []
@@ -535,15 +537,15 @@ def generate_pipe_blockmesh_dict(dimensions: Dict[str, float], resolution: Dict[
         "boundary": {
             "inlet": {
                 "type": "patch",
-                "faces": ["(inlet faces)"]
+                "faces": ["(0 4 7 3)"]
             },
             "outlet": {
                 "type": "patch",
-                "faces": ["(outlet faces)"]
+                "faces": ["(1 2 6 5)"]
             },
             "walls": {
                 "type": "wall",
-                "faces": ["(pipe wall faces)"]
+                "faces": ["(0 1 2 3)", "(4 5 6 7)", "(0 1 5 4)", "(3 2 6 7)"]
             }
         },
         "mergePatchPairs": []
@@ -615,19 +617,19 @@ def generate_sphere_blockmesh_dict(dimensions: Dict[str, float], resolution: Dic
         "boundary": {
             "inlet": {
                 "type": "patch",
-                "faces": ["(inlet faces)"]
+                "faces": ["(0 4 7 3)"]
             },
             "outlet": {
                 "type": "patch",
-                "faces": ["(outlet faces)"]
+                "faces": ["(1 2 6 5)"]
             },
             "sphere": {
                 "type": "wall",
-                "faces": ["(sphere faces)"]
+                "faces": ["(0 1 2 3)", "(4 5 6 7)"]
             },
             "farfield": {
                 "type": "patch",
-                "faces": ["(farfield faces)"]
+                "faces": ["(0 1 5 4)", "(3 2 6 7)"]
             }
         },
         "mergePatchPairs": []
@@ -761,11 +763,95 @@ def write_boundary_condition_files(case_directory: Path, state: CFDState) -> Non
     boundary_conditions = state["boundary_conditions"]
     zero_dir = case_directory / "0"
     
+    # Check if we have solver-specific fields that should override standard fields
+    solver_settings = state.get("solver_settings", {})
+    
     for field_name, field_config in boundary_conditions.items():
+        # Skip standard pressure field if p_rgh is available (for interFoam)
+        if field_name == "p" and "p_rgh" in solver_settings:
+            continue
+        
         write_foam_dict(zero_dir / field_name, field_config)
     
     if state["verbose"]:
         logger.info(f"Case Writer: Wrote {len(boundary_conditions)} boundary condition files")
+
+
+def write_boundary_condition_files_with_mapping(case_directory: Path, state: CFDState) -> None:
+    """Write boundary condition files with intelligent patch mapping."""
+    from .boundary_condition import (
+        read_mesh_patches, map_boundary_conditions_to_patches, 
+        get_ai_boundary_conditions, merge_ai_boundary_conditions
+    )
+    
+    boundary_conditions = state["boundary_conditions"]
+    
+    # Check if we need to do patch mapping
+    # For complex geometries (cylinder, sphere, etc.) that use snappyHexMesh
+    geometry_type = state["geometry_info"].get("type")
+    mesh_config = state.get("mesh_config", {})
+    is_snappy = mesh_config.get("type") == "snappyHexMesh" or mesh_config.get("mesh_topology") == "snappy"
+    
+    # Check if we can read actual mesh patches (mesh might not be generated yet)
+    boundary_file = case_directory / "constant" / "polyMesh" / "boundary"
+    
+    if is_snappy or boundary_file.exists():
+        logger.info("Case Writer: Using intelligent boundary condition mapping")
+        
+        # Try to read actual mesh patches
+        actual_patches = read_mesh_patches(case_directory) if boundary_file.exists() else []
+        
+        if actual_patches:
+            # Map boundary conditions to actual patches
+            mapped_conditions = map_boundary_conditions_to_patches(
+                boundary_conditions, actual_patches, geometry_type
+            )
+            
+            # For complex solvers, enhance with AI boundary conditions
+            solver_settings = state.get("solver_settings", {})
+            solver_type = solver_settings.get("solver_type")
+            
+            if solver_type and hasattr(solver_type, 'value'):
+                solver_name = solver_type.value
+            else:
+                solver_name = str(solver_type) if solver_type else ""
+            
+            if solver_name in ["rhoPimpleFoam", "chtMultiRegionFoam", "reactingFoam"]:
+                logger.info(f"Case Writer: Enhancing boundary conditions with AI for {solver_name}")
+                
+                try:
+                    ai_conditions = get_ai_boundary_conditions(
+                        solver_type, state["geometry_info"], state["parsed_parameters"], actual_patches
+                    )
+                    
+                    if ai_conditions:
+                        # Merge AI-generated conditions with mapped conditions
+                        mapped_conditions = merge_ai_boundary_conditions(
+                            mapped_conditions, ai_conditions, actual_patches
+                        )
+                        logger.info("Case Writer: Successfully integrated AI boundary conditions")
+                except Exception as e:
+                    logger.warning(f"Case Writer: AI boundary condition enhancement failed: {str(e)}")
+            
+            boundary_conditions = mapped_conditions
+        else:
+            logger.info("Case Writer: Mesh not yet generated, using original boundary conditions")
+    
+    # Write the boundary condition files
+    zero_dir = case_directory / "0"
+    
+    # Check if we have solver-specific fields that should override standard fields
+    solver_settings = state.get("solver_settings", {})
+    
+    for field_name, field_config in boundary_conditions.items():
+        # Skip standard pressure field if p_rgh is available (for interFoam)
+        if field_name == "p" and "p_rgh" in solver_settings:
+            continue
+        
+        write_foam_dict(zero_dir / field_name, field_config)
+    
+    if state["verbose"]:
+        logger.info(f"Case Writer: Wrote {len(boundary_conditions)} boundary condition files with mapping")
 
 
 def write_solver_files(case_directory: Path, state: CFDState) -> None:
@@ -787,8 +873,278 @@ def write_solver_files(case_directory: Path, state: CFDState) -> None:
     # Write transportProperties
     write_foam_dict(case_directory / "constant" / "transportProperties", solver_settings["transportProperties"])
     
+    # Write solver-specific files
+    # interFoam specific files
+    if "g" in solver_settings:
+        write_foam_dict(case_directory / "constant" / "g", solver_settings["g"])
+        if state["verbose"]:
+            logger.info("Case Writer: Wrote gravity vector g for interFoam")
+    
+    if "sigma" in solver_settings:
+        # Surface tension is typically included in transportProperties for interFoam
+        # But if provided separately, we can write it
+        if state["verbose"]:
+            logger.info(f"Case Writer: Surface tension sigma={solver_settings['sigma']} will be included in transportProperties")
+    
+    if "alpha.water" in solver_settings:
+        # Write initial volume fraction field with corrected boundary conditions
+        alpha_water_config = solver_settings["alpha.water"]
+        
+        # Apply boundary condition corrections for patch types inline
+        if "boundaryField" in alpha_water_config:
+            from .boundary_condition import read_mesh_patches_with_types, adjust_boundary_condition_for_patch_type
+            
+            # Get patch types from mesh
+            patches_info = read_mesh_patches_with_types(case_directory)
+            patch_types = {info['name']: info['type'] for info in patches_info}
+            
+            # Correct boundary conditions for each patch
+            corrected_boundary_field = {}
+            for patch_name, bc_data in alpha_water_config["boundaryField"].items():
+                patch_type = patch_types.get(patch_name, "patch")
+                corrected_bc = adjust_boundary_condition_for_patch_type(
+                    bc_data, patch_type, "alpha.water", patch_name
+                )
+                corrected_boundary_field[patch_name] = corrected_bc
+            
+            alpha_water_config = {
+                **alpha_water_config,
+                "boundaryField": corrected_boundary_field
+            }
+        
+        write_foam_dict(case_directory / "0" / "alpha.water", alpha_water_config)
+        if state["verbose"]:
+            logger.info("Case Writer: Wrote initial alpha.water field for interFoam")
+    
+    if "p_rgh" in solver_settings:
+        # Write p_rgh field for multiphase flows with corrected boundary conditions
+        p_rgh_config = solver_settings["p_rgh"]
+        
+        # Apply boundary condition corrections for patch types inline
+        if "boundaryField" in p_rgh_config:
+            from .boundary_condition import read_mesh_patches_with_types, adjust_boundary_condition_for_patch_type
+            
+            # Get patch types from mesh
+            patches_info = read_mesh_patches_with_types(case_directory)
+            patch_types = {info['name']: info['type'] for info in patches_info}
+            
+            # Correct boundary conditions for each patch
+            corrected_boundary_field = {}
+            for patch_name, bc_data in p_rgh_config["boundaryField"].items():
+                patch_type = patch_types.get(patch_name, "patch")
+                corrected_bc = adjust_boundary_condition_for_patch_type(
+                    bc_data, patch_type, "p_rgh", patch_name
+                )
+                corrected_boundary_field[patch_name] = corrected_bc
+            
+            p_rgh_config = {
+                **p_rgh_config,
+                "boundaryField": corrected_boundary_field
+            }
+        
+        write_foam_dict(case_directory / "0" / "p_rgh", p_rgh_config)
+        if state["verbose"]:
+            logger.info("Case Writer: Wrote p_rgh field for interFoam")
+    
+    # rhoPimpleFoam specific files
+    if "thermophysicalProperties" in solver_settings:
+        write_foam_dict(case_directory / "constant" / "thermophysicalProperties", solver_settings["thermophysicalProperties"])
+        if state["verbose"]:
+            logger.info("Case Writer: Wrote thermophysicalProperties for rhoPimpleFoam")
+    
+    if "T" in solver_settings:
+        # Only write temperature field if it doesn't already exist from boundary conditions
+        temp_file_path = case_directory / "0" / "T"
+        if not temp_file_path.exists():
+            write_foam_dict(temp_file_path, solver_settings["T"])
+            if state["verbose"]:
+                logger.info("Case Writer: Wrote initial temperature field T for rhoPimpleFoam")
+        else:
+            if state["verbose"]:
+                logger.info("Case Writer: Temperature field T already exists from boundary conditions")
+    
+    # chtMultiRegionFoam specific files
+    if "regionProperties" in solver_settings:
+        # Fix regionProperties format for OpenFOAM
+        region_props = solver_settings["regionProperties"]
+        fixed_region_props = {}
+        
+        # Handle the special case of regions list - OpenFOAM expects nested parentheses
+        if "regions" in region_props:
+            regions_list = region_props["regions"]
+            fluid_regions = region_props.get("fluidRegions", [])
+            solid_regions = region_props.get("solidRegions", [])
+            
+            # Format regions as nested lists: regions ( fluid (air) solid (heater) );
+            regions_str = "(\n"
+            if fluid_regions:
+                regions_str += f"    fluid ({' '.join(fluid_regions)})\n"
+            if solid_regions:
+                regions_str += f"    solid ({' '.join(solid_regions)})\n"
+            regions_str += ")"
+            fixed_region_props["regions"] = regions_str
+        
+        # Handle other keys normally
+        for key, value in region_props.items():
+            if key not in ["regions", "fluidRegions", "solidRegions"]:
+                if isinstance(value, list):
+                    fixed_region_props[key] = f"({' '.join(value)})"
+                else:
+                    fixed_region_props[key] = value
+        
+        write_foam_dict(case_directory / "constant" / "regionProperties", fixed_region_props)
+        if state["verbose"]:
+            logger.info("Case Writer: Wrote regionProperties for chtMultiRegionFoam")
+    
+    if "fvOptions" in solver_settings:
+        write_foam_dict(case_directory / "constant" / "fvOptions", solver_settings["fvOptions"])
+        if state["verbose"]:
+            logger.info("Case Writer: Wrote fvOptions for chtMultiRegionFoam")
+    
+    # reactingFoam specific files
+    if "chemistryProperties" in solver_settings:
+        write_foam_dict(case_directory / "constant" / "chemistryProperties", solver_settings["chemistryProperties"])
+        if state["verbose"]:
+            logger.info("Case Writer: Wrote chemistryProperties for reactingFoam")
+    
+    if "combustionProperties" in solver_settings:
+        write_foam_dict(case_directory / "constant" / "combustionProperties", solver_settings["combustionProperties"])
+        if state["verbose"]:
+            logger.info("Case Writer: Wrote combustionProperties for reactingFoam")
+    
+    # Write basic reactions file for reactingFoam
+    if solver_settings.get("solver") == "reactingFoam":
+        reactions_file = generate_basic_reactions_file()
+        write_foam_dict(case_directory / "constant" / "reactions", reactions_file)
+        if state["verbose"]:
+            logger.info("Case Writer: Wrote basic reactions file for reactingFoam")
+        
+        # Generate initial species mass fraction fields
+        species_list = reactions_file["species"]
+        for species in species_list:
+            species_field = generate_species_field(species, species_list)
+            write_foam_dict(case_directory / "0" / species, species_field)
+        if state["verbose"]:
+            logger.info(f"Case Writer: Wrote {len(species_list)} species fields for reactingFoam")
+    
     if state["verbose"]:
         logger.info("Case Writer: Wrote solver configuration files")
+
+
+def generate_species_field(species: str, species_list: List[str]) -> Dict[str, Any]:
+    """Generate initial species mass fraction field for reactingFoam."""
+    # Default initial mass fractions (air + fuel mixture)
+    initial_mass_fractions = {
+        "CH4": 0.05,  # 5% fuel
+        "O2": 0.21,   # 21% oxygen (air)
+        "N2": 0.74,   # 74% nitrogen (air)
+        "CO2": 0.0,   # No products initially
+        "H2O": 0.0    # No products initially
+    }
+    
+    mass_fraction = initial_mass_fractions.get(species, 0.0)
+    
+    return {
+        "dimensions": "[0 0 0 0 0 0 0]",  # Dimensionless mass fraction
+        "internalField": f"uniform {mass_fraction}",
+        "boundaryField": {
+            "inlet": {
+                "type": "fixedValue",
+                "value": f"uniform {mass_fraction}"
+            },
+            "outlet": {
+                "type": "zeroGradient"
+            },
+            "walls": {
+                "type": "zeroGradient"
+            }
+        }
+    }
+
+
+def generate_basic_reactions_file() -> Dict[str, Any]:
+    """Generate a basic reactions file for reactingFoam."""
+    return {
+        "species": ["CH4", "O2", "CO2", "H2O", "N2"],
+        "reactions": [
+            {
+                "reaction": "CH4 + 2*O2 = CO2 + 2*H2O",
+                "A": 5.012e11,
+                "beta": 0.0,
+                "Ta": 15098
+            }
+        ],
+        "CH4": {
+            "specie": {
+                "nMoles": 1,
+                "molWeight": 16.04
+            },
+            "thermodynamics": {
+                "Cp": 2220,
+                "Hf": -74873
+            },
+            "transport": {
+                "mu": 1.1e-5,
+                "Pr": 0.7
+            }
+        },
+        "O2": {
+            "specie": {
+                "nMoles": 1,
+                "molWeight": 32.0
+            },
+            "thermodynamics": {
+                "Cp": 920,
+                "Hf": 0
+            },
+            "transport": {
+                "mu": 2.0e-5,
+                "Pr": 0.7
+            }
+        },
+        "CO2": {
+            "specie": {
+                "nMoles": 1,
+                "molWeight": 44.01
+            },
+            "thermodynamics": {
+                "Cp": 850,
+                "Hf": -393520
+            },
+            "transport": {
+                "mu": 1.5e-5,
+                "Pr": 0.7
+            }
+        },
+        "H2O": {
+            "specie": {
+                "nMoles": 1,
+                "molWeight": 18.02
+            },
+            "thermodynamics": {
+                "Cp": 2080,
+                "Hf": -241826
+            },
+            "transport": {
+                "mu": 1.0e-5,
+                "Pr": 0.7
+            }
+        },
+        "N2": {
+            "specie": {
+                "nMoles": 1,
+                "molWeight": 28.02
+            },
+            "thermodynamics": {
+                "Cp": 1040,
+                "Hf": 0
+            },
+            "transport": {
+                "mu": 1.8e-5,
+                "Pr": 0.7
+            }
+        }
+    }
 
 
 def generate_allrun_script(state: CFDState) -> str:
@@ -965,7 +1321,11 @@ def format_dict_content(content: Any, indent_level: int = 0) -> str:
                 # Convert Python boolean to OpenFOAM format
                 if isinstance(value, bool):
                     value = str(value).lower()
-                result += f"{indent}{key}    {value};\n"
+                # Special handling for regionProperties regions key - it's already formatted
+                if key == "regions" and isinstance(value, str) and value.startswith("("):
+                    result += f"{indent}{key}\n{indent}{value};\n"
+                else:
+                    result += f"{indent}{key}    {value};\n"
         return result
     else:
         # Convert enum values to strings if needed
@@ -996,6 +1356,32 @@ def validate_case_structure(case_directory: Path) -> Dict[str, Any]:
     for file_name in required_constant_files:
         if not (case_directory / "constant" / file_name).exists():
             errors.append(f"Missing required constant file: {file_name}")
+    
+    # Check solver-specific files
+    # Read controlDict to determine solver
+    control_dict_path = case_directory / "system" / "controlDict"
+    if control_dict_path.exists():
+        with open(control_dict_path, 'r') as f:
+            content = f.read()
+            # Simple regex to find application
+            import re
+            match = re.search(r'application\s+(\w+);', content)
+            if match:
+                solver = match.group(1)
+                
+                # Check for interFoam specific files
+                if solver == "interFoam":
+                    if not (case_directory / "constant" / "g").exists():
+                        warnings.append("Missing gravity vector 'g' for interFoam")
+                    if not (case_directory / "0" / "alpha.water").exists():
+                        errors.append("Missing alpha.water field for interFoam")
+                
+                # Check for rhoPimpleFoam specific files
+                elif solver == "rhoPimpleFoam":
+                    if not (case_directory / "constant" / "thermophysicalProperties").exists():
+                        errors.append("Missing thermophysicalProperties for rhoPimpleFoam")
+                    if not (case_directory / "0" / "T").exists():
+                        errors.append("Missing temperature field T for rhoPimpleFoam")
     
     # Check boundary condition files
     zero_dir = case_directory / "0"

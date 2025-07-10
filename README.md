@@ -33,8 +33,8 @@ FoamAI/
 
 1. **Clone and setup environment:**
 ```bash
-git clone https://github.com/batuhan/foamai.git
-cd foamai
+git clone https://github.com/bbaserdem/FoamAI.git
+cd FoamAI
 uv sync
 ```
 
@@ -61,9 +61,9 @@ terraform apply
 ```
 
 2. **Images are automatically built via GitHub Actions and available at:**
-- `ghcr.io/batuhan/foamai/api:latest`
-- `ghcr.io/batuhan/foamai/openfoam:latest` 
-- `ghcr.io/batuhan/foamai/pvserver:latest`
+- `ghcr.io/bbaserdem/foamai/api:latest`
+- `ghcr.io/bbaserdem/foamai/openfoam:latest` 
+- `ghcr.io/bbaserdem/foamai/pvserver:latest`
 
 ## Documentation
 

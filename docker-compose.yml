@@ -6,7 +6,7 @@ version: '3.8'
 services:
   # FastAPI Backend Service
   api:
-    image: ${GHCR_API_URL:-ghcr.io/batuhan/foamai/api}:latest
+    image: ${GHCR_API_URL:-ghcr.io/bbaserdem/foamai/api}:latest
     container_name: foamai-api
     ports:
       - "8000:8000"
@@ -27,7 +27,7 @@ services:
 
   # OpenFOAM CFD Solver Service
   openfoam:
-    image: ${GHCR_OPENFOAM_URL:-ghcr.io/batuhan/foamai/openfoam}:latest
+    image: ${GHCR_OPENFOAM_URL:-ghcr.io/bbaserdem/foamai/openfoam}:latest
     container_name: foamai-openfoam
     volumes:
       - simulation_data:/data
@@ -48,7 +48,7 @@ services:
 
   # ParaView Server for Remote Visualization
   pvserver:
-    image: ${GHCR_PVSERVER_URL:-ghcr.io/batuhan/foamai/pvserver}:latest
+    image: ${GHCR_PVSERVER_URL:-ghcr.io/bbaserdem/foamai/pvserver}:latest
     container_name: foamai-pvserver
     ports:
       - "11111:11111"

@@ -1,0 +1,11 @@
+# Terraform files
+.terraform/
+terraform.tfstate*
+*.tfplan
+
+# SSH keys (NEVER commit these!)
+keys/
+
+# Temporary files
+*.log
+*.tmp 

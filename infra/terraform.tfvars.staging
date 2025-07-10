@@ -1,0 +1,33 @@
+# Staging Environment Configuration for Fresh Deployment Testing
+# This creates a parallel instance without affecting the production deployment
+
+# AWS Configuration
+aws_region = "us-east-1"
+
+# EC2 Instance Configuration
+instance_type = "c7i.2xlarge"  # Same as production for consistent testing
+
+# SSH Key Configuration
+key_name = "foamai-key-staging"
+public_key_content = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINt6oMpPrkhThoPJDtWwaCOgFJ6WU1LozzCqsVhIRpad foamai-staging-deployment"
+
+# Storage Configuration
+root_volume_size = 50   # GB - OS and applications
+data_volume_size = 100  # GB - Simulation data storage
+
+# Project Settings - Different from production
+project_name = "FoamAI-Staging"
+environment  = "staging"
+
+# Security Configuration
+allowed_ssh_cidrs = [
+  "0.0.0.0/0"  # For testing - restrict in production
+]
+
+# Application Configuration
+docker_hub_username = "foamai"
+github_repo_url = "https://github.com/bbaserdem/FoamAI.git"
+
+# Monitoring and Performance
+enable_detailed_monitoring = true  # Enable for testing
+backup_retention_days = 3         # Shorter retention for testing 

@@ -90,4 +90,14 @@ class ProjectResponse(BaseModel):
 
 class ProjectListResponse(BaseModel):
     projects: List[str] = Field(..., description="A list of existing project names")
-    count: int = Field(..., description="The number of projects found") 
+    count: int = Field(..., description="The number of projects found")
+
+class FileUploadResponse(BaseModel):
+    status: str = Field(..., description="Status of the file upload operation")
+    project_name: str = Field(..., description="Name of the project where file was uploaded")
+    file_path: str = Field(..., description="Path where the file was saved relative to project root")
+    absolute_path: str = Field(..., description="Absolute path where the file was saved")
+    file_size: int = Field(..., description="Size of the uploaded file in bytes")
+    created_directories: List[str] = Field(default_factory=list, description="List of directories that were created")
+    overwritten: bool = Field(default=False, description="Whether an existing file was overwritten")
+    message: str = Field(..., description="Success message") 

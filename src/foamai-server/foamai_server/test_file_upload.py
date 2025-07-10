@@ -31,7 +31,7 @@ def test_file_upload():
     try:
         response = requests.post(f"{API_BASE_URL}/api/projects", 
                                json={"project_name": "upload-test-project"})
-        if response.status_code in [201, 409]:  # 201 = created, 409 = already exists
+        if response.status_code in [200, 201, 409]:  # 200 = success, 201 = created, 409 = already exists
             print("   ✅ Test project ready")
         else:
             print(f"   ❌ Failed to create project: {response.status_code}")
@@ -73,8 +73,8 @@ writeInterval   20;
             print("   ✅ File uploaded successfully!")
             print(f"      File path: {result['file_path']}")
             print(f"      File size: {result['file_size']} bytes")
-            print(f"      Created directories: {result['created_directories']}")
-            print(f"      Overwritten: {result['overwritten']}")
+            print(f"      Upload time: {result['upload_time']}")
+            print(f"      Message: {result['message']}")
         else:
             print(f"   ❌ Upload failed: {response.status_code}")
             print(f"      Response: {response.text}")
@@ -161,7 +161,8 @@ mergePatchPairs
             result = response.json()
             print("   ✅ Nested directory upload successful!")
             print(f"      File path: {result['file_path']}")
-            print(f"      Created directories: {result['created_directories']}")
+            print(f"      File size: {result['file_size']} bytes")
+            print(f"      Upload time: {result['upload_time']}")
         else:
             print(f"   ❌ Upload failed: {response.status_code}")
             print(f"      Response: {response.text}")
@@ -200,8 +201,9 @@ writeInterval   20;
         if response.status_code == 200:
             result = response.json()
             print("   ✅ File overwrite successful!")
-            print(f"      Overwritten: {result['overwritten']}")
+            print(f"      File path: {result['file_path']}")
             print(f"      New file size: {result['file_size']} bytes")
+            print(f"      Upload time: {result['upload_time']}")
         else:
             print(f"   ❌ Overwrite failed: {response.status_code}")
             print(f"      Response: {response.text}")

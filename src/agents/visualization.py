@@ -122,7 +122,7 @@ def generate_visualizations(case_directory: Path, state: CFDState) -> Dict[str, 
         paraview_script = generate_paraview_script(case_directory, state)
         script_path = viz_dir / "visualization_script.py"
         
-        with open(script_path, "w") as f:
+        with open(script_path, "w", encoding="utf-8") as f:
             f.write(paraview_script)
         
         # Run ParaView in batch mode
@@ -174,9 +174,17 @@ def generate_paraview_script(case_directory: Path, state: CFDState) -> str:
     parsed_params = state["parsed_parameters"]
     flow_type = parsed_params.get("flow_type", "laminar")
     
-    script = f'''
+    # Check if vortex shedding is expected
+    reynolds_number = parsed_params.get("reynolds_number", 0)
+    # Ensure Reynolds number is valid
+    if reynolds_number is None:
+        reynolds_number = 0
+    expects_vortex_shedding = check_vortex_shedding_expected(geometry_type_str, reynolds_number)
+    
+    script = f'''# -*- coding: utf-8 -*-
 # ParaView Python script for {geometry_type_str} visualization
 import paraview.simple as pv
+import numpy as np
 
 # Disable automatic camera reset
 pv._DisableFirstRenderCameraReset()
@@ -187,11 +195,34 @@ foam_case = pv.OpenFOAMReader(FileName="{case_directory.as_posix()}/{case_direct
 # Update pipeline to read data
 foam_case.UpdatePipeline()
 
-# Get latest time step
+# Get time information
 time_values = foam_case.TimestepValues
 if time_values:
     latest_time = max(time_values)
-    foam_case.SMProxy.InvokeEvent('UserEvent', 'HideWidget')
+    initial_time = min(time_values)
+    
+    # For vortex shedding, use a representative time in the shedding cycle
+    # Use 80% of the simulation time to ensure transients have settled
+    if {expects_vortex_shedding} and len(time_values) > 10:
+        target_time = initial_time + 0.8 * (latest_time - initial_time)
+        # Find closest time step
+        closest_time = min(time_values, key=lambda x: abs(x - target_time))
+        # Set the animation time using proper ParaView API
+        animation_scene = pv.GetAnimationScene()
+        animation_scene.AnimationTime = closest_time
+        # Update pipeline to load data at new time
+        foam_case.UpdatePipeline(time=closest_time)
+        print("Set time to", closest_time, "for vortex shedding analysis")
+    else:
+        # Set to latest time using proper ParaView API
+        animation_scene = pv.GetAnimationScene()
+        animation_scene.AnimationTime = latest_time
+        # Update pipeline to load data at new time
+        foam_case.UpdatePipeline(time=latest_time)
+        print("Set time to", latest_time, "(latest available)")
+else:
+    # No time values available, use steady state
+    print("No time values found, using steady state data")
 
 # Create render view
 render_view = pv.CreateView('RenderView')
@@ -202,49 +233,8 @@ render_view.Background = [1.0, 1.0, 1.0]  # White background
 foam_display = pv.Show(foam_case, render_view)
 
 # For custom STL geometries, configure display to show surfaces properly
-if "{geometry_type_str}" == "custom":
-    # Hide internal mesh to avoid showing the blue box
-    foam_case.MeshRegions = ['internalMesh']
-    foam_case.MeshRegions = []  # Hide internal mesh
-    
-    # Show only patch regions (surfaces)
-    try:
-        all_patches = foam_case.PatchArrays
-        if all_patches:
-            foam_case.PatchArrays = all_patches  # Show all patches
-    except AttributeError:
-        # PatchArrays not available in this ParaView version
-        # Try alternative approach using patch selection
-        try:
-            if hasattr(foam_case, 'Patches'):
-                foam_case.Patches = ['.*']  # Show all patches using regex
-        except:
-            pass  # Fallback: rely on default visualization
-    
-    # Make sure we're showing surfaces, not volume
-    foam_display.Representation = 'Surface'
-
-# Set animation scene to latest time
-animation_scene = pv.GetAnimationScene()
-animation_scene.UpdateAnimationUsingDataTimeSteps()
-if time_values:
-    animation_scene.AnimationTime = latest_time
-    
-# Update the pipeline to load data at the correct time
-pv.UpdatePipeline(time=latest_time, proxy=foam_case)
-
-# Create a slice for 3D cases (for better visualization)
 try:
-    if "{geometry_type_str}" in ["sphere", "cube"] and not {state.get("mesh_config", {}).get("is_2d", False)}:
-        # Create slice through center of domain
-        slice_filter = pv.Slice(Input=foam_case)
-        slice_filter.SliceType = 'Plane'
-        slice_filter.SliceType.Origin = [0, 0, {state.get("mesh_config", {}).get("dimensions", {}).get("domain_width", 1.0) / 2}]
-        slice_filter.SliceType.Normal = [0, 0, 1]  # Z-normal slice
-        
-        # Use slice for visualization
-        visualization_source = slice_filter
-    elif "{geometry_type_str}" == "custom":
+    if "{geometry_type_str}" == "custom":
         # For custom geometries, use extract surface to better show the geometry
         extract_surface = pv.ExtractSurface(Input=foam_case)
         visualization_source = extract_surface
@@ -312,26 +302,138 @@ try:
 except:
     print("Velocity field not available")
 
-# Generate streamlines for external flows
+# Generate VORTICITY visualization (essential for vortex shedding)
+try:
+    if {expects_vortex_shedding}:
+        # Calculate vorticity using curl of velocity
+        vorticity_calc = pv.Calculator(Input=visualization_source)
+        vorticity_calc.ResultArrayName = 'Vorticity'
+        vorticity_calc.Function = 'curl(U)'
+        
+        # Calculate vorticity magnitude
+        vorticity_mag = pv.Calculator(Input=vorticity_calc)
+        vorticity_mag.ResultArrayName = 'Vorticity_Magnitude'
+        vorticity_mag.Function = 'mag(Vorticity)'
+        
+        # Display vorticity magnitude
+        vort_display = pv.Show(vorticity_mag, render_view)
+        pv.ColorBy(vort_display, ('POINTS', 'Vorticity_Magnitude'))
+        
+        # Get vorticity lookup table with better color map for vortices
+        vort_lut = pv.GetColorTransferFunction('Vorticity_Magnitude')
+        vort_lut.ApplyPreset('Plasma', True)
+        
+        # Add color bar
+        vort_colorbar = pv.GetScalarBar(vort_lut, render_view)
+        vort_colorbar.Title = 'Vorticity Magnitude [1/s]'
+        vort_colorbar.ComponentTitle = ''
+        
+        # Reset camera and render
+        render_view.ResetCamera()
+        pv.Render()
+        
+        # Save vorticity image
+        pv.SaveScreenshot("{case_directory.as_posix()}/visualization/vorticity_field.png")
+        
+        # Hide vorticity display for next visualization
+        pv.Hide(vorticity_mag, render_view)
+        
+        print("Vorticity field generated successfully")
+except:
+    print("Vorticity field not available")
+
+# Generate Q-CRITERION visualization (advanced vortex identification)
+try:
+    if {expects_vortex_shedding}:
+        # Calculate Q-criterion using velocity gradient tensor
+        q_calc = pv.Calculator(Input=visualization_source)
+        q_calc.ResultArrayName = 'Q_criterion'
+        # Q = 0.5 * (Omega^2 - S^2) where Omega is vorticity and S is strain rate
+        q_calc.Function = '0.5 * (mag(curl(U))^2 - 0.5 * (mag(grad(U)) + mag(grad(U))_T)^2)'
+        
+        # Create isosurface for Q-criterion to show vortex cores
+        q_contour = pv.Contour(Input=q_calc)
+        q_contour.ContourBy = ['POINTS', 'Q_criterion']
+        
+        # Get Q values and set appropriate contour level
+        q_calc.UpdatePipeline()
+        q_range = q_calc.GetDataInformation().GetPointDataInformation().GetArrayInformation('Q_criterion').GetComponentRange(0)
+        if q_range[1] > 0:
+            q_contour.Isosurfaces = [q_range[1] * 0.1]  # 10% of maximum Q value
+            
+            # Display Q-criterion contours
+            q_display = pv.Show(q_contour, render_view)
+            q_display.ColorArrayName = ['POINTS', 'U_magnitude']
+            q_display.Opacity = 0.7
+            
+            # Color by velocity magnitude
+            q_lut = pv.GetColorTransferFunction('U_magnitude')
+            q_lut.ApplyPreset('Viridis', True)
+            
+            # Add color bar
+            q_colorbar = pv.GetScalarBar(q_lut, render_view)
+            q_colorbar.Title = 'Q-Criterion Isosurfaces [1/s^2]'
+            q_colorbar.ComponentTitle = ''
+            
+            # Reset camera and render
+            render_view.ResetCamera()
+            pv.Render()
+            
+            # Save Q-criterion image
+            pv.SaveScreenshot("{case_directory.as_posix()}/visualization/q_criterion.png")
+            
+            # Hide Q-criterion display for next visualization
+            pv.Hide(q_contour, render_view)
+            
+            print("Q-criterion visualization generated successfully")
+except:
+    print("Q-criterion visualization not available")
+
+# Generate ENHANCED STREAMLINES for vortex shedding
 try:
     if "{geometry_type_str}" in ["cylinder", "airfoil", "sphere", "cube", "custom"]:
-        # Create streamline tracer
+        # Create streamline tracer with better seeding for vortex shedding
         streamlines = pv.StreamTracer(Input=calculator)
         streamlines.Vectors = ['POINTS', 'U']
         streamlines.IntegrationDirection = 'FORWARD'
         streamlines.MaximumStreamlineLength = {parsed_params.get("geometry_dimensions", {}).get("domain_width", 2.0)}
         
-        # Position seed points upstream
-        streamlines.SeedType = 'Line'
-        # Get domain dimensions from mesh config
-        domain_upstream = {state.get("mesh_config", {}).get("dimensions", {}).get("domain_upstream", 1.0)}
-        domain_height = {state.get("mesh_config", {}).get("dimensions", {}).get("domain_height", 1.0)}
-        
-        # Position seed line upstream of the object
-        seed_x = -domain_upstream * 0.8  # 80% of upstream distance
-        streamlines.SeedType.Point1 = [seed_x, -domain_height * 0.4, 0.0]
-        streamlines.SeedType.Point2 = [seed_x, domain_height * 0.4, 0.0]
-        streamlines.SeedType.Resolution = 20
+        # Enhanced seeding for vortex shedding visualization
+        if {expects_vortex_shedding}:
+            # Create multiple seed lines to capture vortex shedding
+            streamlines.SeedType = 'Point Cloud'
+            
+            # Get domain dimensions
+            domain_upstream = {state.get("mesh_config", {}).get("dimensions", {}).get("domain_upstream", 1.0)}
+            domain_height = {state.get("mesh_config", {}).get("dimensions", {}).get("domain_height", 1.0)}
+            char_length = {parsed_params.get("geometry_dimensions", {}).get("diameter", 0.1)}
+            
+            # Seed points in the wake region where vortex shedding occurs
+            seed_points = []
+            # Upstream seeding
+            for i in range(10):
+                y = -domain_height * 0.4 + i * (domain_height * 0.8) / 9
+                seed_points.append([-domain_upstream * 0.5, y, 0.0])
+            
+            # Wake seeding (downstream of object)
+            for i in range(15):
+                x = char_length * 0.5 + i * (char_length * 8) / 14
+                for j in range(5):
+                    y = -char_length * 2 + j * (char_length * 4) / 4
+                    seed_points.append([x, y, 0.0])
+            
+            # Set the seed points
+            streamlines.SeedType.Points = seed_points
+        else:
+            # Standard seeding for non-vortex shedding flows
+            streamlines.SeedType = 'Line'
+            domain_upstream = {state.get("mesh_config", {}).get("dimensions", {}).get("domain_upstream", 1.0)}
+            domain_height = {state.get("mesh_config", {}).get("dimensions", {}).get("domain_height", 1.0)}
+            
+            seed_x = -domain_upstream * 0.8
+            streamlines.SeedType.Point1 = [seed_x, -domain_height * 0.4, 0.0]
+            streamlines.SeedType.Point2 = [seed_x, domain_height * 0.4, 0.0]
+            streamlines.SeedType.Resolution = 20
         
         # Display streamlines
         stream_display = pv.Show(streamlines, render_view)
@@ -343,6 +445,11 @@ try:
         
         # Save streamlines image
         pv.SaveScreenshot("{case_directory.as_posix()}/visualization/streamlines.png")
+        
+        # Hide streamlines for next visualization
+        pv.Hide(streamlines, render_view)
+        
+        print("Enhanced streamlines generated successfully")
 except:
     print("Streamlines not available")
 
@@ -392,13 +499,109 @@ try:
         
         # Save surface pressure image
         pv.SaveScreenshot("{case_directory.as_posix()}/visualization/surface_pressure.png")
+        
+        print("Surface pressure visualization generated successfully")
 except:
     print("Surface pressure not available")
 
-print("Visualization generation completed successfully")
+# Generate TIME-AVERAGED FLOW visualization (for vortex shedding analysis)
+try:
+    if {str(expects_vortex_shedding).lower()} and len(time_values) > 20:
+        # Create temporal statistics filter to compute time-averaged flow
+        temporal_stats = pv.TemporalStatistics(Input=calculator)
+        temporal_stats.ComputeMinimum = 0
+        temporal_stats.ComputeMaximum = 0
+        temporal_stats.ComputeAverage = 1
+        temporal_stats.ComputeStandardDeviation = 0
+        
+        # Display time-averaged velocity magnitude
+        avg_display = pv.Show(temporal_stats, render_view)
+        pv.ColorBy(avg_display, ('POINTS', 'U_magnitude_average'))
+        
+        # Get lookup table for time-averaged velocity
+        avg_lut = pv.GetColorTransferFunction('U_magnitude_average')
+        avg_lut.ApplyPreset('Cool to Warm', True)
+        
+        # Add color bar
+        avg_colorbar = pv.GetScalarBar(avg_lut, render_view)
+        avg_colorbar.Title = 'Time-Averaged Velocity Magnitude [m/s]'
+        avg_colorbar.ComponentTitle = ''
+        
+        # Reset camera and render
+        render_view.ResetCamera()
+        pv.Render()
+        
+        # Save time-averaged flow image
+        pv.SaveScreenshot("{case_directory.as_posix()}/visualization/time_averaged_flow.png")
+        
+        print("Time-averaged flow visualization generated successfully")
+except:
+    print("Time-averaged flow visualization not available")
+
+# Generate ANIMATION for vortex shedding (save state file for interactive viewing)
+try:
+    if {str(expects_vortex_shedding).lower()} and len(time_values) > 10:
+        # Save the ParaView state file for interactive viewing of vortex shedding
+        pv.SaveState("{case_directory.as_posix()}/visualization/vortex_shedding_animation.pvsm")
+        
+        # Create a simple animation setup
+        # Set up the scene for animation
+        scene = pv.GetAnimationScene()
+        scene.UpdateAnimationUsingDataTimeSteps()
+        
+        # Write animation instructions to a text file
+        with open("{case_directory.as_posix()}/visualization/animation_instructions.txt", "w", encoding="utf-8") as f:
+            f.write("VORTEX SHEDDING ANIMATION INSTRUCTIONS\\n")
+            f.write("=====================================\\n\\n")
+            f.write("1. Open ParaView and load the state file: vortex_shedding_animation.pvsm\\n")
+            f.write("2. Use the animation controls to play through time steps\\n")
+            f.write("3. For best results, color by 'Vorticity_Magnitude' or 'U_magnitude'\\n")
+            f.write("4. Enable the time annotation to see the temporal evolution\\n")
+            f.write("5. Save as animation using File > Save Animation\\n\\n")
+            f.write(f"Simulation contains {{len(time_values)}} time steps\\n")
+            f.write(f"Time range: {{initial_time:.3f}} to {{latest_time:.3f}} seconds\\n")
+            if reynolds_number > 0:
+                f.write(f"Reynolds number: {{reynolds_number:.0f}}\\n")
+                # Estimate Strouhal number for cylinder
+                if geometry_type_str == "cylinder" and reynolds_number > 40:
+                    strouhal = 0.198 * (1 - 19.7 / reynolds_number)
+                    f.write(f"Estimated Strouhal number: {{strouhal:.3f}}\\n")
+        
+        print("Animation setup and instructions generated successfully")
+except:
+    print("Animation setup not available")
+
+print("Enhanced vortex shedding visualization generation completed successfully")
 '''
     
     return script
+
+
+def check_vortex_shedding_expected(geometry_type_str: str, reynolds_number: float) -> bool:
+    """Check if vortex shedding is expected based on geometry and Reynolds number."""
+    # Handle None or invalid Reynolds number
+    if reynolds_number is None or reynolds_number <= 0:
+        logger.info(f"Invalid Reynolds number ({reynolds_number}), assuming no vortex shedding")
+        return False
+    
+    # Geometry-specific vortex shedding thresholds
+    vortex_thresholds = {
+        "cylinder": 40,
+        "sphere": 200,
+        "cube": 50,
+        "airfoil": 100000,  # Much higher for streamlined bodies
+        "custom": 50,  # Conservative assumption
+    }
+    
+    threshold = vortex_thresholds.get(geometry_type_str.lower(), 100)
+    is_vortex_shedding = reynolds_number > threshold
+    
+    if is_vortex_shedding:
+        logger.info(f"Vortex shedding expected for {geometry_type_str} at Re={reynolds_number} (threshold: {threshold})")
+    else:
+        logger.info(f"No vortex shedding expected for {geometry_type_str} at Re={reynolds_number} (threshold: {threshold})")
+    
+    return is_vortex_shedding
 
 
 def run_paraview_batch(script_path: Path, state: CFDState) -> bool:

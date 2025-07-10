@@ -24,7 +24,8 @@ def cli():
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
 @click.option('--max-retries', default=3, help='Maximum retry attempts')
 @click.option('--stl-file', type=click.Path(exists=True), help='Path to STL file for custom geometry')
-def solve(prompt: str, output_format: str, no_export_images: bool, no_user_approval: bool, verbose: bool, max_retries: int, stl_file: str):
+@click.option('--force-validation', is_flag=True, help='Override parameter validation and proceed with out-of-range values (use with caution)')
+def solve(prompt: str, output_format: str, no_export_images: bool, no_user_approval: bool, verbose: bool, max_retries: int, stl_file: str, force_validation: bool):
     """Solve a CFD problem from natural language description."""
     
     # Import here to avoid circular imports and startup time
@@ -48,7 +49,9 @@ def solve(prompt: str, output_format: str, no_export_images: bool, no_user_appro
             f"[green]Export Images:[/green] {export_images}\n"
             f"[green]User Approval:[/green] {user_approval_enabled}\n"
             f"[green]Verbose:[/green] {verbose}\n"
-            f"[green]Max Retries:[/green] {max_retries}",
+            f"[green]Max Retries:[/green] {max_retries}\n"
+            f"[green]Force Validation:[/green] {force_validation}" +
+            (" [red](⚠️ Parameter validation disabled)[/red]" if force_validation else " [green](✅ Parameter validation enabled)[/green]"),
             title="CFD Problem Setup",
             border_style="blue"
         )
@@ -63,7 +66,8 @@ def solve(prompt: str, output_format: str, no_export_images: bool, no_user_appro
             output_format=output_format,
             max_retries=max_retries,
             user_approval_enabled=user_approval_enabled,
-            stl_file=stl_file
+            stl_file=stl_file,
+            force_validation=force_validation
         )
         
         # Create workflow
@@ -76,25 +80,33 @@ def solve(prompt: str, output_format: str, no_export_images: bool, no_user_appro
             "recursion_limit": 50  # Prevent infinite loops
         }
         
-        # Execute workflow with progress tracking
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console
-        ) as progress:
-            
-            task = progress.add_task("Initializing CFD workflow...", total=None)
-            
-            # Run the workflow
-            if verbose:
-                console.print("[dim]Starting LangGraph workflow execution...[/dim]")
-            
-            final_state = workflow.invoke(initial_state, config=config)
-            
-            progress.update(task, description="Workflow completed")
+        # Execute workflow with progress tracking in a loop for iterative sessions
+        current_state = initial_state
         
-        # Display results
-        display_results(final_state, verbose)
+        while current_state.get("conversation_active", True):
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console
+            ) as progress:
+                
+                iteration_num = current_state.get("current_iteration", 0) + 1
+                task = progress.add_task(f"Running CFD workflow iteration {iteration_num}...", total=None)
+                
+                # Run the workflow
+                if verbose:
+                    console.print(f"[dim]Starting LangGraph workflow execution (iteration {iteration_num})...[/dim]")
+                
+                current_state = workflow.invoke(current_state, config=config)
+                
+                progress.update(task, description=f"Iteration {iteration_num} completed")
+            
+            # Check if conversation should continue
+            if not current_state.get("conversation_active", True):
+                break
+        
+        # Display final results
+        display_results(current_state, verbose)
         
     except Exception as e:
         console.print(f"[red]Error during execution: {str(e)}[/red]")

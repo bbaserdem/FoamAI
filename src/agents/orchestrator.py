@@ -33,10 +33,14 @@ def orchestrator_agent(state: CFDState) -> CFDState:
             "errors": state["errors"] + ["Maximum retries exceeded"]
         }
     
-    # Handle errors first - determine recovery strategy
-    # But not if we're already in ERROR state (terminal)
-    if state["errors"] and state["current_step"] != CFDStep.ERROR:
-        return handle_error_recovery(state)
+    # Handle errors first - route to intelligent error handler
+    # But not if we're already in ERROR state (terminal) or ERROR_HANDLER state
+    if state["errors"] and state["current_step"] not in [CFDStep.ERROR, CFDStep.ERROR_HANDLER]:
+        logger.info("Orchestrator: Routing to intelligent error handler")
+        return {
+            **state,
+            "current_step": CFDStep.ERROR_HANDLER
+        }
     
     # Handle successful completion
     if state["current_step"] == CFDStep.SIMULATION and state.get("convergence_metrics", {}).get("converged", False):
@@ -63,86 +67,7 @@ def orchestrator_agent(state: CFDState) -> CFDState:
     return handle_normal_progression(state)
 
 
-def handle_error_recovery(state: CFDState) -> CFDState:
-    """Handle error recovery routing."""
-    last_error = state["errors"][-1].lower()
-    
-    logger.warning(f"Handling error: {last_error}")
-    
-    # Initialize error recovery tracking if not present
-    if "error_recovery_attempts" not in state:
-        state["error_recovery_attempts"] = {}
-    
-    # Check retry count first
-    if state["retry_count"] >= state.get("max_retries", 3):
-        logger.error("Maximum retries exceeded")
-        return {
-            **state,
-            "current_step": CFDStep.ERROR,
-            "errors": ["Maximum retries exceeded: " + state["errors"][-1] if state["errors"] else "Unknown error"],
-        }
-    
-    # Check for OpenFOAM availability issues
-    if "system cannot find the file specified" in last_error:
-        logger.error("OpenFOAM not found - stopping execution")
-        return {
-            **state,
-            "current_step": CFDStep.ERROR,
-            "errors": state["errors"] + ["OpenFOAM not available - please install OpenFOAM first"],
-        }
-    
-    # Parse error type and route to appropriate agent
-    if any(keyword in last_error for keyword in ["mesh", "blockmesh", "geometry"]):
-        next_step = CFDStep.MESH_GENERATION
-    elif any(keyword in last_error for keyword in ["boundary", "inlet", "outlet", "wall", "patch type", "patchfield"]):
-        next_step = CFDStep.BOUNDARY_CONDITIONS
-    elif any(keyword in last_error for keyword in ["solver", "scheme", "solution", "diverged", "converged", "residual data"]):
-        next_step = CFDStep.SOLVER_SELECTION
-    elif any(keyword in last_error for keyword in ["case", "file", "directory"]):
-        next_step = CFDStep.CASE_WRITING
-    elif any(keyword in last_error for keyword in ["simulation", "execution", "foam", "failed with code"]):
-        # For simulation failures, go back to boundary conditions or solver settings
-        # to fix the underlying issue, not just retry the simulation
-        if "patch" in last_error or "boundary" in last_error:
-            next_step = CFDStep.BOUNDARY_CONDITIONS
-        elif "residual" in last_error:
-            next_step = CFDStep.SOLVER_SELECTION
-        else:
-            next_step = CFDStep.SOLVER_SELECTION
-    else:
-        # If error type is unclear, restart from interpretation
-        next_step = CFDStep.NL_INTERPRETATION
-    
-    # Track which steps we've tried for this error
-    error_key = f"{state['current_step']}_to_{next_step}"
-    error_attempts = state.get("error_recovery_attempts", {})
-    if error_attempts is None:
-        error_attempts = {}
-    
-    if error_key in error_attempts:
-        # We've already tried this recovery path
-        logger.warning(f"Already attempted recovery path: {error_key}")
-        # Count how many different recovery attempts we've made
-        total_recovery_attempts = len(error_attempts)
-        if total_recovery_attempts >= 3 or state["current_step"] == CFDStep.SIMULATION:
-            # If we've tried 3 different recovery paths or simulation keeps failing, stop
-            logger.error(f"Unable to recover after {total_recovery_attempts} different recovery attempts")
-            return {
-                **state,
-                "current_step": CFDStep.ERROR,
-                "errors": ["Unable to recover from error: " + last_error],
-            }
-    
-    # Record this recovery attempt
-    error_attempts[error_key] = True
-    
-    return {
-        **state,
-        "current_step": next_step,
-        "retry_count": state["retry_count"] + 1,
-        "errors": [],  # Clear errors for retry
-        "error_recovery_attempts": error_attempts
-    }
+# Old error recovery system replaced by intelligent error handler agent
 
 
 def needs_refinement(state: CFDState) -> bool:
@@ -206,7 +131,8 @@ def handle_normal_progression(state: CFDState) -> CFDState:
         CFDStep.CASE_WRITING: CFDStep.USER_APPROVAL if state.get("user_approval_enabled", True) else CFDStep.SIMULATION,
         CFDStep.USER_APPROVAL: CFDStep.SIMULATION,
         CFDStep.SIMULATION: CFDStep.VISUALIZATION,
-        CFDStep.VISUALIZATION: CFDStep.COMPLETE,
+        CFDStep.VISUALIZATION: CFDStep.RESULTS_REVIEW,
+        CFDStep.RESULTS_REVIEW: CFDStep.COMPLETE,  # Will be overridden by results_review_agent if continuing
     }
     
     next_step = next_step_map.get(current_step, CFDStep.COMPLETE)
@@ -232,6 +158,8 @@ def determine_next_agent(state: CFDState) -> str:
         CFDStep.USER_APPROVAL: "user_approval",
         CFDStep.SIMULATION: "simulation_executor",
         CFDStep.VISUALIZATION: "visualization",
+        CFDStep.RESULTS_REVIEW: "results_review",
+        CFDStep.ERROR_HANDLER: "error_handler",
         CFDStep.COMPLETE: "end",
         CFDStep.ERROR: "end",
     }
@@ -249,6 +177,8 @@ def create_cfd_workflow():
     from .user_approval import user_approval_agent
     from .simulation_executor import simulation_executor_agent
     from .visualization import visualization_agent
+    from .results_review import results_review_agent
+    from .error_handler import error_handler_agent
     
     # Create the state graph
     workflow = StateGraph(CFDState)
@@ -263,6 +193,8 @@ def create_cfd_workflow():
     workflow.add_node("user_approval", user_approval_agent)
     workflow.add_node("simulation_executor", simulation_executor_agent)
     workflow.add_node("visualization", visualization_agent)
+    workflow.add_node("results_review", results_review_agent)
+    workflow.add_node("error_handler", error_handler_agent)
     
     # Set entry point
     workflow.set_entry_point("orchestrator")
@@ -280,6 +212,8 @@ def create_cfd_workflow():
             "user_approval": "user_approval",
             "simulation_executor": "simulation_executor",
             "visualization": "visualization",
+            "results_review": "results_review",
+            "error_handler": "error_handler",
             "end": END,
         }
     )
@@ -293,6 +227,8 @@ def create_cfd_workflow():
     workflow.add_edge("user_approval", "orchestrator")
     workflow.add_edge("simulation_executor", "orchestrator")
     workflow.add_edge("visualization", "orchestrator")
+    workflow.add_edge("results_review", "orchestrator")
+    workflow.add_edge("error_handler", "orchestrator")
     
     # Compile the workflow
     return workflow.compile()
@@ -305,7 +241,8 @@ def create_initial_state(
         output_format: str = "images",
         max_retries: int = 3,
         user_approval_enabled: bool = True,
-        stl_file: Optional[str] = None
+        stl_file: Optional[str] = None,
+        force_validation: bool = False
     ) -> CFDState:
     """Create initial state for the CFD workflow."""
     return CFDState(
@@ -333,4 +270,9 @@ def create_initial_state(
         verbose=verbose,
         export_images=export_images,
         output_format=output_format,
+        force_validation=force_validation,
+        session_history=[],
+        current_iteration=0,
+        conversation_active=True,
+        previous_results=None,
     ) 

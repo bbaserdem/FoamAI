@@ -344,8 +344,9 @@ async def start_project_pvserver(project_name: str, request: ProjectPVServerStar
     # Check if project already has a running pvserver
     existing_pvserver = get_project_pvserver_info(project_name)
     if existing_pvserver and existing_pvserver.get('status') == 'running':
-        raise ProjectPVServerError(
-            f"Project '{project_name}' already has a running pvserver on port {existing_pvserver['port']}"
+        raise HTTPException(
+            status_code=400,
+            detail=f"Project '{project_name}' already has a running pvserver on port {existing_pvserver['port']}"
         )
     
     # Start the pvserver

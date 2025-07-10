@@ -1,0 +1,151 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "EC2ConsoleAccess",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:Describe*",
+                "ec2:GetConsole*",
+                "ec2:GetPasswordData",
+                "elasticloadbalancing:Describe*",
+                "autoscaling:Describe*",
+                "cloudwatch:Describe*",
+                "cloudwatch:List*",
+                "cloudwatch:Get*",
+                "sns:List*",
+                "sns:Get*",
+                "iam:List*",
+                "iam:Get*",
+                "iam:PassRole"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "CostAndBillingAccess", 
+            "Effect": "Allow",
+            "Action": [
+                "ce:GetCostAndUsage",
+                "ce:GetCostForecast",
+                "ce:GetCostAndUsageWithResources",
+                "ce:GetReservationCoverage",
+                "ce:GetReservationPurchaseRecommendation", 
+                "ce:GetReservationUtilization",
+                "ce:GetUsageForecast",
+                "ce:ListCostCategoryDefinitions",
+                "ce:GetCostCategories",
+                "cost-optimization-hub:ListEnrollmentStatuses",
+                "cost-optimization-hub:GetRecommendation",
+                "cost-optimization-hub:ListRecommendations",
+                "cost-optimization-hub:ListRecommendationSummaries",
+                "budgets:ViewBudget",
+                "budgets:DescribeBudgets",
+                "support:DescribeTrustedAdvisorChecks",
+                "support:DescribeTrustedAdvisorCheckResult"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "SecurityHubAccess",
+            "Effect": "Allow", 
+            "Action": [
+                "securityhub:DescribeHub",
+                "securityhub:GetFindings",
+                "securityhub:GetInsights",
+                "securityhub:GetInsightResults",
+                "securityhub:DescribeStandards",
+                "securityhub:DescribeStandardsControls",
+                "securityhub:GetEnabledStandards",
+                "securityhub:GetMasterAccount",
+                "securityhub:ListMembers",
+                "securityhub:GetMembers",
+                "securityhub:ListInvitations",
+                "inspector:Describe*",
+                "inspector:List*",
+                "inspector:Get*",
+                "guardduty:Get*", 
+                "guardduty:List*",
+                "config:Describe*",
+                "config:Get*",
+                "config:List*"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "TerraformDeploymentAccess",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:RunInstances",
+                "ec2:TerminateInstances",
+                "ec2:StartInstances",
+                "ec2:StopInstances",
+                "ec2:RebootInstances",
+                "ec2:ModifyInstanceAttribute",
+                "ec2:CreateTags",
+                "ec2:DeleteTags",
+                "ec2:CreateKeyPair",
+                "ec2:DeleteKeyPair",
+                "ec2:ImportKeyPair",
+                "ec2:CreateSecurityGroup",
+                "ec2:DeleteSecurityGroup",
+                "ec2:AuthorizeSecurityGroupIngress",
+                "ec2:AuthorizeSecurityGroupEgress",
+                "ec2:RevokeSecurityGroupIngress",
+                "ec2:RevokeSecurityGroupEgress",
+                "ec2:CreateVpc",
+                "ec2:DeleteVpc",
+                "ec2:ModifyVpcAttribute",
+                "ec2:CreateSubnet",
+                "ec2:DeleteSubnet",
+                "ec2:ModifySubnetAttribute",
+                "ec2:CreateInternetGateway",
+                "ec2:DeleteInternetGateway",
+                "ec2:AttachInternetGateway",
+                "ec2:DetachInternetGateway",
+                "ec2:CreateRouteTable",
+                "ec2:DeleteRouteTable",
+                "ec2:CreateRoute",
+                "ec2:DeleteRoute",
+                "ec2:AssociateRouteTable",
+                "ec2:DisassociateRouteTable",
+                "ec2:AllocateAddress",
+                "ec2:ReleaseAddress",
+                "ec2:AssociateAddress",
+                "ec2:DisassociateAddress",
+                "ec2:CreateVolume",
+                "ec2:DeleteVolume",
+                "ec2:AttachVolume",
+                "ec2:DetachVolume",
+                "ec2:ModifyVolume",
+                "ec2:CreateSnapshot",
+                "ec2:DeleteSnapshot",
+                "ecr:*"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "CloudFormationAccess",
+            "Effect": "Allow",
+            "Action": [
+                "cloudformation:*"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "S3Access",
+            "Effect": "Allow",
+            "Action": [
+                "s3:*"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "LogsAccess",
+            "Effect": "Allow",
+            "Action": [
+                "logs:*"
+            ],
+            "Resource": "*"
+        }
+    ]
+} 

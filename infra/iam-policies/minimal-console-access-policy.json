@@ -1,0 +1,54 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "BasicEC2ConsoleAccess",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:Describe*",
+                "ec2:GetConsole*",
+                "elasticloadbalancing:Describe*",
+                "autoscaling:Describe*",
+                "application-autoscaling:Describe*"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "CostExplorerAccess",
+            "Effect": "Allow",
+            "Action": [
+                "ce:GetCostAndUsage",
+                "ce:GetCostForecast",
+                "ce:GetUsageForecast",
+                "ce:GetCostAndUsageWithResources",
+                "ce:GetCostCategories",
+                "ce:ListCostCategoryDefinitions",
+                "cost-optimization-hub:ListEnrollmentStatuses",
+                "cost-optimization-hub:GetRecommendation",
+                "cost-optimization-hub:ListRecommendations"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "SecurityHubBasicAccess",
+            "Effect": "Allow",
+            "Action": [
+                "securityhub:DescribeHub",
+                "securityhub:GetFindings",
+                "securityhub:GetInsights",
+                "securityhub:GetEnabledStandards"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "CloudWatchBasicAccess",
+            "Effect": "Allow",
+            "Action": [
+                "cloudwatch:Describe*",
+                "cloudwatch:List*",
+                "cloudwatch:Get*"
+            ],
+            "Resource": "*"
+        }
+    ]
+} 

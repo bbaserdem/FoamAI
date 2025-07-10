@@ -59,6 +59,16 @@ class ProjectListResponse(BaseModel):
     projects: List[str]
     count: int
 
+class ProjectInfoResponse(BaseModel):
+    """Enhanced response for project info with file listing and metadata"""
+    project_name: str
+    project_path: str
+    description: str
+    created_at: datetime
+    files: List[str]
+    file_count: int
+    total_size: int
+
 # =============================================================================
 # FILE UPLOAD SCHEMAS
 # =============================================================================

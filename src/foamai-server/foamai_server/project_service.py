@@ -1,7 +1,8 @@
 import os
 import re
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
+from datetime import datetime
 
 from config import PROJECTS_BASE_PATH
 
@@ -86,6 +87,103 @@ def create_project(project_name: str) -> Path:
         raise ProjectError(f"Failed to create project directory '{project_name}': {e}")
 
 
+def scan_active_run_directory(active_run_path: Path) -> Tuple[List[str], int, int]:
+    """
+    Scan the active_run directory and return file information.
+    
+    Args:
+        active_run_path: Path to the active_run directory
+        
+    Returns:
+        Tuple of (file_paths, file_count, total_size)
+        - file_paths: List of file paths relative to active_run
+        - file_count: Number of readable files
+        - total_size: Total size of readable files in bytes
+    """
+    if not active_run_path.exists() or not active_run_path.is_dir():
+        return [], 0, 0
+    
+    files = []
+    total_size = 0
+    
+    try:
+        # Use rglob to recursively find all files
+        for item in active_run_path.rglob("*"):
+            if item.is_file():
+                try:
+                    # Get path relative to active_run directory
+                    relative_path = item.relative_to(active_run_path)
+                    files.append(str(relative_path))
+                    # Get file size
+                    total_size += item.stat().st_size
+                except (PermissionError, OSError, FileNotFoundError):
+                    # Skip files we can't read or that disappeared
+                    continue
+    except (PermissionError, OSError):
+        # If we can't even scan the directory, return empty results
+        return [], 0, 0
+    
+    return files, len(files), total_size
+
+
+def read_project_description(project_path: Path) -> str:
+    """
+    Read the project description from description.txt file.
+    
+    Args:
+        project_path: Path to the project directory
+        
+    Returns:
+        Project description string, or empty string if file doesn't exist
+    """
+    description_file = project_path / "description.txt"
+    try:
+        if description_file.exists():
+            return description_file.read_text(encoding='utf-8').strip()
+    except (PermissionError, OSError, UnicodeDecodeError):
+        # If we can't read the file, return empty string
+        pass
+    return ""
+
+
+def write_project_description(project_path: Path, description: str):
+    """
+    Write the project description to description.txt file.
+    
+    Args:
+        project_path: Path to the project directory
+        description: Description text to write
+    """
+    if description:
+        description_file = project_path / "description.txt"
+        try:
+            description_file.write_text(description, encoding='utf-8')
+        except (PermissionError, OSError):
+            # If we can't write the file, don't fail the project creation
+            pass
+
+
+def get_directory_creation_time(directory_path: Path) -> datetime:
+    """
+    Get the creation time of a directory.
+    
+    Args:
+        directory_path: Path to the directory
+        
+    Returns:
+        datetime object representing creation time
+    """
+    try:
+        stat_info = directory_path.stat()
+        # Use st_ctime (creation time on Windows, metadata change time on Unix)
+        # Fall back to st_mtime (modification time) if needed
+        timestamp = getattr(stat_info, 'st_birthtime', stat_info.st_ctime)
+        return datetime.fromtimestamp(timestamp)
+    except (OSError, AttributeError):
+        # If we can't get the time, return current time as fallback
+        return datetime.now()
+
+
 def list_projects() -> List[str]:
     """
     Lists all existing project directories.
@@ -125,10 +223,15 @@ class ProjectService:
             
         try:
             project_path.mkdir(parents=True, exist_ok=False)
+            
+            # Write description file if provided
+            if description:
+                write_project_description(project_path, description)
+            
             return {
                 "project_name": project_name,
                 "project_path": str(project_path),
-                "description": description,
+                "description": description or "",
                 "created": True
             }
         except OSError as e:
@@ -152,10 +255,25 @@ class ProjectService:
             raise ProjectError(f"Project '{project_name}' not found")
         
         project_path = self.base_path / project_name
+        active_run_path = project_path / "active_run"
+        
+        # Get project description
+        description = read_project_description(project_path)
+        
+        # Get creation time
+        created_at = get_directory_creation_time(project_path)
+        
+        # Scan active_run directory for files
+        files, file_count, total_size = scan_active_run_directory(active_run_path)
+        
         return {
+            "project_name": project_name,
             "project_path": str(project_path),
-            "exists": True,
-            "is_directory": project_path.is_dir()
+            "description": description,
+            "created_at": created_at,
+            "files": files,
+            "file_count": file_count,
+            "total_size": total_size
         }
     
     def delete_project(self, project_name: str):

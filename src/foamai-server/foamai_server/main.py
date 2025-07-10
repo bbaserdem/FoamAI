@@ -23,12 +23,14 @@ from database import (
 )
 from pvserver_service import PVServerService, PVServerServiceError
 from project_service import ProjectService, ProjectError
+from command_service import command_service, CommandExecutionError
 from schemas import (
     TaskCreationRequest, TaskUpdateRequest, TaskResponse, TaskRejectionRequest,
     ProjectCreationRequest, ProjectResponse, ProjectListResponse,
     FileUploadResponse, PVServerStartRequest, PVServerResponse, PVServerListResponse,
     PVServerStopResponse, ProjectPVServerStartRequest, ProjectPVServerResponse,
     ProjectPVServerInfoResponse, ProjectPVServerStopResponse, CombinedPVServerResponse,
+    CommandRequest, CommandResponse,
     ErrorResponse, HealthCheckResponse, DatabaseStatsResponse
 )
 
@@ -123,6 +125,18 @@ async def project_pvserver_error_handler(request: Request, exc: ProjectPVServerE
         content=ErrorResponse(
             detail=str(exc),
             error_type="ProjectPVServerError",
+            timestamp=datetime.now()
+        ).dict()
+    )
+
+@app.exception_handler(CommandExecutionError)
+async def command_execution_error_handler(request: Request, exc: CommandExecutionError):
+    """Handle command execution errors"""
+    return JSONResponse(
+        status_code=400,
+        content=ErrorResponse(
+            detail=str(exc),
+            error_type="CommandExecutionError",
             timestamp=datetime.now()
         ).dict()
     )
@@ -241,6 +255,47 @@ async def upload_file(
         upload_time=datetime.now(),
         message=f"File uploaded successfully to {project_name}/active_run"
     )
+
+# =============================================================================
+# COMMAND EXECUTION ENDPOINTS
+# =============================================================================
+
+@app.post("/api/projects/{project_name}/run_command", response_model=CommandResponse)
+async def run_command(project_name: str, request: CommandRequest):
+    """Execute an OpenFOAM command in a project directory"""
+    # Check if project exists
+    if not project_service.project_exists(project_name):
+        raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found")
+    
+    # Get project path
+    project_path = Path(PROJECTS_BASE_PATH) / project_name
+    
+    # Optional: Validate OpenFOAM command (can be disabled for flexibility)
+    if not command_service.validate_openfoam_command(request.command):
+        suggestions = command_service.get_command_suggestions(request.command)
+        suggestion_text = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        logger.warning(f"Unknown OpenFOAM command '{request.command}' for project '{project_name}'{suggestion_text}")
+        # Note: We log a warning but don't block execution for flexibility
+    
+    try:
+        # Execute the command
+        result = command_service.execute_command(
+            project_path=str(project_path),
+            command=request.command,
+            args=request.args,
+            environment=request.environment,
+            working_directory=request.working_directory,
+            timeout=request.timeout
+        )
+        
+        return CommandResponse(**result)
+        
+    except CommandExecutionError as e:
+        # Re-raise as CommandExecutionError to be handled by the exception handler
+        raise e
+    except Exception as e:
+        logger.error(f"Unexpected error executing command for project '{project_name}': {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error executing command: {str(e)}")
 
 # =============================================================================
 # TASK ENDPOINTS

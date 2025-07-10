@@ -145,6 +145,100 @@ curl -X POST \
 
 ---
 
+## Command Execution
+
+### POST /api/projects/{project_name}/run_command
+Execute an OpenFOAM command in a project directory.
+
+**Request Body:**
+```json
+{
+  "command": "blockMesh",
+  "args": ["-case", ".", "-dict", "system/blockMeshDict"],
+  "environment": {
+    "WM_PROJECT_DIR": "/opt/openfoam8",
+    "FOAM_RUN": "/tmp"
+  },
+  "working_directory": "active_run",
+  "timeout": 300
+}
+```
+
+**Field Descriptions:**
+- `command` (required): OpenFOAM command to execute (e.g., "blockMesh", "foamRun")
+- `args` (optional): List of command arguments
+- `environment` (optional): Additional environment variables to set
+- `working_directory` (optional): Directory within project to run command (default: "active_run")
+- `timeout` (optional): Timeout in seconds (default: 300)
+
+**Response (200) - Success:**
+```json
+{
+  "success": true,
+  "exit_code": 0,
+  "stdout": "Creating block mesh from \"system/blockMeshDict\"\nCreating curved edges\nCreating topology blocks\n...",
+  "stderr": "",
+  "execution_time": 2.45,
+  "command": "blockMesh -case . -dict system/blockMeshDict",
+  "working_directory": "/home/ubuntu/foam_projects/my_project/active_run",
+  "timestamp": "2025-01-10T12:00:00.000000"
+}
+```
+
+**Response (200) - Command Failed:**
+```json
+{
+  "success": false,
+  "exit_code": 1,
+  "stdout": "",
+  "stderr": "FOAM FATAL ERROR:\nCannot find file \"system/blockMeshDict\"",
+  "execution_time": 0.12,
+  "command": "blockMesh -case .",
+  "working_directory": "/home/ubuntu/foam_projects/my_project/active_run",
+  "timestamp": "2025-01-10T12:00:00.000000"
+}
+```
+
+**Error Responses:**
+- `404`: Project not found
+- `400`: Command execution error (timeout, command not found, permission denied)
+- `500`: Internal server error
+
+**Example Commands:**
+
+*Generate mesh:*
+```bash
+curl -X POST http://your-server:8000/api/projects/cavity_flow/run_command \
+  -H "Content-Type: application/json" \
+  -d '{
+    "command": "blockMesh",
+    "args": ["-case", "."]
+  }'
+```
+
+*Run solver:*
+```bash
+curl -X POST http://your-server:8000/api/projects/cavity_flow/run_command \
+  -H "Content-Type: application/json" \
+  -d '{
+    "command": "foamRun",
+    "args": ["-solver", "incompressibleFluid"],
+    "timeout": 1800
+  }'
+```
+
+*Check mesh quality:*
+```bash
+curl -X POST http://your-server:8000/api/projects/cavity_flow/run_command \
+  -H "Content-Type: application/json" \
+  -d '{
+    "command": "checkMesh",
+    "args": ["-case", "."]
+  }'
+```
+
+---
+
 ## Project-Based PVServer Management
 
 ### POST /api/projects/{project_name}/pvserver/start
@@ -305,22 +399,43 @@ curl -X POST \
   http://your-server:8000/api/projects/cavity_flow/upload
 ```
 
-### 3. Start PVServer for Visualization
+### 3. Generate Mesh
+```bash
+curl -X POST http://your-server:8000/api/projects/cavity_flow/run_command \
+  -H "Content-Type: application/json" \
+  -d '{
+    "command": "blockMesh",
+    "args": ["-case", "."]
+  }'
+```
+
+### 4. Run Simulation
+```bash
+curl -X POST http://your-server:8000/api/projects/cavity_flow/run_command \
+  -H "Content-Type: application/json" \
+  -d '{
+    "command": "foamRun",
+    "args": ["-solver", "incompressibleFluid"],
+    "timeout": 1800
+  }'
+```
+
+### 5. Start PVServer for Visualization
 ```bash
 curl -X POST http://your-server:8000/api/projects/cavity_flow/pvserver/start \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
 
-### 4. Connect ParaView Client
+### 6. Connect ParaView Client
 Use the returned `connection_string` (e.g., `localhost:11111`) to connect your ParaView client to the server.
 
-### 5. Stop PVServer When Done
+### 7. Stop PVServer When Done
 ```bash
 curl -X DELETE http://your-server:8000/api/projects/cavity_flow/pvserver/stop
 ```
 
-### 6. Clean Up (Optional)
+### 8. Clean Up (Optional)
 ```bash
 curl -X DELETE http://your-server:8000/api/projects/cavity_flow
 ```

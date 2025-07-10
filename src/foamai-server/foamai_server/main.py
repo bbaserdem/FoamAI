@@ -78,7 +78,7 @@ async def project_error_handler(request: Request, exc: ProjectError):
             detail=str(exc),
             error_type="ProjectError",
             timestamp=datetime.now()
-        ).dict()
+        ).model_dump(mode='json')
     )
 
 @app.exception_handler(PVServerServiceError)
@@ -90,7 +90,7 @@ async def pvserver_error_handler(request: Request, exc: PVServerServiceError):
             detail=str(exc),
             error_type="PVServerServiceError",
             timestamp=datetime.now()
-        ).dict()
+        ).model_dump(mode='json')
     )
 
 @app.exception_handler(DatabaseError)
@@ -102,7 +102,7 @@ async def database_error_handler(request: Request, exc: DatabaseError):
             detail=str(exc),
             error_type="DatabaseError",
             timestamp=datetime.now()
-        ).dict()
+        ).model_dump(mode='json')
     )
 
 @app.exception_handler(TaskNotFoundError)
@@ -114,7 +114,7 @@ async def task_not_found_handler(request: Request, exc: TaskNotFoundError):
             detail=str(exc),
             error_type="TaskNotFoundError",
             timestamp=datetime.now()
-        ).dict()
+        ).model_dump(mode='json')
     )
 
 @app.exception_handler(ProjectPVServerError)
@@ -126,7 +126,7 @@ async def project_pvserver_error_handler(request: Request, exc: ProjectPVServerE
             detail=str(exc),
             error_type="ProjectPVServerError",
             timestamp=datetime.now()
-        ).dict()
+        ).model_dump(mode='json')
     )
 
 @app.exception_handler(CommandExecutionError)
@@ -138,7 +138,7 @@ async def command_execution_error_handler(request: Request, exc: CommandExecutio
             detail=str(exc),
             error_type="CommandExecutionError",
             timestamp=datetime.now()
-        ).dict()
+        ).model_dump(mode='json')
     )
 
 @app.exception_handler(ValidationError)

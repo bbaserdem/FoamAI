@@ -199,16 +199,59 @@ def cleanup_inactive_pvservers() -> List[str]:
                 set_pvserver_stopped(task_id, "Cleaned up (process was dead).")
                 cleaned_up.append(f"cleaned_dead_task_{task_id}")
         
-        logger.info(f"Cleanup complete. Processed {len(cleaned_up)} inactive servers.")
+        logger.info(f"Cleanup complete: {len(cleaned_up)} pvservers cleaned up")
         return cleaned_up
-    except DatabaseError as e:
-        logger.error(f"Database error during cleanup: {e}")
-        return []
+    except (DatabaseError, Exception) as e:
+        logger.exception("Failed to cleanup inactive pvservers")
+        raise PVServerServiceError(f"Failed to cleanup inactive pvservers: {e}") from e
 
 def get_pvserver_info_with_validation(task_id: str) -> Optional[Dict]:
-    """Gets validated pvserver info for a task."""
+    """Gets pvserver information for a task with validation."""
     try:
         return get_pvserver_info(task_id)
-    except DatabaseError as e:
-        logger.error(f"Database error getting info for task {task_id}: {e}")
-        raise PVServerServiceError(f"Could not get pvserver info for task {task_id}") from e 
+    except (DatabaseError, Exception) as e:
+        logger.error(f"Error getting pvserver info for task {task_id}: {e}")
+        raise PVServerServiceError(f"Error getting pvserver info: {e}") from e
+
+# --- Service Class Wrapper ---
+
+class PVServerService:
+    """Service class for PVServer operations"""
+    
+    def start_pvserver(self, case_path: str, port: Optional[int] = None) -> Dict:
+        """Start a pvserver for a case path"""
+        result = start_pvserver_for_case(case_path, port)
+        return {
+            "port": result["port"],
+            "pid": result["pid"],
+            "case_path": result["case_path"],
+            "status": "running",
+            "started_at": datetime.now(),
+            "connection_string": result["connection_string"],
+            "message": result["message"]
+        }
+    
+    def stop_pvserver(self, port: int) -> Dict:
+        """Stop a pvserver by port"""
+        result = stop_pvserver_by_port(port)
+        return {
+            "port": port,
+            "status": "stopped",
+            "message": result["message"]
+        }
+    
+    def list_pvservers(self) -> Dict:
+        """List all active pvservers"""
+        return list_active_pvservers()
+    
+    def get_pvserver_info(self, task_id: str) -> Optional[Dict]:
+        """Get pvserver info for a task"""
+        return get_pvserver_info_with_validation(task_id)
+    
+    def ensure_pvserver_for_task(self, task_id: str, case_path: str) -> Dict:
+        """Ensure pvserver is running for a task"""
+        return ensure_pvserver_for_task(task_id, case_path)
+    
+    def cleanup_inactive(self) -> List[str]:
+        """Clean up inactive pvservers"""
+        return cleanup_inactive_pvservers() 

@@ -1,7 +1,9 @@
 import os
 import re
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Optional
+
+from config import PROJECTS_BASE_PATH
 
 class ProjectError(Exception):
     """Base exception for project-related errors."""
@@ -99,4 +101,75 @@ def list_projects() -> List[str]:
     if not base_dir.is_dir():
         return []
 
-    return [d.name for d in base_dir.iterdir() if d.is_dir()] 
+    return [d.name for d in base_dir.iterdir() if d.is_dir()]
+
+# --- Service Class Wrapper ---
+
+class ProjectService:
+    """Service class for project operations"""
+    
+    def __init__(self):
+        """Initialize the project service"""
+        self.base_path = PROJECTS_BASE_PATH
+        # Ensure base directory exists
+        self.base_path.mkdir(parents=True, exist_ok=True)
+    
+    def create_project(self, project_name: str, description: Optional[str] = None) -> Dict:
+        """Create a new project"""
+        validate_project_name(project_name)
+        
+        project_path = self.base_path / project_name
+        
+        if project_path.exists():
+            raise ProjectExistsError(f"Project '{project_name}' already exists at {project_path}")
+            
+        try:
+            project_path.mkdir(parents=True, exist_ok=False)
+            return {
+                "project_name": project_name,
+                "project_path": str(project_path),
+                "description": description,
+                "created": True
+            }
+        except OSError as e:
+            raise ProjectError(f"Failed to create project directory '{project_name}': {e}")
+    
+    def list_projects(self) -> List[str]:
+        """List all existing projects"""
+        if not self.base_path.is_dir():
+            return []
+        
+        return [d.name for d in self.base_path.iterdir() if d.is_dir()]
+    
+    def project_exists(self, project_name: str) -> bool:
+        """Check if a project exists"""
+        project_path = self.base_path / project_name
+        return project_path.exists() and project_path.is_dir()
+    
+    def get_project_info(self, project_name: str) -> Dict:
+        """Get project information"""
+        if not self.project_exists(project_name):
+            raise ProjectError(f"Project '{project_name}' not found")
+        
+        project_path = self.base_path / project_name
+        return {
+            "project_path": str(project_path),
+            "exists": True,
+            "is_directory": project_path.is_dir()
+        }
+    
+    def delete_project(self, project_name: str):
+        """Delete a project"""
+        if not self.project_exists(project_name):
+            raise ProjectError(f"Project '{project_name}' not found")
+        
+        project_path = self.base_path / project_name
+        try:
+            import shutil
+            shutil.rmtree(project_path)
+        except OSError as e:
+            raise ProjectError(f"Failed to delete project '{project_name}': {e}")
+    
+    def get_project_path(self, project_name: str) -> Path:
+        """Get the full path to a project"""
+        return self.base_path / project_name 

@@ -167,11 +167,15 @@ def map_boundary_conditions_to_patches(
             # STL geometries - external flow around custom geometry
             "inlet": ["inlet"],
             "outlet": ["outlet"],
-            "walls": ["top", "bottom", "front", "back"],  # Map walls to symmetry/farfield patches
+            "top": ["top"],
+            "bottom": ["bottom"],
+            "front": ["front"],
+            "back": ["back"],
             "farfield": ["top", "bottom", "front", "back"],  # Alternative mapping for farfield
             "geometry": ["surface_747_400", "stl_surface"],  # STL surface patches (wall treatment)
             # Handle common STL surface names
-            "stl_surface": ["surface_747_400", "stl_surface", "geometry", "aircraft", "wing", "body"]
+            "stl_surface": ["surface_747_400", "stl_surface", "geometry", "aircraft", "wing", "body"],
+            "walls": []  # Don't map generic walls to any patches for CUSTOM geometry
         }
     }
     
@@ -271,7 +275,38 @@ def adjust_boundary_condition_for_patch_type(
         logger.info(f"Adjusting {field_name} boundary condition for empty patch {patch_name}: {bc_data.get('type')} -> empty")
         return {"type": "empty"}
     
-    # For other patch types, keep the original boundary condition
+    # Handle wall functions on non-wall patches
+    elif patch_type == "patch":  # Regular patch, not a wall
+        bc_type = bc_data.get("type", "")
+        
+        # Check if this is a wall function being applied to a non-wall patch
+        wall_functions = ["nutkWallFunction", "nutUWallFunction", "nutUSpaldingWallFunction",
+                         "kqRWallFunction", "kLowReWallFunction", 
+                         "epsilonWallFunction", "omegaWallFunction"]
+        
+        if bc_type in wall_functions:
+            # Determine appropriate replacement based on field and patch name
+            if field_name == "nut":
+                # For nut, use calculated on non-wall patches
+                logger.info(f"Adjusting {field_name} boundary condition for patch {patch_name}: {bc_type} -> calculated")
+                return {"type": "calculated", "value": "uniform 0"}
+            elif field_name in ["k", "epsilon", "omega"]:
+                # For turbulence fields on far-field boundaries, use appropriate conditions
+                if patch_name in ["top", "bottom", "front", "back"]:
+                    # Far-field boundaries - use slip condition (zeroGradient)
+                    logger.info(f"Adjusting {field_name} boundary condition for far-field patch {patch_name}: {bc_type} -> zeroGradient")
+                    return {"type": "zeroGradient"}
+                elif patch_name == "inlet":
+                    # Keep fixedValue for inlet
+                    value = bc_data.get("value", "uniform 0")
+                    logger.info(f"Adjusting {field_name} boundary condition for inlet patch {patch_name}: {bc_type} -> fixedValue")
+                    return {"type": "fixedValue", "value": value}
+                elif patch_name == "outlet":
+                    # Use zeroGradient for outlet
+                    logger.info(f"Adjusting {field_name} boundary condition for outlet patch {patch_name}: {bc_type} -> zeroGradient")
+                    return {"type": "zeroGradient"}
+    
+    # For other patch types and cases, keep the original boundary condition
     return bc_data
 
 
@@ -1045,10 +1080,10 @@ def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
                 "type": "zeroGradient"
             },
             "stl_surface": {
-                "type": "zeroGradient"  # No pressure gradient at STL surface
+                "type": "zeroGradient"  # No temperature gradient at STL surface
             },
             "geometry": {
-                "type": "zeroGradient"  # No pressure gradient at STL surface
+                "type": "zeroGradient"  # No temperature gradient at STL surface
             }
         }
         
@@ -1296,6 +1331,52 @@ def generate_turbulent_kinetic_energy_field(parsed_params: Dict[str, Any], geome
                 "type": "empty" if is_2d else "zeroGradient"
             }
         }
+    elif geometry_type == GeometryType.CUSTOM:
+        # Custom geometry (STL files) - external flow with snappyHexMesh
+        is_2d = mesh_config.get("is_2d", False)
+        
+        k_field["boundaryField"] = {
+            "inlet": {
+                "type": "fixedValue",
+                "value": f"uniform {k_value}"
+            },
+            "outlet": {
+                "type": "zeroGradient"
+            },
+            "top": {
+                "type": "slip"  # Far field boundary
+            },
+            "bottom": {
+                "type": "slip"  # Far field boundary
+            },
+            "front": {
+                "type": "empty" if is_2d else "slip"
+            },
+            "back": {
+                "type": "empty" if is_2d else "slip"
+            },
+            # Default wall patches for STL surfaces
+            "walls": {
+                "type": "kqRWallFunction",
+                "value": f"uniform {k_value}"
+            },
+            "stl_surface": {
+                "type": "kqRWallFunction",
+                "value": f"uniform {k_value}"
+            },
+            "geometry": {
+                "type": "kqRWallFunction",
+                "value": f"uniform {k_value}"
+            }
+        }
+        
+        # Add STL surface patch if we know the STL filename
+        if mesh_config.get("stl_name"):
+            stl_name = mesh_config["stl_name"]
+            k_field["boundaryField"][stl_name] = {
+                "type": "kqRWallFunction",
+                "value": f"uniform {k_value}"
+            }
     
     return k_field
 
@@ -1532,6 +1613,52 @@ def generate_specific_dissipation_field(parsed_params: Dict[str, Any], geometry_
             sides_type = "empty" if is_2d else "symmetry"
             omega_field["boundaryField"]["sides"] = {
                 "type": sides_type
+            }
+    elif geometry_type == GeometryType.CUSTOM:
+        # Custom geometry (STL files) - external flow with snappyHexMesh
+        is_2d = mesh_config.get("is_2d", False)
+        
+        omega_field["boundaryField"] = {
+            "inlet": {
+                "type": "fixedValue",
+                "value": f"uniform {omega_value}"
+            },
+            "outlet": {
+                "type": "zeroGradient"
+            },
+            "top": {
+                "type": "slip"  # Far field boundary
+            },
+            "bottom": {
+                "type": "slip"  # Far field boundary
+            },
+            "front": {
+                "type": "empty" if is_2d else "slip"
+            },
+            "back": {
+                "type": "empty" if is_2d else "slip"
+            },
+            # Default wall patches for STL surfaces
+            "walls": {
+                "type": "omegaWallFunction",
+                "value": f"uniform {omega_value}"
+            },
+            "stl_surface": {
+                "type": "omegaWallFunction",
+                "value": f"uniform {omega_value}"
+            },
+            "geometry": {
+                "type": "omegaWallFunction",
+                "value": f"uniform {omega_value}"
+            }
+        }
+        
+        # Add STL surface patch if we know the STL filename
+        if mesh_config.get("stl_name"):
+            stl_name = mesh_config["stl_name"]
+            omega_field["boundaryField"][stl_name] = {
+                "type": "omegaWallFunction",
+                "value": f"uniform {omega_value}"
             }
     
     return omega_field
@@ -1772,6 +1899,52 @@ def generate_dissipation_field(parsed_params: Dict[str, Any], geometry_info: Dic
             epsilon_field["boundaryField"]["sides"] = {
                 "type": sides_type
             }
+    elif geometry_type == GeometryType.CUSTOM:
+        # Custom geometry (STL files) - external flow with snappyHexMesh
+        is_2d = mesh_config.get("is_2d", False)
+        
+        epsilon_field["boundaryField"] = {
+            "inlet": {
+                "type": "fixedValue",
+                "value": f"uniform {epsilon_value}"
+            },
+            "outlet": {
+                "type": "zeroGradient"
+            },
+            "top": {
+                "type": "slip"  # Far field boundary
+            },
+            "bottom": {
+                "type": "slip"  # Far field boundary
+            },
+            "front": {
+                "type": "empty" if is_2d else "slip"
+            },
+            "back": {
+                "type": "empty" if is_2d else "slip"
+            },
+            # Default wall patches for STL surfaces
+            "walls": {
+                "type": "epsilonWallFunction",
+                "value": f"uniform {epsilon_value}"
+            },
+            "stl_surface": {
+                "type": "epsilonWallFunction",
+                "value": f"uniform {epsilon_value}"
+            },
+            "geometry": {
+                "type": "epsilonWallFunction",
+                "value": f"uniform {epsilon_value}"
+            }
+        }
+        
+        # Add STL surface patch if we know the STL filename
+        if mesh_config.get("stl_name"):
+            stl_name = mesh_config["stl_name"]
+            epsilon_field["boundaryField"][stl_name] = {
+                "type": "epsilonWallFunction",
+                "value": f"uniform {epsilon_value}"
+            }
     
     return epsilon_field
 
@@ -1989,6 +2162,57 @@ def generate_turbulent_viscosity_field(parsed_params: Dict[str, Any], geometry_i
             sides_type = "empty" if is_2d else "symmetry"
             nut_field["boundaryField"]["sides"] = {
                 "type": sides_type
+            }
+    elif geometry_type == GeometryType.CUSTOM:
+        # Custom geometry (STL files) - external flow with snappyHexMesh
+        is_2d = mesh_config.get("is_2d", False)
+        
+        nut_field["boundaryField"] = {
+            "inlet": {
+                "type": "calculated",
+                "value": "uniform 0"
+            },
+            "outlet": {
+                "type": "calculated",
+                "value": "uniform 0"
+            },
+            "top": {
+                "type": "calculated",
+                "value": "uniform 0"
+            },
+            "bottom": {
+                "type": "calculated",
+                "value": "uniform 0"
+            },
+            "front": {
+                "type": "empty" if is_2d else "calculated",
+                "value": "uniform 0"
+            } if not is_2d else {"type": "empty"},
+            "back": {
+                "type": "empty" if is_2d else "calculated",
+                "value": "uniform 0"
+            } if not is_2d else {"type": "empty"},
+            # Default wall patches for STL surfaces
+            "walls": {
+                "type": "nutkWallFunction",
+                "value": "uniform 0"
+            },
+            "stl_surface": {
+                "type": "nutkWallFunction",
+                "value": "uniform 0"
+            },
+            "geometry": {
+                "type": "nutkWallFunction",
+                "value": "uniform 0"
+            }
+        }
+        
+        # Add STL surface patch if we know the STL filename
+        if mesh_config.get("stl_name"):
+            stl_name = mesh_config["stl_name"]
+            nut_field["boundaryField"][stl_name] = {
+                "type": "nutkWallFunction",
+                "value": "uniform 0"
             }
     
     return nut_field
@@ -2330,4 +2554,5 @@ def generate_boundary_conditions_cylinder(state: CFDState) -> Dict[str, Any]:
             else:
                 conditions["T"] = {"type": "zeroGradient"}
     
+    return boundary_conditions 
     return boundary_conditions 

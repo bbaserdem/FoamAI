@@ -48,8 +48,7 @@ Create a new project.
   "project_name": "my_simulation_project",
   "project_path": "/home/ubuntu/foam_projects/my_simulation_project",
   "description": "CFD simulation of airflow around a cylinder",
-  "created_at": "2025-01-10T12:00:00.000000",
-  "message": "Project created successfully"
+  "created": true
 }
 ```
 
@@ -246,11 +245,9 @@ Start a ParaView server for a project.
 
 **Request Body:**
 ```json
-{
-  "port": 11111
-}
+{}
 ```
-*Note: Port is optional. If not specified, an available port will be automatically assigned.*
+*Note: Port is automatically assigned from the available port range.*
 
 **Response (200):**
 ```json

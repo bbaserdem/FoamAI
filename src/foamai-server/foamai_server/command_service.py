@@ -18,6 +18,11 @@ class CommandService:
     def __init__(self):
         self.default_timeout = 300  # 5 minutes
         self.max_output_size = 10 * 1024 * 1024  # 10MB limit for output
+        # OpenFOAM environment script path (configurable via environment variable)
+        self.openfoam_bashrc = os.environ.get(
+            "OPENFOAM_BASHRC", 
+            "/usr/lib/openfoam/openfoam2412/etc/bashrc"
+        )
     
     def execute_command(
         self,
@@ -58,10 +63,8 @@ class CommandService:
             logger.info(f"Creating working directory: {work_dir}")
             work_dir.mkdir(parents=True, exist_ok=True)
         
-        # Prepare command
-        cmd_list = [command]
-        if args:
-            cmd_list.extend(args)
+        # Prepare command with OpenFOAM environment sourcing
+        cmd_list = self._prepare_command_with_openfoam_env(command, args)
         
         # Prepare environment
         exec_env = os.environ.copy()
@@ -71,9 +74,12 @@ class CommandService:
         # Set timeout
         exec_timeout = timeout or self.default_timeout
         
-        logger.info(f"Executing command: {' '.join(cmd_list)}")
+        logger.info(f"Executing command with OpenFOAM environment: {command}")
+        if args:
+            logger.info(f"Command arguments: {args}")
         logger.info(f"Working directory: {work_dir}")
         logger.info(f"Timeout: {exec_timeout} seconds")
+        logger.info(f"OpenFOAM bashrc: {self.openfoam_bashrc}")
         
         try:
             # Execute command
@@ -125,6 +131,31 @@ class CommandService:
             error_msg = f"Unexpected error executing command: {e}"
             logger.error(error_msg)
             raise CommandExecutionError(error_msg)
+    
+    def _prepare_command_with_openfoam_env(self, command: str, args: Optional[List[str]] = None) -> List[str]:
+        """
+        Prepare command to run with OpenFOAM environment sourced.
+        Wraps the command in bash -c with OpenFOAM sourcing.
+        """
+        
+        # Build the full command string
+        full_command = command
+        if args:
+            # Properly escape arguments for shell execution
+            escaped_args = [self._shell_escape(arg) for arg in args]
+            full_command = f"{command} {' '.join(escaped_args)}"
+        
+        # Create bash command that sources OpenFOAM environment first
+        bash_command = f"source {self.openfoam_bashrc} && {full_command}"
+        
+        logger.debug(f"Prepared bash command: {bash_command}")
+        
+        return ["bash", "-c", bash_command]
+    
+    def _shell_escape(self, arg: str) -> str:
+        """Escape shell arguments to prevent injection"""
+        # Simple escaping - wrap in single quotes and escape any single quotes
+        return f"'{arg.replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'"
     
     def _truncate_output(self, output: str, output_type: str) -> str:
         """Truncate output if it exceeds maximum size"""

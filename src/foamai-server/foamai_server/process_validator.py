@@ -23,12 +23,19 @@ def validate_pvserver_pid(pid: int, expected_port: int = None) -> bool:
         process = psutil.Process(pid)
         
         # Check if it's actually a pvserver process
-        if 'pvserver' not in process.name():
+        # Be more flexible - check process name and command line
+        process_name = process.name().lower()
+        cmdline = process.cmdline()
+        cmdline_str = ' '.join(cmdline).lower()
+        
+        # Valid if process name contains 'pvserver' OR command line contains 'pvserver'
+        is_pvserver = 'pvserver' in process_name or 'pvserver' in cmdline_str
+        
+        if not is_pvserver:
             return False
         
         # If we have an expected port, validate it
         if expected_port:
-            cmdline = process.cmdline()
             found_port = None
             
             # Look for '--server-port=PORT' or '--server-port PORT'

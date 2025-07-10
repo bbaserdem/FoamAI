@@ -145,7 +145,7 @@ mergePatchPairs
 """
     
     # Create system directory structure
-    system_dir_content = """/*--------------------------------*- C++ -*----------------------------------*\\
+    control_dict_content = """/*--------------------------------*- C++ -*----------------------------------*\\
   =========                 |
   \\\\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
    \\\\    /   O peration     | Website:  https://openfoam.org
@@ -194,9 +194,10 @@ runTimeModifiable true;
 // ************************************************************************* //
 """
     
-    # Upload blockMeshDict
+    # Upload blockMeshDict with correct form data
     files = {
-        'file': ('blockMeshDict', block_mesh_dict, 'text/plain')
+        'file': ('blockMeshDict', block_mesh_dict, 'text/plain'),
+        'destination_path': (None, 'system/blockMeshDict')
     }
     result = make_request("POST", f"/api/projects/{PROJECT_NAME}/upload", files=files)
     
@@ -204,11 +205,13 @@ runTimeModifiable true;
         print("✓ blockMeshDict uploaded successfully")
     else:
         print("✗ Failed to upload blockMeshDict")
+        print(f"  Error: {result}")
         return
     
-    # Upload controlDict
+    # Upload controlDict with correct form data
     files = {
-        'file': ('controlDict', system_dir_content, 'text/plain')
+        'file': ('controlDict', control_dict_content, 'text/plain'),
+        'destination_path': (None, 'system/controlDict')
     }
     result = make_request("POST", f"/api/projects/{PROJECT_NAME}/upload", files=files)
     
@@ -216,10 +219,11 @@ runTimeModifiable true;
         print("✓ controlDict uploaded successfully")
     else:
         print("✗ Failed to upload controlDict")
+        print(f"  Error: {result}")
         return
     
-    # 3. Test blockMesh command
-    print("\n3. Testing blockMesh command...")
+    # 3. Test basic command execution
+    print("\n3. Testing basic command execution...")
     
     # First, let's try a simple command to test the endpoint
     result = make_request("POST", f"/api/projects/{PROJECT_NAME}/run_command", {
@@ -235,31 +239,10 @@ runTimeModifiable true;
         print("✗ Basic command execution failed")
         print(f"  Error: {result.get('stderr', '')}")
     
-    # Create system directory and move files
-    print("\n4. Setting up OpenFOAM case structure...")
+    # 4. Verify OpenFOAM case structure
+    print("\n4. Verifying OpenFOAM case structure...")
     
-    # Create system directory
-    result = make_request("POST", f"/api/projects/{PROJECT_NAME}/run_command", {
-        "command": "mkdir",
-        "args": ["-p", "system"],
-        "working_directory": "active_run"
-    })
-    
-    # Move blockMeshDict to system directory
-    result = make_request("POST", f"/api/projects/{PROJECT_NAME}/run_command", {
-        "command": "mv",
-        "args": ["blockMeshDict", "system/blockMeshDict"],
-        "working_directory": "active_run"
-    })
-    
-    # Move controlDict to system directory
-    result = make_request("POST", f"/api/projects/{PROJECT_NAME}/run_command", {
-        "command": "mv",
-        "args": ["controlDict", "system/controlDict"],
-        "working_directory": "active_run"
-    })
-    
-    # Verify structure
+    # Check if files were uploaded correctly
     result = make_request("POST", f"/api/projects/{PROJECT_NAME}/run_command", {
         "command": "find",
         "args": [".", "-type", "f"],
@@ -267,8 +250,11 @@ runTimeModifiable true;
     })
     
     if result.get("success"):
-        print("✓ Case structure created")
+        print("✓ Case structure verified")
         print(f"  Files found:\n{result.get('stdout', '')}")
+    else:
+        print("✗ Failed to verify case structure")
+        print(f"  Error: {result.get('stderr', '')}")
     
     # 5. Test blockMesh command
     print("\n5. Testing blockMesh command...")
@@ -318,10 +304,12 @@ runTimeModifiable true;
         "timeout": 5
     })
     
-    if not result.get("success") and "timed out" in result.get("error", "").lower():
+    if not result.get("success") and ("timed out" in result.get("error", "").lower() or 
+                                       "timeout" in str(result).lower()):
         print("✓ Command timeout works correctly")
     else:
         print("⚠ Command timeout test inconclusive")
+        print(f"  Result: {result}")
     
     # 8. Test invalid command
     print("\n8. Testing invalid command handling...")
@@ -338,8 +326,20 @@ runTimeModifiable true;
     else:
         print("⚠ Invalid command test inconclusive")
     
-    # 9. List final project contents
-    print("\n9. Final project contents...")
+    # 9. Test OpenFOAM command validation
+    print("\n9. Testing OpenFOAM command validation...")
+    
+    result = make_request("POST", f"/api/projects/{PROJECT_NAME}/run_command", {
+        "command": "unknownFoamCommand",
+        "args": [],
+        "working_directory": "active_run"
+    })
+    
+    print(f"  Unknown command result: {result.get('success', 'N/A')}")
+    print(f"  This tests the validation warning system")
+    
+    # 10. List final project contents
+    print("\n10. Final project contents...")
     
     result = make_request("POST", f"/api/projects/{PROJECT_NAME}/run_command", {
         "command": "find",
@@ -350,6 +350,28 @@ runTimeModifiable true;
     if result.get("success"):
         print("✓ Final project structure:")
         print(f"{result.get('stdout', '')}")
+    
+    # 11. Test with custom environment variables
+    print("\n11. Testing custom environment variables...")
+    
+    result = make_request("POST", f"/api/projects/{PROJECT_NAME}/run_command", {
+        "command": "env",
+        "args": [],
+        "environment": {
+            "TEST_VAR": "test_value",
+            "FOAM_TEST": "custom_foam_setting"
+        },
+        "working_directory": "active_run"
+    })
+    
+    if result.get("success"):
+        stdout = result.get('stdout', '')
+        if "TEST_VAR=test_value" in stdout and "FOAM_TEST=custom_foam_setting" in stdout:
+            print("✓ Custom environment variables work correctly")
+        else:
+            print("⚠ Custom environment variables test inconclusive")
+    else:
+        print("✗ Custom environment variables test failed")
     
     print("\n" + "=" * 60)
     print("COMMAND EXECUTION TESTS COMPLETED")

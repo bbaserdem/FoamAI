@@ -77,10 +77,19 @@ def create_case_directory(state: CFDState) -> Path:
     # Generate unique case name
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     geometry_type = state["geometry_info"].get("type", "unknown")
+    
     # Convert enum to string if needed
     if hasattr(geometry_type, 'value'):
         geometry_type = geometry_type.value
-    case_name = f"{timestamp}_{geometry_type}_case"
+    
+    # Check if this is a custom STL geometry
+    if geometry_type == "custom" and state.get("stl_file"):
+        # Use STL filename for the case name
+        from pathlib import Path
+        stl_filename = Path(state["stl_file"]).stem  # Get filename without extension
+        case_name = f"{timestamp}_{stl_filename}_case"
+    else:
+        case_name = f"{timestamp}_{geometry_type}_case"
     
     case_dir = settings.get_work_dir() / case_name
     
@@ -1846,17 +1855,24 @@ def generate_background_blockmesh_dict(background_mesh: Dict[str, Any]) -> Dict[
     # Check if this is 2D or 3D
     is_2d = nz == 1
     
-    # Domain bounds - centered at origin for simplicity
-    x_min = 0
-    x_max = length
-    y_min = 0
-    y_max = height
-    z_min = 0
-    z_max = width
-    
-    return {
-        "convertToMeters": 1.0,
-        "vertices": [
+    # Check if vertices are provided in the background mesh config
+    if "vertices" in background_mesh:
+        # Use the provided vertices (already positioned correctly for STL)
+        vertices = background_mesh["vertices"]
+        # Format vertices for OpenFOAM
+        formatted_vertices = []
+        for vertex in vertices:
+            formatted_vertices.append(f"({vertex[0]} {vertex[1]} {vertex[2]})")
+    else:
+        # Fallback to default domain bounds - centered at origin for simplicity
+        x_min = 0
+        x_max = length
+        y_min = 0
+        y_max = height
+        z_min = 0
+        z_max = width
+        
+        formatted_vertices = [
             f"({x_min} {y_min} {z_min})",
             f"({x_max} {y_min} {z_min})",
             f"({x_max} {y_max} {z_min})",
@@ -1865,7 +1881,11 @@ def generate_background_blockmesh_dict(background_mesh: Dict[str, Any]) -> Dict[
             f"({x_max} {y_min} {z_max})",
             f"({x_max} {y_max} {z_max})",
             f"({x_min} {y_max} {z_max})"
-        ],
+        ]
+    
+    return {
+        "convertToMeters": 1.0,
+        "vertices": formatted_vertices,
         "blocks": [
             f"hex (0 1 2 3 4 5 6 7) ({nx} {ny} {nz}) simpleGrading (1 1 1)"
         ],

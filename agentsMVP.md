@@ -178,6 +178,19 @@ Your current setup aligns well with the planned implementation:
 3. Gradually add complexity and more sophisticated natural language understanding
 4. Test with increasingly complex scenarios
 
+Proper Object Boundaries: Implement actual cylinder/sphere/airfoil shapes using:
+snappyHexMesh for complex geometries
+topoSet with proper internal boundary handling
+STL geometry import capabilities
+Dimension Intelligence: The NL Interpreter needs to:
+Extract dimensions from user descriptions
+Apply sensible defaults based on flow type
+Handle relative terms like "narrow" or "thick"
+Mesh Quality: Add:
+Boundary layer meshing for walls
+Mesh grading for better resolution near objects
+Automatic quality checks and refinement
+
 This approach will give you a working MVP that demonstrates the core concept while providing a solid foundation for the full application architecture you've designed.
 
 ## Target CLI Usage Examples

@@ -11,91 +11,68 @@ from .state import CFDState, CFDStep, GeometryType
 
 def analyze_stl_bounding_box(stl_file: str) -> Dict[str, Any]:
     """
-    Analyze STL file to extract bounding box dimensions and characteristics.
-    
-    Returns:
-        Dict containing bounding box info, characteristic length, center, etc.
+    Analyze STL file to get bounding box and dimensions.
+    Returns dimensions in the original STL units without conversion.
     """
+    from pathlib import Path
+    import numpy as np
+    
     stl_path = Path(stl_file)
     if not stl_path.exists():
         logger.error(f"STL file not found: {stl_file}")
         return get_default_stl_dimensions()
     
     try:
-        # Read STL file and extract vertices
+        # Extract vertices from STL
         vertices = extract_stl_vertices(stl_path)
         
         if not vertices:
-            logger.warning(f"No vertices found in STL file: {stl_file}")
+            logger.error(f"No vertices found in STL file: {stl_file}")
             return get_default_stl_dimensions()
         
-        # Convert to numpy array for easier processing
+        # Convert to numpy array for easier manipulation
         vertices = np.array(vertices)
         
         # Calculate bounding box
-        min_coords = np.min(vertices, axis=0)
-        max_coords = np.max(vertices, axis=0)
-        
-        # Calculate dimensions
+        min_coords = vertices.min(axis=0)
+        max_coords = vertices.max(axis=0)
         dimensions = max_coords - min_coords
-        x_size, y_size, z_size = dimensions
+        center = (max_coords + min_coords) / 2
         
-        # Calculate characteristic length (largest dimension)
-        characteristic_length = max(dimensions)
+        # Calculate characteristic length (max dimension)
+        characteristic_length = float(np.max(dimensions))
         
-        # Calculate center
-        center = [
-            (min_coords[0] + max_coords[0]) / 2,
-            (min_coords[1] + max_coords[1]) / 2,
-            (min_coords[2] + max_coords[2]) / 2
-        ]
+        # NO UNIT CONVERSION - Use STL dimensions as-is
+        # The user wants to keep the original size regardless of units
+        logger.info(f"STL Analysis - Using original dimensions without unit conversion")
+        logger.info(f"STL Bounding Box: min={min_coords.tolist()}, max={max_coords.tolist()}")
+        logger.info(f"STL Dimensions: {dimensions.tolist()}")
+        logger.info(f"STL Characteristic Length: {characteristic_length:.3f}")
         
-        # Calculate volume estimate (bounding box volume)
-        volume = np.prod(dimensions)
+        # Calculate volume estimate (sum of all triangle areas * average height)
+        # This is a rough estimate
+        volume = float(np.prod(dimensions)) * 0.5  # Rough estimate
         
-        # Detect likely units based on size
-        units = detect_stl_units(characteristic_length)
-        
-        # Apply unit scaling if needed
-        scale_factor = get_unit_scale_factor(units)
-        
-        # Calculate bounding box center
-        bbox = {
-            "min": min_coords.tolist(),
-            "max": max_coords.tolist(),
-            "dimensions": dimensions.tolist()
+        return {
+            "bounding_box": {
+                "min": min_coords.tolist(),
+                "max": max_coords.tolist(),
+                "dimensions": dimensions.tolist(),
+                "center": center.tolist()
+            },
+            "characteristic_length": characteristic_length,
+            "scaled_characteristic_length": characteristic_length,  # No scaling
+            "dimensions": {
+                "x": float(dimensions[0]),
+                "y": float(dimensions[1]),
+                "z": float(dimensions[2])
+            },
+            "center": center.tolist(),
+            "volume": volume,
+            "detected_units": "as-is",  # No unit detection
+            "scale_factor": 1.0,  # No scaling applied
+            "vertex_count": len(vertices)
         }
-        
-        # Add center to bounding box info
-        bbox['center'] = center
-        
-        # Prepare dimension dict
-        dimensions_dict = {
-            "x": float(x_size),
-            "y": float(y_size), 
-            "z": float(z_size)
-        }
-        
-        result = {
-            "bounding_box": bbox,
-            "characteristic_length": float(characteristic_length),
-            "scaled_characteristic_length": float(characteristic_length * scale_factor),
-            "dimensions": dimensions_dict,
-            "volume": float(volume),
-            "detected_units": units,
-            "scale_factor": scale_factor,
-            "vertex_count": len(vertices),
-            "center": center  # Add center at top level for easy access
-        }
-        
-        logger.info(f"STL Analysis - File: {stl_path.name}")
-        logger.info(f"  Dimensions: {x_size:.3f} x {y_size:.3f} x {z_size:.3f}")
-        logger.info(f"  Characteristic length: {characteristic_length:.3f}")
-        logger.info(f"  Detected units: {units}")
-        logger.info(f"  Scale factor: {scale_factor}")
-        logger.info(f"  Scaled characteristic length: {characteristic_length * scale_factor:.3f}")
-        
-        return result
         
     except Exception as e:
         logger.error(f"Error analyzing STL file {stl_file}: {e}")
@@ -212,15 +189,15 @@ def get_default_stl_dimensions() -> Dict[str, Any]:
     return {
         "bounding_box": {
             "min": [0, 0, 0],
-            "max": [0.1, 0.1, 0.1],
-            "dimensions": [0.1, 0.1, 0.1],
-            "center": [0.05, 0.05, 0.05]
+            "max": [10, 10, 10],  # Use larger default size
+            "dimensions": [10, 10, 10],
+            "center": [5, 5, 5]
         },
-        "characteristic_length": 0.1,
-        "scaled_characteristic_length": 0.1,
-        "dimensions": {"x": 0.1, "y": 0.1, "z": 0.1},
-        "volume": 0.001,
-        "detected_units": "m",
+        "characteristic_length": 10.0,
+        "scaled_characteristic_length": 10.0,
+        "dimensions": {"x": 10.0, "y": 10.0, "z": 10.0},
+        "volume": 1000.0,
+        "detected_units": "as-is",
         "scale_factor": 1.0,
         "vertex_count": 0
     }
@@ -266,23 +243,161 @@ def validate_stl_dimensions(stl_analysis: Dict[str, Any]) -> Dict[str, Any]:
     return stl_analysis
 
 
+def calculate_adaptive_mesh_parameters(characteristic_length: float, base_resolution: int) -> Dict[str, Any]:
+    """
+    Calculate adaptive mesh parameters based on STL characteristic length.
+    
+    This ensures adequate mesh resolution around objects of any size while
+    staying within computational limits.
+    
+    Args:
+        characteristic_length: Maximum dimension of the STL object
+        base_resolution: Base resolution setting (coarse=20, medium=40, fine=80)
+        
+    Returns:
+        Dict with domain_multiplier, cell counts, and warnings
+    """
+    # Configuration parameters
+    MIN_CELLS_PER_OBJECT = 20  # Minimum cells across object for accuracy
+    TARGET_CELLS_PER_OBJECT = 30  # Target for good quality
+    MAX_TOTAL_CELLS = 1_000_000  # Computational limit for background mesh
+    MAX_CELLS_PER_DIRECTION = 300  # Maximum cells in any direction
+    
+    # Dynamic domain multiplier based on object size
+    if characteristic_length < 1.0:
+        # Very small objects need tighter domains
+        domain_multiplier = 5.0
+    elif characteristic_length < 10.0:
+        # Small objects
+        domain_multiplier = 10.0
+    elif characteristic_length < 100.0:
+        # Medium objects
+        domain_multiplier = 15.0
+    else:
+        # Large objects can have larger domains
+        domain_multiplier = 20.0
+    
+    # Calculate domain size
+    domain_length = characteristic_length * domain_multiplier
+    domain_height = domain_length * 0.5  # Typical aspect ratio
+    domain_width = domain_length * 0.5
+    
+    # Calculate required cell size for target resolution
+    target_cell_size = characteristic_length / TARGET_CELLS_PER_OBJECT
+    
+    # Calculate cells needed in each direction
+    cells_x = int(domain_length / target_cell_size)
+    cells_y = int(domain_height / target_cell_size)
+    cells_z = int(domain_width / target_cell_size)
+    
+    # Apply limits
+    cells_x = min(cells_x, MAX_CELLS_PER_DIRECTION)
+    cells_y = min(cells_y, MAX_CELLS_PER_DIRECTION)
+    cells_z = min(cells_z, MAX_CELLS_PER_DIRECTION)
+    
+    # Check total cell count
+    total_cells = cells_x * cells_y * cells_z
+    
+    warnings = []
+    if total_cells > MAX_TOTAL_CELLS:
+        # Scale back proportionally
+        scale_factor = (MAX_TOTAL_CELLS / total_cells) ** (1/3)
+        cells_x = int(cells_x * scale_factor)
+        cells_y = int(cells_y * scale_factor)
+        cells_z = int(cells_z * scale_factor)
+        total_cells = cells_x * cells_y * cells_z
+        
+        # Recalculate actual resolution
+        actual_cell_size = domain_length / cells_x
+        actual_cells_per_object = characteristic_length / actual_cell_size
+        
+        warnings.append(f"Mesh resolution limited due to cell count. Object will have ~{actual_cells_per_object:.0f} cells across.")
+    
+    # Calculate actual cells per object
+    actual_cell_size_x = domain_length / cells_x
+    cells_per_object = characteristic_length / actual_cell_size_x
+    
+    # Add warnings if resolution is too low
+    if cells_per_object < MIN_CELLS_PER_OBJECT:
+        warnings.append(f"Low resolution warning: Only {cells_per_object:.0f} cells across object. Consider scaling up the geometry.")
+        
+        # Suggest scale factor
+        suggested_scale = MIN_CELLS_PER_OBJECT / cells_per_object
+        warnings.append(f"Suggested scale factor: {suggested_scale:.1f}x to achieve minimum resolution.")
+    
+    # Calculate refinement levels for snappyHexMesh
+    if cells_per_object < 10:
+        # Very coarse - need aggressive refinement
+        min_refinement = 2
+        max_refinement = 4
+    elif cells_per_object < 20:
+        # Coarse - need good refinement
+        min_refinement = 1
+        max_refinement = 3
+    else:
+        # Adequate - normal refinement
+        min_refinement = 0
+        max_refinement = 2
+    
+    # Log the calculations
+    logger.info(f"Adaptive Mesh Calculation:")
+    logger.info(f"  Object size: {characteristic_length:.3f}")
+    logger.info(f"  Domain multiplier: {domain_multiplier}x")
+    logger.info(f"  Domain size: {domain_length:.3f} x {domain_height:.3f} x {domain_width:.3f}")
+    logger.info(f"  Background mesh: {cells_x} x {cells_y} x {cells_z} = {total_cells:,} cells")
+    logger.info(f"  Cells per object: {cells_per_object:.1f}")
+    logger.info(f"  Refinement levels: {min_refinement}-{max_refinement}")
+    
+    if warnings:
+        for warning in warnings:
+            logger.warning(f"  ⚠️  {warning}")
+    
+    return {
+        "domain_multiplier": domain_multiplier,
+        "domain_length": domain_length,
+        "domain_height": domain_height,
+        "domain_width": domain_width,
+        "cells_x": cells_x,
+        "cells_y": cells_y,
+        "cells_z": cells_z,
+        "total_cells": total_cells,
+        "cells_per_object": cells_per_object,
+        "min_refinement": min_refinement,
+        "max_refinement": max_refinement,
+        "warnings": warnings
+    }
+
+
 def create_adaptive_domain_vertices(domain_length: float, domain_height: float, domain_width: float, 
                                    stl_center: List[float], characteristic_length: float, 
                                    domain_size_multiplier: float) -> List[List[float]]:
     """
     Create domain vertices that position the STL geometry optimally within the domain.
     
-    Creates a background mesh domain starting from origin with positive extents.
-    The STL will be positioned within this domain by snappyHexMesh.
+    Creates a background mesh domain that properly contains the entire STL geometry.
+    The domain is positioned to ensure the STL is fully contained with appropriate
+    upstream and downstream distances for external flow.
     """
-    # For background mesh, always start from origin and extend in positive directions
-    # This ensures snappyHexMesh locationInMesh can be safely placed
+    # For external flow, we want:
+    # - More space upstream (40% of domain before object center)
+    # - Less space downstream (60% of domain after object center)
+    # - Centered in Y and Z directions
     
-    # Create a standard background mesh domain
-    x_min, y_min, z_min = 0.0, 0.0, 0.0
-    x_max = domain_length
-    y_max = domain_height  
-    z_max = domain_width
+    # Calculate upstream/downstream split
+    upstream_fraction = 0.4
+    downstream_fraction = 0.6
+    
+    # Position domain to contain the entire STL with proper spacing
+    # The STL center might not be at origin, so we need to account for that
+    x_min = stl_center[0] - (upstream_fraction * domain_length)
+    x_max = stl_center[0] + (downstream_fraction * domain_length)
+    
+    # Center the domain in Y and Z around the STL center
+    y_min = stl_center[1] - (domain_height / 2)
+    y_max = stl_center[1] + (domain_height / 2)
+    
+    z_min = stl_center[2] - (domain_width / 2)
+    z_max = stl_center[2] + (domain_width / 2)
     
     # Create vertices for blockMesh (order matters for OpenFOAM)
     vertices = [
@@ -305,7 +420,8 @@ def calculate_adaptive_location_in_mesh(domain_vertices: List[List[float]],
     Calculate a safe locationInMesh point for snappyHexMesh.
     
     Places the point upstream of the STL geometry in the fluid domain.
-    The point must be within the background mesh domain bounds.
+    The point must be within the background mesh domain bounds and
+    outside any solid geometry.
     """
     # Get domain bounds from the background mesh vertices
     x_coords = [v[0] for v in domain_vertices]
@@ -316,21 +432,29 @@ def calculate_adaptive_location_in_mesh(domain_vertices: List[List[float]],
     y_min, y_max = min(y_coords), max(y_coords)
     z_min, z_max = min(z_coords), max(z_coords)
     
-    # Calculate a safe location within the background mesh bounds
-    # Place it at 10% from the inlet (x_min) and centered in Y and Z
+    # Place the point upstream of the STL center
+    # Use 20% of the domain length upstream of the object center
+    upstream_distance = (x_max - x_min) * 0.2
+    
+    location_x = stl_center[0] - upstream_distance
+    location_y = stl_center[1]  # Use STL center Y
+    location_z = stl_center[2]  # Use STL center Z
+    
+    # Ensure the point is within domain bounds with safety margin
     safety_margin = 0.05  # 5% margin from boundaries
+    domain_width = x_max - x_min
+    domain_height = y_max - y_min
+    domain_depth = z_max - z_min
     
-    location_x = x_min + (x_max - x_min) * 0.1  # 10% from inlet
-    location_y = y_min + (y_max - y_min) * 0.5  # Center height  
-    location_z = z_min + (z_max - z_min) * 0.5  # Center width
+    # Apply safety margins
+    location_x = max(x_min + domain_width * safety_margin, 
+                    min(location_x, x_max - domain_width * safety_margin))
+    location_y = max(y_min + domain_height * safety_margin,
+                    min(location_y, y_max - domain_height * safety_margin))
+    location_z = max(z_min + domain_depth * safety_margin,
+                    min(location_z, z_max - domain_depth * safety_margin))
     
-    # Apply safety margins to ensure we're well inside the domain
-    location_x = max(x_min + (x_max - x_min) * safety_margin, 
-                    min(location_x, x_max - (x_max - x_min) * safety_margin))
-    location_y = max(y_min + (y_max - y_min) * safety_margin,
-                    min(location_y, y_max - (y_max - y_min) * safety_margin))
-    location_z = max(z_min + (z_max - z_min) * safety_margin,
-                    min(location_z, z_max - (z_max - z_min) * safety_margin))
+    logger.info(f"LocationInMesh: {[location_x, location_y, location_z]} (upstream of STL center {stl_center})")
     
     return [location_x, location_y, location_z]
 
@@ -1234,12 +1358,8 @@ def generate_stl_mesh_config(stl_file: str, mesh_resolution: str, flow_context: 
     # Get base resolution settings
     base_resolution = {"coarse": 20, "medium": 40, "fine": 80, "very_fine": 120}.get(mesh_resolution, 40)
     
-    # Estimate domain size based on flow context
-    domain_size_multiplier = flow_context.get("domain_size_multiplier", 20.0)
-    
-    # NEW: Analyze STL file to get actual dimensions
+    # Analyze STL file to get actual dimensions
     logger.info(f"Analyzing STL file dimensions: {stl_file}")
-    # Get STL analysis results
     stl_analysis = analyze_stl_bounding_box(stl_file)
     characteristic_length = stl_analysis["scaled_characteristic_length"]
     stl_center = stl_analysis["center"]  # Get center from analysis
@@ -1247,40 +1367,28 @@ def generate_stl_mesh_config(stl_file: str, mesh_resolution: str, flow_context: 
     # Apply validation and corrections
     stl_analysis = validate_stl_dimensions(stl_analysis)
     
-    # Use actual STL dimensions instead of hardcoded values
+    # Use actual STL dimensions
     stl_dims = stl_analysis["dimensions"]
     
-    # Calculate domain size based on actual STL dimensions
-    domain_length = characteristic_length * domain_size_multiplier
+    # Calculate adaptive mesh parameters
+    adaptive_params = calculate_adaptive_mesh_parameters(characteristic_length, base_resolution)
     
-    # IMPROVED: Ensure minimum domain size for small geometries
-    # This prevents issues with very small STL files after unit conversion
-    min_domain_size = 1.0  # Minimum 1m domain for proper mesh resolution
-    
-    if characteristic_length < 0.05:  # If geometry is smaller than 5cm
-        # Scale up the domain size multiplier to ensure adequate mesh resolution
-        # This gives more cells around small objects
-        effective_multiplier = domain_size_multiplier * (0.05 / characteristic_length)
-        domain_length = max(min_domain_size, characteristic_length * effective_multiplier)
-        logger.info(f"Small geometry detected ({characteristic_length:.3f}m), adjusting domain multiplier to {effective_multiplier:.1f}")
-    else:
-        domain_length = max(min_domain_size, domain_length)
-    
-    # Make domain proportional to STL dimensions but ensure minimum sizes
-    # Use STL aspect ratios but with reasonable bounds
-    stl_x, stl_y, stl_z = stl_dims["x"], stl_dims["y"], stl_dims["z"]
-    max_stl_dim = max(stl_x, stl_y, stl_z)
-    
-    # Scale domain dimensions proportionally but ensure minimum coverage
-    domain_height = max(domain_length * 0.5, (stl_y / max_stl_dim) * domain_length * 0.8)
-    domain_width = max(domain_length * 0.5, (stl_z / max_stl_dim) * domain_length * 0.8)
+    # Extract calculated values
+    domain_length = adaptive_params["domain_length"]
+    domain_height = adaptive_params["domain_height"]
+    domain_width = adaptive_params["domain_width"]
     
     # Log the analysis results
     if stl_analysis.get("validation", {}).get("warnings"):
         for warning in stl_analysis["validation"]["warnings"]:
             logger.warning(f"STL Analysis: {warning}")
     
-    logger.info(f"STL Mesh Config - Characteristic length: {characteristic_length:.3f}m")
+    # Add adaptive warnings to state
+    if adaptive_params.get("warnings"):
+        for warning in adaptive_params["warnings"]:
+            logger.warning(f"Adaptive Mesh: {warning}")
+    
+    logger.info(f"STL Mesh Config - Characteristic length: {characteristic_length:.3f}")
     logger.info(f"STL Mesh Config - Domain: {domain_length:.3f} x {domain_height:.3f} x {domain_width:.3f}")
     logger.info(f"STL Mesh Config - Units detected: {stl_analysis['detected_units']}")
     logger.info(f"STL Mesh Config - Scale factor applied: {stl_analysis['scale_factor']}")
@@ -1304,21 +1412,20 @@ def generate_stl_mesh_config(stl_file: str, mesh_resolution: str, flow_context: 
         "stl_file": stl_file,
         "stl_name": surface_name,  # Use cleaned name for OpenFOAM
         
-        # Background mesh configuration
+        # Background mesh configuration with adaptive parameters
         "background_mesh": {
             "type": "blockMesh",
             "domain_length": domain_length,
             "domain_height": domain_height,
             "domain_width": domain_width,
-            # Increase resolution for small geometries
-            "n_cells_x": int(base_resolution * 2.0) if characteristic_length < 0.05 else int(base_resolution * 1.5),
-            "n_cells_y": int(base_resolution * 1.2) if characteristic_length < 0.05 else int(base_resolution * 0.9),
-            "n_cells_z": int(base_resolution * 1.2) if characteristic_length < 0.05 else int(base_resolution * 0.9),
+            "n_cells_x": adaptive_params["cells_x"],
+            "n_cells_y": adaptive_params["cells_y"],
+            "n_cells_z": adaptive_params["cells_z"],
             # Create a box domain centered around the STL geometry
             # Place inlet upstream and outlet downstream of the STL
             "vertices": create_adaptive_domain_vertices(
                 domain_length, domain_height, domain_width, 
-                stl_center, characteristic_length, domain_size_multiplier
+                stl_center, characteristic_length, adaptive_params["domain_multiplier"]
             )
         },
         
@@ -1331,29 +1438,28 @@ def generate_stl_mesh_config(stl_file: str, mesh_resolution: str, flow_context: 
             }
         },
         
-        # SnappyHexMesh settings - improved for robustness
+        # SnappyHexMesh settings with adaptive refinement
         "snappy_settings": {
             "castellated_mesh": True,
             "snap": True,
             "add_layers": False,  # Start without layers for robustness, can be enabled later
             "refinement_levels": {
-                # Adaptive refinement based on geometry size
-                "min": 1 if characteristic_length < 0.05 else 0,  # More refinement for small objects
-                "max": 3 if characteristic_length < 0.05 else 2,  # Higher max refinement for small objects
-                "surface_level": 2 if characteristic_length < 0.05 else 1
+                "min": adaptive_params["min_refinement"],
+                "max": adaptive_params["max_refinement"],
+                "surface_level": adaptive_params["min_refinement"] + 1
             },
             "refinement_regions": {
                 "global": {
                     "min": [0, 0, 0],
                     "max": [domain_length, domain_height, domain_width],
-                    "level": 0  # Start conservative
+                    "level": 0  # Base level
                 }
             },
             # Adaptive locationInMesh based on STL position and domain
             "location_in_mesh": calculate_adaptive_location_in_mesh(
                 create_adaptive_domain_vertices(
                     domain_length, domain_height, domain_width, 
-                    stl_center, characteristic_length, domain_size_multiplier
+                    stl_center, characteristic_length, adaptive_params["domain_multiplier"]
                 ), 
                 stl_center
             ),
@@ -1363,19 +1469,19 @@ def generate_stl_mesh_config(stl_file: str, mesh_resolution: str, flow_context: 
                 "final_layer_thickness": 0.7,
                 "min_thickness": 0.1
             },
-            # Improved mesh quality controls for STL files
+            # Mesh quality controls - adjusted based on resolution
             "mesh_quality": {
-                "maxNonOrtho": 75,  # More relaxed for complex geometry
-                "maxBoundarySkewness": 25,  # More relaxed
-                "maxInternalSkewness": 6,   # More relaxed
-                "maxConcave": 85,           # More relaxed
-                "minVol": 1e-15,           # More tolerant
-                "minTetQuality": -1e30,    # Very relaxed for initial mesh
+                "maxNonOrtho": 75 if adaptive_params["cells_per_object"] < 20 else 65,
+                "maxBoundarySkewness": 25,
+                "maxInternalSkewness": 6,
+                "maxConcave": 85,
+                "minVol": 1e-15,
+                "minTetQuality": -1e30,
                 "minArea": -1,
-                "minTwist": 0.01,          # More relaxed
-                "minDeterminant": 0.0001,  # More relaxed
-                "minFaceWeight": 0.01,     # More relaxed
-                "minVolRatio": 0.005,      # More relaxed
+                "minTwist": 0.01,
+                "minDeterminant": 0.0001,
+                "minFaceWeight": 0.01,
+                "minVolRatio": 0.005,
                 "minTriangleTwist": -1,
                 "nSmoothScale": 4,
                 "errorReduction": 0.75
@@ -1394,20 +1500,23 @@ def generate_stl_mesh_config(stl_file: str, mesh_resolution: str, flow_context: 
         # STL analysis results for reference
         "stl_analysis": stl_analysis,
         
+        # Adaptive mesh parameters for reference
+        "adaptive_params": adaptive_params,
+        
         # Resolution settings
         "resolution": {
             "background": base_resolution,
-            "surface": base_resolution * 1.5,  # Less aggressive refinement
-            "refinement": base_resolution * 2   # Less aggressive refinement
+            "surface": base_resolution * 1.5,
+            "refinement": base_resolution * 2
         },
         
-        # Estimated cell count (will be refined during meshing)
-        "total_cells": int(base_resolution * base_resolution * base_resolution * 0.3),  # More conservative estimate
+        # Estimated cell count
+        "total_cells": adaptive_params["total_cells"],
         
         # Quality metrics
         "quality_metrics": {
-            "aspect_ratio": 3.0,  # More relaxed for STL files
-            "quality_score": 0.75  # More realistic for complex geometries
+            "aspect_ratio": 3.0,
+            "quality_score": 0.75 if adaptive_params["cells_per_object"] < 20 else 0.85
         }
     }
     

@@ -962,7 +962,7 @@ Return valid JSON that matches the schema exactly.
         geometry_info = {
             "type": parsed_params["geometry_type"],
             "dimensions": parsed_params["geometry_dimensions"],
-            "mesh_resolution": parsed_params.get("mesh_resolution", "medium"),
+            "mesh_resolution": parsed_params.get("mesh_resolution", "coarse"),  # Changed default to coarse for faster testing
             "flow_context": parsed_params["flow_context"],
             "is_custom_geometry": parsed_params.get("is_custom_geometry", False),
             "stl_file": state.get("stl_file")  # Pass STL file path to geometry info

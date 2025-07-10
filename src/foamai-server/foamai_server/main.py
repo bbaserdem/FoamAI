@@ -1,13 +1,16 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from typing import Optional
 import uuid
 from datetime import datetime
 import json
+import os
+from pathlib import Path
 
 from schemas import (
     SubmitScenarioRequest, ApprovalRequest, OpenFOAMCommandRequest, StartPVServerRequest, ProjectRequest,
     PVServerInfo, PVServerStartResponse, PVServerListResponse, PVServerStopResponse,
-    TaskStatusResponse, SubmitScenarioResponse, ResultsResponse, ProjectResponse, ProjectListResponse
+    TaskStatusResponse, SubmitScenarioResponse, ResultsResponse, ProjectResponse, ProjectListResponse,
+    FileUploadResponse
 )
 
 from celery_worker import celery_app, generate_mesh_task, run_solver_task, run_openfoam_command_task, cleanup_pvservers_task
@@ -27,6 +30,9 @@ from database import (
 
 app = FastAPI(title="FoamAI API", version="1.0.0")
 
+# Set maximum file size to 300MB
+MAX_FILE_SIZE = 300 * 1024 * 1024  # 300MB in bytes
+
 def format_pvserver_info(task_data: dict) -> Optional[PVServerInfo]:
     """Format pvserver information from database data."""
     if not task_data.get('pvserver_status'):
@@ -43,6 +49,12 @@ def format_pvserver_info(task_data: dict) -> Optional[PVServerInfo]:
         pvserver_info.connection_string = f"localhost:{pvserver_info.port}"
     
     return pvserver_info
+
+def get_project_root(project_name: str) -> Path:
+    """Get the root directory path for a project."""
+    # This uses the same logic as project_service.py
+    foam_run = os.environ.get('FOAM_RUN', '/tmp/foam_run')
+    return Path(foam_run) / project_name
 
 # Centralized exception handlers
 @app.exception_handler(ProjectError)
@@ -91,6 +103,78 @@ async def get_project_list():
     """Lists all existing projects in the FOAM_RUN directory."""
     projects = list_projects()
     return ProjectListResponse(projects=projects, count=len(projects))
+
+@app.post("/api/projects/{project_name}/upload", response_model=FileUploadResponse)
+async def upload_file(
+    project_name: str,
+    file: UploadFile = File(..., description="The file to upload"),
+    destination_path: str = Form(..., description="Relative path within the project where the file should be saved")
+):
+    """
+    Upload a file to a specific project at the given path.
+    
+    Creates directories as needed and allows overwriting existing files.
+    Maximum file size is 300MB.
+    """
+    try:
+        # Check if project exists
+        project_root = get_project_root(project_name)
+        if not project_root.exists():
+            raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found")
+        
+        # Check file size
+        file_content = await file.read()
+        file_size = len(file_content)
+        
+        if file_size > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413, 
+                detail=f"File size ({file_size} bytes) exceeds maximum allowed size ({MAX_FILE_SIZE} bytes)"
+            )
+        
+        # Construct the full file path
+        file_path = project_root / destination_path
+        absolute_path = file_path.resolve()
+        
+        # Check if file already exists
+        file_existed = file_path.exists()
+        
+        # Create directories if they don't exist
+        created_directories = []
+        if not file_path.parent.exists():
+            # Track which directories we're creating
+            current_path = file_path.parent
+            dirs_to_create = []
+            
+            while not current_path.exists() and current_path != project_root:
+                dirs_to_create.append(str(current_path.relative_to(project_root)))
+                current_path = current_path.parent
+            
+            # Create the directories
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            created_directories = list(reversed(dirs_to_create))
+        
+        # Write the file
+        with open(file_path, 'wb') as f:
+            f.write(file_content)
+        
+        return FileUploadResponse(
+            status="success",
+            project_name=project_name,
+            file_path=destination_path,
+            absolute_path=str(absolute_path),
+            file_size=file_size,
+            created_directories=created_directories,
+            overwritten=file_existed,
+            message=f"File uploaded successfully to {destination_path}"
+        )
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        # Handle any other errors
+        raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
 
 # --- CFD Task Endpoints ---
 

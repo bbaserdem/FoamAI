@@ -8,9 +8,10 @@ import requests
 import json
 import time
 from typing import Dict, Any
+from config import EC2_HOST, API_PORT
 
 # Configuration
-BASE_URL = "http://3.139.77.134:8000"
+BASE_URL = f"http://{EC2_HOST}:{API_PORT}"
 PROJECT_NAME = "test_command_project"
 
 def make_request(method: str, endpoint: str, data: Dict[Any, Any] = None, files: Dict[str, Any] = None) -> Dict[Any, Any]:

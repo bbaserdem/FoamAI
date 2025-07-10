@@ -670,8 +670,9 @@ def get_ai_solver_recommendation(
         return SolverType.SIMPLE_FOAM
     
     # Priority 4: Low Reynolds number without vortex shedding
-    if not features['expects_vortex_shedding'] and features.get('reynolds_number', 0) < 100:
-        logger.info(f"AI Decision: Low Re={features.get('reynolds_number', 0)} without vortex shedding → simpleFoam")
+    reynolds_number = features.get('reynolds_number', 0)
+    if not features['expects_vortex_shedding'] and reynolds_number is not None and reynolds_number < 100:
+        logger.info(f"AI Decision: Low Re={reynolds_number} without vortex shedding → simpleFoam")
         return SolverType.SIMPLE_FOAM
     
     # Priority 5: Keywords strongly suggesting steady state

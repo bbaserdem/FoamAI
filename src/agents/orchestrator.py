@@ -1,7 +1,7 @@
 """System Orchestrator Agent - Central workflow controller."""
 
 import uuid
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from loguru import logger
 
 from langgraph.graph import StateGraph, END
@@ -304,11 +304,13 @@ def create_initial_state(
         export_images: bool = True,
         output_format: str = "images",
         max_retries: int = 3,
-        user_approval_enabled: bool = True
+        user_approval_enabled: bool = True,
+        stl_file: Optional[str] = None
     ) -> CFDState:
     """Create initial state for the CFD workflow."""
     return CFDState(
         user_prompt=user_prompt,
+        stl_file=stl_file,
         parsed_parameters={},
         geometry_info={},
         mesh_config={},

@@ -75,9 +75,9 @@ def read_mesh_patches_with_types(case_directory: Path) -> List[Dict[str, str]]:
         for i, line in enumerate(lines):
             line = line.strip()
             
-            # Look for patch name (alphabetic word on its own line)
+            # Look for patch name (valid C++ identifier on its own line)
             if (line and not line.startswith('//') and not line.startswith('/*') and 
-                line.isalpha() and line not in ['FoamFile']):
+                re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', line) and line not in ['FoamFile']):
                 
                 # Check if the next line has an opening brace
                 if i + 1 < len(lines) and lines[i + 1].strip() == '{':
@@ -162,6 +162,16 @@ def map_boundary_conditions_to_patches(
             "outlet": ["outlet"],
             "walls": ["walls", "top", "bottom"],
             "sides": ["sides", "front", "back"]
+        },
+        GeometryType.CUSTOM: {
+            # STL geometries - external flow around custom geometry
+            "inlet": ["inlet"],
+            "outlet": ["outlet"],
+            "walls": ["top", "bottom", "front", "back"],  # Map walls to symmetry/farfield patches
+            "farfield": ["top", "bottom", "front", "back"],  # Alternative mapping for farfield
+            "geometry": ["surface_747_400", "stl_surface"],  # STL surface patches (wall treatment)
+            # Handle common STL surface names
+            "stl_surface": ["surface_747_400", "stl_surface", "geometry", "aircraft", "wing", "body"]
         }
     }
     
@@ -169,6 +179,25 @@ def map_boundary_conditions_to_patches(
     mapped_conditions = {}
     
     logger.info(f"Mapping boundary conditions for {geometry_type} with patches: {actual_patches}")
+    
+    # For custom geometries, dynamically add STL surface patches
+    if geometry_type == GeometryType.CUSTOM:
+        # Find STL surface patches (usually start with "surface_" or have "wall" type)
+        stl_patches = []
+        if case_directory:
+            patches_info = read_mesh_patches_with_types(case_directory)
+            for patch_info in patches_info:
+                patch_name = patch_info['name']
+                patch_type = patch_info['type']
+                # Look for wall patches or patches starting with "surface_"
+                if patch_type == 'wall' or patch_name.startswith('surface_'):
+                    stl_patches.append(patch_name)
+        
+        # Add STL surface patches to mapping
+        if stl_patches:
+            mapping["stl_surface"] = stl_patches
+            mapping["geometry"] = stl_patches
+            logger.info(f"Added STL surface patches to mapping: {stl_patches}")
     
     # For each field in boundary conditions
     for field_name, field_data in boundary_conditions.items():
@@ -728,6 +757,48 @@ def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
                 "type": "empty" if is_2d else "slip"
             }
         }
+    elif geometry_type == GeometryType.CUSTOM:
+        # Custom geometry (STL files) - external flow with snappyHexMesh
+        is_2d = mesh_config.get("is_2d", False)
+        
+        velocity_field["boundaryField"] = {
+            "inlet": {
+                "type": "fixedValue",
+                "value": f"uniform {velocity_vector}"
+            },
+            "outlet": {
+                "type": "zeroGradient"
+            },
+            "top": {
+                "type": "slip"  # Slip condition for far field
+            },
+            "bottom": {
+                "type": "slip"  # Slip condition for far field
+            },
+            "front": {
+                "type": "empty" if is_2d else "slip"
+            },
+            "back": {
+                "type": "empty" if is_2d else "slip"
+            },
+            # STL surface patches will be mapped to noSlip by the mapping function
+            "walls": {
+                "type": "noSlip"
+            },
+            "stl_surface": {
+                "type": "noSlip"  # Wall boundary on STL surface
+            },
+            "geometry": {
+                "type": "noSlip"  # Wall boundary on STL surface
+            }
+        }
+        
+        # Add STL surface patch if we know the STL filename
+        if mesh_config.get("stl_name"):
+            stl_name = mesh_config["stl_name"]
+            velocity_field["boundaryField"][stl_name] = {
+                "type": "noSlip"  # Wall boundary on STL surface
+            }
     
     return velocity_field
 
@@ -735,6 +806,15 @@ def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
 def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any], mesh_config: Dict[str, Any]) -> Dict[str, Any]:
     """Generate pressure field (p) boundary conditions."""
     pressure = parsed_params.get("pressure", 0.0)
+    
+    # For incompressible flow simulations, use gauge pressure (0) instead of absolute pressure
+    # This ensures proper pressure gradients for visualization
+    # Check if pressure looks like absolute pressure (atmospheric ~101325 Pa)
+    if pressure > 50000:  # Anything above 50kPa is likely absolute pressure
+        # Convert to gauge pressure for incompressible flow
+        logger.info(f"Converting absolute pressure ({pressure} Pa) to gauge pressure (0 Pa) for incompressible flow")
+        pressure = 0.0  # Use gauge pressure for incompressible flow
+    
     geometry_type = geometry_info["type"]
     flow_context = geometry_info.get("flow_context", {})
     is_external_flow = flow_context.get("is_external_flow", False)
@@ -936,6 +1016,48 @@ def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
                 "type": "empty" if is_2d else "zeroGradient"
             }
         }
+    elif geometry_type == GeometryType.CUSTOM:
+        # Custom geometry (STL files) - external flow with snappyHexMesh
+        is_2d = mesh_config.get("is_2d", False)
+        
+        pressure_field["boundaryField"] = {
+            "inlet": {
+                "type": "zeroGradient"
+            },
+            "outlet": {
+                "type": "fixedValue",
+                "value": f"uniform {pressure}"
+            },
+            "top": {
+                "type": "zeroGradient"
+            },
+            "bottom": {
+                "type": "zeroGradient"
+            },
+            "front": {
+                "type": "empty" if is_2d else "zeroGradient"
+            },
+            "back": {
+                "type": "empty" if is_2d else "zeroGradient"
+            },
+            # STL surface patches will be mapped to zeroGradient by the mapping function
+            "walls": {
+                "type": "zeroGradient"
+            },
+            "stl_surface": {
+                "type": "zeroGradient"  # No pressure gradient at STL surface
+            },
+            "geometry": {
+                "type": "zeroGradient"  # No pressure gradient at STL surface
+            }
+        }
+        
+        # Add STL surface patch if we know the STL filename
+        if mesh_config.get("stl_name"):
+            stl_name = mesh_config["stl_name"]
+            pressure_field["boundaryField"][stl_name] = {
+                "type": "zeroGradient"  # No pressure gradient at STL surface
+            }
     
     return pressure_field
 
@@ -2062,6 +2184,48 @@ def generate_temperature_field(parsed_params: Dict[str, Any], geometry_info: Dic
             temp_field["boundaryField"]["sides"] = {
                 "type": sides_type
             }
+    elif geometry_type == GeometryType.CUSTOM:
+        # Custom geometry (STL files) - external flow with snappyHexMesh
+        is_2d = mesh_config.get("is_2d", False)
+        
+        temp_field["boundaryField"] = {
+            "inlet": {
+                "type": "fixedValue",
+                "value": f"uniform {temperature}"
+            },
+            "outlet": {
+                "type": "zeroGradient"
+            },
+            "top": {
+                "type": "zeroGradient"
+            },
+            "bottom": {
+                "type": "zeroGradient"
+            },
+            "front": {
+                "type": "empty" if is_2d else "zeroGradient"
+            },
+            "back": {
+                "type": "empty" if is_2d else "zeroGradient"
+            },
+            # STL surface patches will be mapped to zeroGradient by the mapping function
+            "walls": {
+                "type": "zeroGradient"
+            },
+            "stl_surface": {
+                "type": "zeroGradient"  # No temperature gradient at STL surface
+            },
+            "geometry": {
+                "type": "zeroGradient"  # No temperature gradient at STL surface
+            }
+        }
+    
+    # Add STL surface patch if we know the STL filename
+    if mesh_config.get("stl_name"):
+        stl_name = mesh_config["stl_name"]
+        temp_field["boundaryField"][stl_name] = {
+            "type": "zeroGradient"  # No temperature gradient at STL surface
+        }
     
     return temp_field
 

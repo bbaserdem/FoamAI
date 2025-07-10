@@ -23,7 +23,8 @@ def cli():
 @click.option('--no-user-approval', is_flag=True, help='Skip user approval step and proceed directly to simulation')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
 @click.option('--max-retries', default=3, help='Maximum retry attempts')
-def solve(prompt: str, output_format: str, no_export_images: bool, no_user_approval: bool, verbose: bool, max_retries: int):
+@click.option('--stl-file', type=click.Path(exists=True), help='Path to STL file for custom geometry')
+def solve(prompt: str, output_format: str, no_export_images: bool, no_user_approval: bool, verbose: bool, max_retries: int, stl_file: str):
     """Solve a CFD problem from natural language description."""
     
     # Import here to avoid circular imports and startup time
@@ -42,6 +43,7 @@ def solve(prompt: str, output_format: str, no_export_images: bool, no_user_appro
         Panel(
             f"[bold blue]FoamAI CFD Solver[/bold blue]\n\n"
             f"[green]Problem:[/green] {prompt}\n"
+            f"[green]STL File:[/green] {stl_file if stl_file else 'None (using generated geometry)'}\n"
             f"[green]Output Format:[/green] {output_format}\n"
             f"[green]Export Images:[/green] {export_images}\n"
             f"[green]User Approval:[/green] {user_approval_enabled}\n"
@@ -60,7 +62,8 @@ def solve(prompt: str, output_format: str, no_export_images: bool, no_user_appro
             export_images=export_images,
             output_format=output_format,
             max_retries=max_retries,
-            user_approval_enabled=user_approval_enabled
+            user_approval_enabled=user_approval_enabled,
+            stl_file=stl_file
         )
         
         # Create workflow

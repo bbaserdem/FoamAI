@@ -61,6 +61,7 @@ class CFDState(TypedDict):
     
     # User input
     user_prompt: str
+    stl_file: Optional[str]  # Path to STL file for custom geometry
     
     # Parsed parameters from NL interpretation
     parsed_parameters: Dict[str, Any]

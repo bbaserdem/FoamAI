@@ -201,6 +201,29 @@ render_view.Background = [1.0, 1.0, 1.0]  # White background
 # Display the mesh
 foam_display = pv.Show(foam_case, render_view)
 
+# For custom STL geometries, configure display to show surfaces properly
+if "{geometry_type_str}" == "custom":
+    # Hide internal mesh to avoid showing the blue box
+    foam_case.MeshRegions = ['internalMesh']
+    foam_case.MeshRegions = []  # Hide internal mesh
+    
+    # Show only patch regions (surfaces)
+    try:
+        all_patches = foam_case.PatchArrays
+        if all_patches:
+            foam_case.PatchArrays = all_patches  # Show all patches
+    except AttributeError:
+        # PatchArrays not available in this ParaView version
+        # Try alternative approach using patch selection
+        try:
+            if hasattr(foam_case, 'Patches'):
+                foam_case.Patches = ['.*']  # Show all patches using regex
+        except:
+            pass  # Fallback: rely on default visualization
+    
+    # Make sure we're showing surfaces, not volume
+    foam_display.Representation = 'Surface'
+
 # Set animation scene to latest time
 animation_scene = pv.GetAnimationScene()
 animation_scene.UpdateAnimationUsingDataTimeSteps()
@@ -221,6 +244,10 @@ try:
         
         # Use slice for visualization
         visualization_source = slice_filter
+    elif "{geometry_type_str}" == "custom":
+        # For custom geometries, use extract surface to better show the geometry
+        extract_surface = pv.ExtractSurface(Input=foam_case)
+        visualization_source = extract_surface
     else:
         visualization_source = foam_case
 except:
@@ -287,7 +314,7 @@ except:
 
 # Generate streamlines for external flows
 try:
-    if "{geometry_type_str}" in ["cylinder", "airfoil", "sphere", "cube"]:
+    if "{geometry_type_str}" in ["cylinder", "airfoil", "sphere", "cube", "custom"]:
         # Create streamline tracer
         streamlines = pv.StreamTracer(Input=calculator)
         streamlines.Vectors = ['POINTS', 'U']
@@ -319,15 +346,45 @@ try:
 except:
     print("Streamlines not available")
 
-# Generate wall pressure distribution for bluff bodies
+# Generate surface pressure distribution for bluff bodies
 try:
-    if "{geometry_type_str}" in ["cylinder", "airfoil", "sphere", "cube"]:
+    if "{geometry_type_str}" in ["cylinder", "airfoil", "sphere", "cube", "custom"]:
+        # For custom geometries, create a separate surface extraction for surface pressure
+        if "{geometry_type_str}" == "custom":
+            # Hide internal mesh and show only surfaces for better visualization
+            foam_case.MeshRegions = []  # Hide internal mesh
+            try:
+                all_patches = foam_case.PatchArrays
+                if all_patches:
+                    foam_case.PatchArrays = all_patches  # Show all patches
+            except AttributeError:
+                # PatchArrays not available in this ParaView version
+                # Try alternative approach using patch selection
+                try:
+                    if hasattr(foam_case, 'Patches'):
+                        foam_case.Patches = ['.*']  # Show all patches using regex
+                except:
+                    pass  # Fallback: rely on default visualization
+        
         # Extract surface
         extract_surface = pv.ExtractSurface(Input=foam_case)
         
+        # Hide the previous visualization
+        pv.Hide(visualization_source, render_view)
+        
         # Display surface colored by pressure
         surface_display = pv.Show(extract_surface, render_view)
+        surface_display.Representation = 'Surface'
         pv.ColorBy(surface_display, ('POINTS', 'p'))
+        
+        # Get pressure lookup table
+        p_lut = pv.GetColorTransferFunction('p')
+        p_lut.ApplyPreset('Cool to Warm', True)
+        
+        # Add color bar
+        p_colorbar = pv.GetScalarBar(p_lut, render_view)
+        p_colorbar.Title = 'Surface Pressure [Pa]'
+        p_colorbar.ComponentTitle = ''
         
         # Reset camera and render
         render_view.ResetCamera()

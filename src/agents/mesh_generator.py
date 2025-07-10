@@ -65,6 +65,22 @@ def generate_mesh_config(geometry_info: Dict[str, Any], parsed_params: Dict[str,
     dimensions = geometry_info["dimensions"]
     mesh_resolution = geometry_info.get("mesh_resolution", "medium")
     flow_context = geometry_info.get("flow_context", {})
+    is_custom_geometry = geometry_info.get("is_custom_geometry", False)
+    stl_file = geometry_info.get("stl_file")
+    
+    # Handle STL file geometry
+    if is_custom_geometry and stl_file:
+        return generate_stl_mesh_config(stl_file, mesh_resolution, flow_context, parsed_params)
+    
+    # Handle case where custom geometry is detected but no STL file (fall back to cylinder)
+    if geometry_type == GeometryType.CUSTOM and not stl_file:
+        logger.warning("Custom geometry detected but no STL file provided, falling back to cylinder geometry")
+        geometry_type = GeometryType.CYLINDER
+        # Set default cylinder dimensions
+        dimensions = {
+            "diameter": 0.1,
+            "length": 0.1
+        }
     
     # Get resolution multiplier
     resolution_multiplier = get_resolution_multiplier(mesh_resolution)
@@ -876,6 +892,165 @@ def generate_sphere_internal_mesh(dimensions: Dict[str, float], resolution_multi
         },
         "total_cells": base_resolution * base_resolution * base_resolution * 2
     }
+
+
+def generate_stl_mesh_config(stl_file: str, mesh_resolution: str, flow_context: Dict[str, Any], parsed_params: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate mesh configuration for STL file geometry using snappyHexMesh."""
+    import os
+    from pathlib import Path
+    import re
+    
+    # Get base resolution settings
+    base_resolution = {"coarse": 20, "medium": 40, "fine": 80, "very_fine": 120}.get(mesh_resolution, 40)
+    
+    # Estimate domain size based on flow context
+    domain_size_multiplier = flow_context.get("domain_size_multiplier", 20.0)
+    
+    # For STL files, we'll create a reasonable domain size
+    # Since we don't know the STL dimensions yet, use default values
+    # These will be adjusted during case writing when we can analyze the STL
+    estimated_characteristic_length = 0.1  # 10cm default
+    domain_length = estimated_characteristic_length * domain_size_multiplier
+    domain_height = domain_length * 0.6  # 60% of length
+    domain_width = domain_length * 0.6   # 60% of length
+    
+    # Create a valid OpenFOAM dictionary name from STL filename
+    # Remove extension and ensure it's a valid C++ identifier
+    stl_basename = Path(stl_file).stem
+    # Replace invalid characters and ensure it doesn't start with a number
+    surface_name = re.sub(r'[^a-zA-Z0-9_]', '_', stl_basename)
+    if surface_name[0].isdigit():
+        surface_name = f"surface_{surface_name}"
+    
+    # For STL files, we need a background mesh and snappyHexMesh configuration
+    mesh_config = {
+        "type": "snappyHexMesh",
+        "mesh_topology": "snappy",
+        "geometry_type": "custom_stl",
+        "is_external_flow": True,
+        "is_2d": False,  # STL files are always 3D
+        "is_custom_geometry": True,
+        "stl_file": stl_file,
+        "stl_name": surface_name,  # Use cleaned name for OpenFOAM
+        
+        # Background mesh configuration
+        "background_mesh": {
+            "type": "blockMesh",
+            "domain_length": domain_length,
+            "domain_height": domain_height,
+            "domain_width": domain_width,
+            "n_cells_x": int(base_resolution * 1.5),
+            "n_cells_y": int(base_resolution * 0.9),
+            "n_cells_z": int(base_resolution * 0.9),
+            # Create a simple box domain
+            "vertices": [
+                [0, 0, 0],
+                [domain_length, 0, 0],
+                [domain_length, domain_height, 0],
+                [0, domain_height, 0],
+                [0, 0, domain_width],
+                [domain_length, 0, domain_width],
+                [domain_length, domain_height, domain_width],
+                [0, domain_height, domain_width]
+            ]
+        },
+        
+        # Geometry configuration for snappyHexMesh
+        "geometry": {
+            surface_name: {  # Use the cleaned surface name
+                "type": "triSurfaceMesh",
+                "file": f"{Path(stl_file).name}",  # Just the filename, will be copied to case
+                "regions": {}
+            }
+        },
+        
+        # SnappyHexMesh settings - improved for robustness
+        "snappy_settings": {
+            "castellated_mesh": True,
+            "snap": True,
+            "add_layers": False,  # Start without layers for robustness, can be enabled later
+            "refinement_levels": {
+                "min": 0,  # Start with 0 for more conservative approach
+                "max": 2,  # Reduced to 2 for better stability
+                "surface_level": 1
+            },
+            "refinement_regions": {
+                "global": {
+                    "min": [0, 0, 0],
+                    "max": [domain_length, domain_height, domain_width],
+                    "level": 0  # Start conservative
+                }
+            },
+            # Better locationInMesh - place it safely in upstream region
+            "location_in_mesh": [
+                domain_length * 0.05,  # 5% from inlet (very safe)
+                domain_height * 0.5,   # Middle height
+                domain_width * 0.5     # Middle width
+            ],
+            "layers": {
+                "n_layers": 3,
+                "expansion_ratio": 1.3,
+                "final_layer_thickness": 0.7,
+                "min_thickness": 0.1
+            },
+            # Improved mesh quality controls for STL files
+            "mesh_quality": {
+                "maxNonOrtho": 75,  # More relaxed for complex geometry
+                "maxBoundarySkewness": 25,  # More relaxed
+                "maxInternalSkewness": 6,   # More relaxed
+                "maxConcave": 85,           # More relaxed
+                "minVol": 1e-15,           # More tolerant
+                "minTetQuality": -1e30,    # Very relaxed for initial mesh
+                "minArea": -1,
+                "minTwist": 0.01,          # More relaxed
+                "minDeterminant": 0.0001,  # More relaxed
+                "minFaceWeight": 0.01,     # More relaxed
+                "minVolRatio": 0.005,      # More relaxed
+                "minTriangleTwist": -1,
+                "nSmoothScale": 4,
+                "errorReduction": 0.75
+            }
+        },
+        
+        # Dimensions for boundary condition setup
+        "dimensions": {
+            "domain_length": domain_length,
+            "domain_height": domain_height,
+            "domain_width": domain_width,
+            "characteristic_length": estimated_characteristic_length,
+            "is_3d": True
+        },
+        
+        # Resolution settings
+        "resolution": {
+            "background": base_resolution,
+            "surface": base_resolution * 1.5,  # Less aggressive refinement
+            "refinement": base_resolution * 2   # Less aggressive refinement
+        },
+        
+        # Estimated cell count (will be refined during meshing)
+        "total_cells": int(base_resolution * base_resolution * base_resolution * 0.3),  # More conservative estimate
+        
+        # Quality metrics
+        "quality_metrics": {
+            "aspect_ratio": 3.0,  # More relaxed for STL files
+            "quality_score": 0.75  # More realistic for complex geometries
+        }
+    }
+    
+    # Add flow-specific parameters
+    if parsed_params.get("reynolds_number"):
+        mesh_config["reynolds_number"] = parsed_params["reynolds_number"]
+    
+    if parsed_params.get("velocity"):
+        mesh_config["inlet_velocity"] = parsed_params["velocity"]
+    
+    # Add rotation information if detected
+    if parsed_params.get("rotation_info"):
+        mesh_config["rotation_info"] = parsed_params["rotation_info"]
+        logger.info(f"Mesh Generator: Added rotation info to mesh config: {parsed_params['rotation_info']}")
+    
+    return mesh_config
 
 
 def calculate_total_cells(mesh_config: Dict[str, Any]) -> int:

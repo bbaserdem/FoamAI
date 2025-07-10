@@ -30,6 +30,7 @@ class CFDParameters(BaseModel):
     # Geometry information
     geometry_type: GeometryType = Field(description="Type of geometry (cylinder, airfoil, etc.)")
     geometry_dimensions: Dict[str, float] = Field(description="Geometry dimensions (diameter, length, etc.)")
+    is_custom_geometry: bool = Field(default=False, description="True if using custom STL geometry")
     
     # Flow context
     flow_context: FlowContext = Field(description="Context of the flow (external/internal, domain type)")
@@ -321,6 +322,62 @@ def detect_boundary_conditions(prompt: str) -> Dict[str, Any]:
     return conditions
 
 
+def detect_rotation_request(prompt: str) -> Dict[str, Any]:
+    """Detect rotation specifications from the prompt."""
+    import re
+    rotation_info = {
+        "rotate": False,
+        "rotation_axis": None,
+        "rotation_angle": None,
+        "rotation_center": None
+    }
+    
+    prompt_lower = prompt.lower()
+    
+    # Check for rotation keywords
+    rotation_keywords = [
+        r"\brotate\b", r"\brotation\b", r"\bturn\b", r"\bangle\b", 
+        r"\borientation\b", r"\byaw\b", r"\bpitch\b", r"\broll\b"
+    ]
+    
+    if not any(re.search(keyword, prompt_lower) for keyword in rotation_keywords):
+        return rotation_info
+    
+    # Detect rotation angle
+    angle_patterns = [
+        r'rotate\s*(?:by\s*)?([-+]?\d+(?:\.\d+)?)\s*(?:degree|deg|°)',
+        r'turn\s*(?:by\s*)?([-+]?\d+(?:\.\d+)?)\s*(?:degree|deg|°)',
+        r'([-+]?\d+(?:\.\d+)?)\s*(?:degree|deg|°)\s*rotation',
+        r'angle\s*[:=]?\s*([-+]?\d+(?:\.\d+)?)\s*(?:degree|deg|°)?'
+    ]
+    
+    for pattern in angle_patterns:
+        if match := re.search(pattern, prompt_lower):
+            rotation_info["rotate"] = True
+            rotation_info["rotation_angle"] = float(match.group(1))
+            break
+    
+    # Detect rotation axis
+    if re.search(r'\b(?:around|about)\s*x[-\s]?axis\b', prompt_lower):
+        rotation_info["rotation_axis"] = "x"
+    elif re.search(r'\b(?:around|about)\s*y[-\s]?axis\b', prompt_lower):
+        rotation_info["rotation_axis"] = "y"
+    elif re.search(r'\b(?:around|about)\s*z[-\s]?axis\b', prompt_lower):
+        rotation_info["rotation_axis"] = "z"
+    elif re.search(r'\byaw\b', prompt_lower):
+        rotation_info["rotation_axis"] = "z"  # Yaw is rotation around Z
+    elif re.search(r'\bpitch\b', prompt_lower):
+        rotation_info["rotation_axis"] = "y"  # Pitch is rotation around Y
+    elif re.search(r'\broll\b', prompt_lower):
+        rotation_info["rotation_axis"] = "x"  # Roll is rotation around X
+    
+    # If rotation detected but no axis specified, default to Z (most common for vehicles)
+    if rotation_info["rotate"] and not rotation_info["rotation_axis"]:
+        rotation_info["rotation_axis"] = "z"
+    
+    return rotation_info
+
+
 def detect_multiphase_flow(prompt: str) -> Dict[str, Any]:
     """Detect multiphase flow indicators from the prompt using word boundaries."""
     import re
@@ -403,6 +460,8 @@ def nl_interpreter_agent(state: CFDState) -> CFDState:
     try:
         if state["verbose"]:
             logger.info(f"NL Interpreter: Processing prompt: {state['user_prompt']}")
+            if state.get("stl_file"):
+                logger.info(f"NL Interpreter: STL file provided: {state['stl_file']}")
         
         # Get settings for API key
         import sys
@@ -421,9 +480,25 @@ def nl_interpreter_agent(state: CFDState) -> CFDState:
         # Create output parser
         parser = PydanticOutputParser(pydantic_object=CFDParameters)
         
+        # Modify prompt template to handle STL files
+        stl_instruction = ""
+        if state.get("stl_file"):
+            stl_instruction = f"""
+IMPORTANT: The user is providing an STL file for custom geometry: {state['stl_file']}
+- Set geometry_type to "custom" 
+- Set is_custom_geometry to true
+- Set is_external_flow to true (STL files are typically external flow around objects)
+- Set domain_type to "unbounded"
+- Set domain_size_multiplier to 20.0 (reasonable default for external flow)
+- Do not try to extract specific geometry dimensions - the STL file defines the geometry
+- Focus on extracting flow parameters, boundary conditions, and simulation settings from the prompt
+"""
+        
         # Create prompt template with enhanced instructions
         prompt = ChatPromptTemplate.from_template("""
 You are an expert CFD engineer. Parse the following natural language description of a fluid dynamics problem into structured parameters.
+
+{stl_instruction}
 
 Extract all relevant information including:
 - Geometry type and dimensions (extract numerical values with units)
@@ -482,38 +557,61 @@ Return valid JSON that matches the schema exactly.
         # Process the user prompt
         result = chain.invoke({
             "user_prompt": state["user_prompt"],
+            "stl_instruction": stl_instruction,
             "format_instructions": parser.get_format_instructions()
         })
         
         # Convert to dictionary
         parsed_params = result.dict()
         
-        # Extract dimensions from text (as backup/enhancement)
-        text_dimensions = extract_dimensions_from_text(state["user_prompt"], parsed_params["geometry_type"])
+        # Handle STL file-specific logic
+        if state.get("stl_file"):
+            # Force custom geometry settings for STL files
+            parsed_params["geometry_type"] = GeometryType.CUSTOM
+            parsed_params["is_custom_geometry"] = True
+            parsed_params["geometry_dimensions"] = {"is_3d": True}  # Mark as 3D
+            
+            # Set appropriate flow context for STL files (typically external flow)
+            parsed_params["flow_context"] = {
+                "is_external_flow": True,
+                "domain_type": "unbounded",
+                "domain_size_multiplier": 20.0
+            }
+            
+            if state["verbose"]:
+                logger.info("NL Interpreter: STL file detected, configured for custom 3D geometry")
+        else:
+            # Extract dimensions from text (as backup/enhancement) for non-STL cases
+            text_dimensions = extract_dimensions_from_text(state["user_prompt"], parsed_params["geometry_type"])
+            
+            # Merge extracted dimensions with LLM-parsed dimensions
+            for key, value in text_dimensions.items():
+                if key not in parsed_params["geometry_dimensions"] or parsed_params["geometry_dimensions"][key] is None:
+                    parsed_params["geometry_dimensions"][key] = value
+            
+            # Apply intelligent defaults for missing dimensions
+            parsed_params["geometry_dimensions"] = apply_intelligent_defaults(
+                parsed_params["geometry_type"],
+                parsed_params["geometry_dimensions"],
+                FlowContext(**parsed_params["flow_context"]),
+                parsed_params.get("reynolds_number")
+            )
+            
+            # For non-STL cases, ensure is_custom_geometry is False
+            parsed_params["is_custom_geometry"] = False
         
-        # Merge extracted dimensions with LLM-parsed dimensions
-        for key, value in text_dimensions.items():
-            if key not in parsed_params["geometry_dimensions"] or parsed_params["geometry_dimensions"][key] is None:
-                parsed_params["geometry_dimensions"][key] = value
-        
-        # Infer flow context if not properly set
-        if "flow_context" not in parsed_params or parsed_params["flow_context"] is None:
+        # Infer flow context if not properly set (for non-STL cases)
+        if not state.get("stl_file") and ("flow_context" not in parsed_params or parsed_params["flow_context"] is None):
             parsed_params["flow_context"] = infer_flow_context(state["user_prompt"], parsed_params["geometry_type"]).dict()
-        
-        # Apply intelligent defaults for missing dimensions
-        parsed_params["geometry_dimensions"] = apply_intelligent_defaults(
-            parsed_params["geometry_type"],
-            parsed_params["geometry_dimensions"],
-            FlowContext(**parsed_params["flow_context"]),
-            parsed_params.get("reynolds_number")
-        )
         
         # Extract geometry information with flow context
         geometry_info = {
             "type": parsed_params["geometry_type"],
             "dimensions": parsed_params["geometry_dimensions"],
             "mesh_resolution": parsed_params.get("mesh_resolution", "medium"),
-            "flow_context": parsed_params["flow_context"]
+            "flow_context": parsed_params["flow_context"],
+            "is_custom_geometry": parsed_params.get("is_custom_geometry", False),
+            "stl_file": state.get("stl_file")  # Pass STL file path to geometry info
         }
         
         # Log results if verbose
@@ -522,6 +620,7 @@ Return valid JSON that matches the schema exactly.
             logger.info(f"NL Interpreter: Flow context: {parsed_params['flow_context']}")
             logger.info(f"NL Interpreter: Flow type: {parsed_params['flow_type']}")
             logger.info(f"NL Interpreter: Analysis type: {parsed_params['analysis_type']}")
+            logger.info(f"NL Interpreter: Custom geometry: {parsed_params.get('is_custom_geometry', False)}")
         
         # Calculate Reynolds number if not provided
         if not parsed_params.get("reynolds_number") and parsed_params.get("velocity"):
@@ -545,6 +644,13 @@ Return valid JSON that matches the schema exactly.
         for key, value in boundary_conditions.items():
             if key not in parsed_params or parsed_params[key] is None:
                 parsed_params[key] = value
+        
+        # Detect rotation request from prompt
+        rotation_info = detect_rotation_request(state["user_prompt"])
+        if rotation_info["rotate"]:
+            parsed_params["rotation_info"] = rotation_info
+            if state["verbose"]:
+                logger.info(f"NL Interpreter: Detected rotation request: {rotation_info}")
         
         return {
             **state,

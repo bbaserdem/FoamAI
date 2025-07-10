@@ -95,6 +95,9 @@ def display_configuration_summary(state: CFDState) -> None:
     # Display mesh information
     display_mesh_info(state)
     
+    # Display STL rotation if applicable
+    display_stl_rotation_info(state)
+    
     # Display boundary conditions
     display_boundary_conditions(state)
     
@@ -191,6 +194,53 @@ def display_mesh_info(state: CFDState) -> None:
         console.print(table)
     else:
         console.print("[yellow]⚠️  No mesh configuration available[/yellow]")
+
+
+def display_stl_rotation_info(state: CFDState) -> None:
+    """Display STL rotation information if applicable."""
+    geometry_info = state.get("geometry_info", {})
+    parsed_params = state.get("parsed_parameters", {})
+    mesh_config = state.get("mesh_config", {})
+    
+    # Check if this is an STL file
+    if not geometry_info.get("is_custom_geometry") or not geometry_info.get("stl_file"):
+        return
+    
+    # Get rotation info from either parsed parameters or mesh config
+    rotation_info = parsed_params.get("rotation_info", {}) or mesh_config.get("rotation_info", {})
+    
+    table = Table(title="🔄 STL Geometry Rotation", show_header=True, header_style="bold cyan")
+    table.add_column("Parameter", style="cyan")
+    table.add_column("Value", style="green")
+    
+    # Display STL file
+    stl_file = geometry_info.get("stl_file", "Unknown")
+    table.add_row("STL File", str(stl_file))
+    
+    # Display rotation status
+    if rotation_info.get("rotate", False):
+        angle = rotation_info.get("rotation_angle", 0)
+        axis = rotation_info.get("rotation_axis", "z")
+        table.add_row("Rotation Angle", f"{angle}°")
+        table.add_row("Rotation Axis", axis.upper())
+        table.add_row("Rotation Center", "Origin (0, 0, 0)")
+    else:
+        table.add_row("Rotation", "No rotation applied")
+        table.add_row("", "[dim]Tip: Add 'rotate 90 degrees' to your prompt[/dim]")
+    
+    console.print(table)
+    
+    # Add warning about orientation
+    console.print(
+        Panel(
+            "[yellow]⚠️  STL Orientation Check[/yellow]\n\n"
+            "Please verify that your geometry is oriented correctly:\n"
+            "• The inlet (red wall in ParaView) should face the front of your object\n"
+            "• For vehicles, the front should face the inlet for proper aerodynamic simulation\n"
+            "• Use rotation to adjust orientation if needed (e.g., 'rotate 90 degrees')",
+            border_style="yellow"
+        )
+    )
 
 
 def display_boundary_conditions(state: CFDState) -> None:
@@ -352,7 +402,8 @@ def get_change_requests() -> str:
             "• Solver selection (e.g., 'use transient solver instead')\n"
             "• Mesh resolution (e.g., 'make mesh finer')\n"
             "• Boundary conditions (e.g., 'increase inlet velocity')\n"
-            "• Simulation parameters (e.g., 'run for longer time')\n\n"
+            "• Simulation parameters (e.g., 'run for longer time')\n"
+            "• STL rotation (e.g., 'rotate 90 degrees around z-axis')\n\n"
             "Be as specific as possible about what you want to change.",
             title="Change Requests",
             border_style="blue"

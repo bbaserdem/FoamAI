@@ -60,16 +60,22 @@ class ProcessValidator:
         Validate a single pvserver record.
         
         Args:
-            record: Dictionary containing 'pvserver_pid' and 'pvserver_port'.
+            record: Dictionary containing pvserver info. Supports both formats:
+                    - Task-based: 'pvserver_pid' and 'pvserver_port'
+                    - Project-based: 'pid' and 'port'
             
         Returns:
             bool: True if process is valid/running, False if dead.
         """
-        if not record or not record.get('pvserver_pid') or not record.get('pvserver_port'):
+        if not record:
             return False
             
-        pid = record['pvserver_pid']
-        port = record['pvserver_port']
+        # Support both task-based and project-based field names
+        pid = record.get('pvserver_pid') or record.get('pid')
+        port = record.get('pvserver_port') or record.get('port')
+        
+        if not pid or not port:
+            return False
         
         return validate_pvserver_pid(pid, port)
 

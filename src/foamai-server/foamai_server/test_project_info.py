@@ -11,9 +11,10 @@ import json
 from pathlib import Path
 import tempfile
 import os
+from config import EC2_HOST, API_PORT
 
 # Test configuration - EC2 server
-SERVER_URL = "http://3.139.77.134:8000"
+SERVER_URL = f"http://{EC2_HOST}:{API_PORT}"
 TEST_PROJECT_NAME = "test_project_info"
 
 def test_project_info_functionality():

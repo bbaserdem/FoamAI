@@ -263,9 +263,13 @@ def get_project_pvserver_info(project_name: str) -> Optional[Dict]:
             # Validate the process is still running
             if not validator.is_running(record_dict):
                 set_project_pvserver_stopped(project_name, "Process died (detected during info lookup)")
-                record_dict = dict(get_project_pvserver_info(project_name))  # Refresh data
+                # Refresh data after marking as stopped
+                updated_record = execute_query(query, (project_name,), fetch_one=True)
+                if updated_record:
+                    record_dict = dict(updated_record)
         
-        if record_dict and record_dict.get('status') == 'running':
+        # Add connection string only if status is running
+        if record_dict.get('status') == 'running':
             record_dict['connection_string'] = f"localhost:{record_dict['port']}"
         
         return record_dict

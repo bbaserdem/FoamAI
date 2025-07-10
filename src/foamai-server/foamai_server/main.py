@@ -362,6 +362,9 @@ async def start_project_pvserver(project_name: str, request: ProjectPVServerStar
     # Get the stored record to return complete info
     pvserver_info = get_project_pvserver_info(project_name)
     
+    if not pvserver_info:
+        raise ProjectPVServerError(f"Failed to retrieve pvserver info for project '{project_name}' after creation")
+    
     return ProjectPVServerResponse(
         project_name=project_name,
         port=pvserver_info['port'],
@@ -370,7 +373,7 @@ async def start_project_pvserver(project_name: str, request: ProjectPVServerStar
         status=pvserver_info['status'],
         started_at=pvserver_info['started_at'],
         last_activity=pvserver_info['last_activity'],
-        connection_string=pvserver_info['connection_string'],
+        connection_string=pvserver_info.get('connection_string', f"localhost:{pvserver_info['port']}"),
         message=f"PVServer started successfully for project '{project_name}'"
     )
 

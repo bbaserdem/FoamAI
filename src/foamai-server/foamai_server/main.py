@@ -108,10 +108,10 @@ async def get_project_list():
 async def upload_file(
     project_name: str,
     file: UploadFile = File(..., description="The file to upload"),
-    destination_path: str = Form(..., description="Relative path within the project where the file should be saved")
+    destination_path: str = Form(..., description="Relative path within the project's active_run directory where the file should be saved")
 ):
     """
-    Upload a file to a specific project at the given path.
+    Upload a file to a specific project's active_run directory at the given path.
     
     Creates directories as needed and allows overwriting existing files.
     Maximum file size is 300MB.
@@ -132,8 +132,9 @@ async def upload_file(
                 detail=f"File size ({file_size} bytes) exceeds maximum allowed size ({MAX_FILE_SIZE} bytes)"
             )
         
-        # Construct the full file path
-        file_path = project_root / destination_path
+        # Construct the full file path within the active_run directory
+        active_run_root = project_root / "active_run"
+        file_path = active_run_root / destination_path
         absolute_path = file_path.resolve()
         
         # Check if file already exists
@@ -147,7 +148,12 @@ async def upload_file(
             dirs_to_create = []
             
             while not current_path.exists() and current_path != project_root:
-                dirs_to_create.append(str(current_path.relative_to(project_root)))
+                # Show path relative to active_run for cleaner output
+                if current_path == active_run_root:
+                    dirs_to_create.append("active_run")
+                else:
+                    relative_path = current_path.relative_to(active_run_root)
+                    dirs_to_create.append(f"active_run/{relative_path}")
                 current_path = current_path.parent
             
             # Create the directories
@@ -161,12 +167,12 @@ async def upload_file(
         return FileUploadResponse(
             status="success",
             project_name=project_name,
-            file_path=destination_path,
+            file_path=f"active_run/{destination_path}",
             absolute_path=str(absolute_path),
             file_size=file_size,
             created_directories=created_directories,
             overwritten=file_existed,
-            message=f"File uploaded successfully to {destination_path}"
+            message=f"File uploaded successfully to active_run/{destination_path}"
         )
         
     except HTTPException:

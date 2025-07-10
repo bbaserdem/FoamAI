@@ -46,19 +46,49 @@ def test_process_validation():
     """Test the process validation logic"""
     try:
         # Import from current directory
-        from process_validator import validator
+        from process_validator import validator, validate_pvserver_pid
+        import psutil
         
         print("\n=== Testing Process Validation ===")
         
         # Test with current python process (should be running)
         current_pid = os.getpid()
-        test_record = {'pid': current_pid, 'pvserver_pid': current_pid}
+        test_record = {'pid': current_pid, 'port': 11111}
+        
+        # Check what the current process looks like
+        try:
+            current_process = psutil.Process(current_pid)
+            print(f"Current process name: '{current_process.name()}'")
+            print(f"Current process cmdline: {current_process.cmdline()}")
+        except Exception as e:
+            print(f"Error getting current process info: {e}")
         
         is_running = validator.is_running(test_record)
         print(f"Current Python process (PID {current_pid}): {'RUNNING' if is_running else 'NOT RUNNING'}")
         
+        # Test the actual pvserver PIDs from database
+        print("\n=== Testing Actual PVServer PIDs ===")
+        from database import get_all_project_pvservers
+        project_pvservers = get_all_project_pvservers()
+        
+        for pv in project_pvservers:
+            pid = pv.get('pid')
+            if pid:
+                try:
+                    if psutil.pid_exists(pid):
+                        process = psutil.Process(pid)
+                        print(f"PID {pid}: name='{process.name()}', cmdline={process.cmdline()}")
+                        
+                        # Test validation
+                        is_valid = validate_pvserver_pid(pid, pv.get('port'))
+                        print(f"  -> Validation result: {'VALID' if is_valid else 'INVALID'}")
+                    else:
+                        print(f"PID {pid}: DOES NOT EXIST")
+                except Exception as e:
+                    print(f"PID {pid}: Error - {e}")
+        
         # Test with a non-existent PID
-        fake_record = {'pid': 99999, 'pvserver_pid': 99999}
+        fake_record = {'pid': 99999, 'port': 11111}
         is_running = validator.is_running(fake_record)
         print(f"Fake process (PID 99999): {'RUNNING' if is_running else 'NOT RUNNING'}")
         

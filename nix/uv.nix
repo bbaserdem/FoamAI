@@ -96,6 +96,7 @@
       pyproject-build-systems.overlays.default
       overlay
       pyprojectOverrides
+      (import ./pysideOverride.nix {inherit pkgs;})
     ]
   );
 }

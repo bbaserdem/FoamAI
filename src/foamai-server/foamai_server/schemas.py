@@ -161,6 +161,29 @@ class ValidationErrorResponse(BaseModel):
     timestamp: datetime
 
 # =============================================================================
+# COMMAND EXECUTION SCHEMAS
+# =============================================================================
+
+class CommandRequest(BaseModel):
+    """Request to execute a command in a project directory"""
+    command: str = Field(..., description="Command to execute (e.g., 'blockMesh')")
+    args: Optional[List[str]] = Field(None, description="List of command arguments")
+    environment: Optional[Dict[str, str]] = Field(None, description="Additional environment variables")
+    working_directory: str = Field("active_run", description="Working directory within project (default: active_run)")
+    timeout: Optional[int] = Field(None, description="Timeout in seconds (default: 300)")
+
+class CommandResponse(BaseModel):
+    """Response from command execution"""
+    success: bool = Field(..., description="Whether the command executed successfully")
+    exit_code: int = Field(..., description="Exit code of the command")
+    stdout: str = Field(..., description="Standard output from the command")
+    stderr: str = Field(..., description="Standard error from the command")
+    execution_time: float = Field(..., description="Execution time in seconds")
+    command: str = Field(..., description="Full command that was executed")
+    working_directory: str = Field(..., description="Directory where command was executed")
+    timestamp: str = Field(..., description="ISO timestamp of execution")
+
+# =============================================================================
 # SYSTEM SCHEMAS
 # =============================================================================
 

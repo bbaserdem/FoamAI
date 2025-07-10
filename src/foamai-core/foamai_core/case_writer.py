@@ -103,6 +103,11 @@ def write_mesh_files(case_directory: Path, state: CFDState) -> None:
         # For snappyHexMesh, we need to:
         # 1. Write a background blockMeshDict
         # 2. Write snappyHexMeshDict
+        # 3. Copy STL files if custom geometry is used
+        
+        # Handle STL file copying for custom geometry
+        if mesh_config.get("is_custom_geometry") and mesh_config.get("stl_file"):
+            copy_stl_file_to_case(case_directory, mesh_config, state)
         
         # Write background mesh
         background_mesh = mesh_config.get("background_mesh", {})
@@ -113,8 +118,16 @@ def write_mesh_files(case_directory: Path, state: CFDState) -> None:
         snappy_dict = generate_snappyhexmesh_dict(mesh_config, state)
         write_foam_dict(case_directory / "system" / "snappyHexMeshDict", snappy_dict)
         
+        # For STL files, also generate surface feature extraction dict
+        if mesh_config.get("is_custom_geometry") and mesh_config.get("stl_file"):
+            surface_feature_dict = generate_surface_feature_extract_dict(mesh_config)
+            write_foam_dict(case_directory / "system" / "surfaceFeatureExtractDict", surface_feature_dict)
+        
         if state["verbose"]:
             logger.info("Case Writer: Wrote blockMeshDict (background) and snappyHexMeshDict")
+            if mesh_config.get("stl_file"):
+                logger.info(f"Case Writer: Copied STL file for custom geometry")
+                logger.info(f"Case Writer: Wrote surfaceFeatureExtractDict for STL processing")
     else:
         # Original blockMesh approach
         blockmesh_dict = generate_blockmesh_dict(mesh_config, state)
@@ -141,6 +154,331 @@ def write_mesh_files(case_directory: Path, state: CFDState) -> None:
         
         if state["verbose"]:
             logger.info("Case Writer: Wrote blockMeshDict")
+
+
+def generate_surface_feature_extract_dict(mesh_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate surfaceFeatureExtractDict for STL surface feature extraction."""
+    stl_name = mesh_config.get("stl_name", "stl_surface")
+    stl_file_path = mesh_config.get("stl_file_case_path", "constant/triSurface/geometry.stl")
+    
+    # Clean the file path
+    stl_file_path = stl_file_path.replace("\\", "/").lstrip("/")
+    
+    surface_dict = {
+        stl_name: {
+            "extractionMethod": "extractFromSurface",
+            "extractFromSurfaceCoeffs": {
+                "includedAngle": 150  # Degrees - features with angles greater than this will be extracted
+            },
+            "subsetFeatures": {
+                "nonManifoldEdges": "yes",
+                "openEdges": "yes"
+            },
+            "writeFeatureEdgeMesh": "yes"
+        }
+    }
+    
+    return surface_dict
+
+
+def copy_stl_file_to_case(case_directory: Path, mesh_config: Dict[str, Any], state: CFDState) -> None:
+    """Copy STL file to the case directory for snappyHexMesh."""
+    import shutil
+    import subprocess
+    
+    stl_file = mesh_config.get("stl_file")
+    if not stl_file:
+        return
+    
+    stl_source = Path(stl_file)
+    if not stl_source.exists():
+        logger.error(f"STL file not found: {stl_file}")
+        return
+    
+    # Validate STL file
+    if not validate_stl_file(stl_source):
+        logger.warning(f"STL file validation failed for {stl_file}. Proceeding anyway, but mesh generation might fail.")
+    
+    # Create constant/triSurface directory for STL files
+    trisurface_dir = case_directory / "constant" / "triSurface"
+    trisurface_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Copy STL file to triSurface directory
+    stl_dest = trisurface_dir / stl_source.name
+    shutil.copy2(stl_source, stl_dest)
+    
+    # Apply rotation if requested
+    rotation_info = mesh_config.get("rotation_info", {})
+    if rotation_info.get("rotate", False):
+        apply_stl_rotation(case_directory, stl_dest, rotation_info, state)
+    
+    # Update mesh config with the new path
+    mesh_config["stl_file_case_path"] = f"constant/triSurface/{stl_source.name}"
+    
+    if state["verbose"]:
+        logger.info(f"Copied STL file from {stl_source} to {stl_dest}")
+
+
+def calculate_stl_center(stl_path: Path) -> list:
+    """Calculate the center of an STL file."""
+    import struct
+    import numpy as np
+    
+    vertices = []
+    
+    with open(stl_path, 'rb') as f:
+        header = f.read(80)
+        
+    if header.startswith(b'solid'):
+        # ASCII STL
+        with open(stl_path, 'r') as f:
+            for line in f:
+                if line.strip().startswith('vertex'):
+                    parts = line.split()
+                    x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
+                    vertices.append([x, y, z])
+    else:
+        # Binary STL  
+        with open(stl_path, 'rb') as f:
+            f.read(80)  # Skip header
+            num_triangles = struct.unpack('<I', f.read(4))[0]
+            
+            for _ in range(num_triangles):
+                data = struct.unpack('<12fH', f.read(50))
+                # Extract vertices (skip normal)
+                vertices.extend([data[3:6], data[6:9], data[9:12]])
+    
+    vertices = np.array(vertices)
+    center = vertices.mean(axis=0).tolist()
+    return center
+
+
+def apply_stl_rotation(case_directory: Path, stl_path: Path, rotation_info: Dict[str, Any], state: CFDState) -> None:
+    """Apply rotation to STL file by modifying vertices directly."""
+    import math
+    import struct
+    import numpy as np
+    
+    angle_deg = rotation_info.get("rotation_angle", 0)
+    axis = rotation_info.get("rotation_axis", "z").lower()
+    center = rotation_info.get("rotation_center", None)
+    
+    if angle_deg == 0:
+        return
+    
+    # Calculate STL center if not specified
+    if center is None:
+        logger.info("Calculating STL center for rotation...")
+        center = calculate_stl_center(stl_path)
+        logger.info(f"Using STL center: {center}")
+    
+    logger.info(f"Applying rotation: {angle_deg}° around {axis}-axis at center {center}")
+    
+    # Convert angle to radians
+    angle_rad = math.radians(angle_deg)
+    cos_angle = math.cos(angle_rad)
+    sin_angle = math.sin(angle_rad)
+    
+    # Create rotation matrix based on axis
+    if axis == "x":
+        rotation_matrix = np.array([
+            [1, 0, 0],
+            [0, cos_angle, -sin_angle],
+            [0, sin_angle, cos_angle]
+        ])
+    elif axis == "y":
+        rotation_matrix = np.array([
+            [cos_angle, 0, sin_angle],
+            [0, 1, 0],
+            [-sin_angle, 0, cos_angle]
+        ])
+    else:  # z axis (default)
+        rotation_matrix = np.array([
+            [cos_angle, -sin_angle, 0],
+            [sin_angle, cos_angle, 0],
+            [0, 0, 1]
+        ])
+    
+    # Read and rotate STL file
+    rotated_path = stl_path.parent / (stl_path.stem + "_rotated" + stl_path.suffix)
+    
+    try:
+        # Check if it's ASCII or binary STL
+        with open(stl_path, 'rb') as f:
+            header = f.read(80)
+            
+        if header.startswith(b'solid'):
+            # ASCII STL
+            rotate_ascii_stl(stl_path, rotated_path, rotation_matrix, center)
+        else:
+            # Binary STL
+            rotate_binary_stl(stl_path, rotated_path, rotation_matrix, center)
+        
+        # Replace original with rotated version
+        stl_path.unlink()
+        rotated_path.rename(stl_path)
+        
+        if state["verbose"]:
+            logger.info(f"Successfully rotated STL file: {angle_deg}° around {axis}-axis")
+        
+    except Exception as e:
+        logger.error(f"Failed to rotate STL file: {e}")
+        logger.warning("Proceeding without rotation")
+        if rotated_path.exists():
+            rotated_path.unlink()
+
+
+def rotate_ascii_stl(input_path: Path, output_path: Path, rotation_matrix, center: list) -> None:
+    """Rotate an ASCII STL file."""
+    import numpy as np
+    
+    center_vec = np.array(center)
+    
+    with open(input_path, 'r') as infile, open(output_path, 'w') as outfile:
+        for line in infile:
+            line = line.strip()
+            
+            if line.startswith('vertex'):
+                # Parse vertex coordinates
+                parts = line.split()
+                x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
+                vertex = np.array([x, y, z])
+                
+                # Translate to origin, rotate, translate back
+                vertex = vertex - center_vec
+                vertex = rotation_matrix @ vertex
+                vertex = vertex + center_vec
+                
+                # Write rotated vertex
+                outfile.write(f"      vertex {vertex[0]:.6e} {vertex[1]:.6e} {vertex[2]:.6e}\n")
+                
+            elif line.startswith('facet normal'):
+                # Parse normal vector
+                parts = line.split()
+                nx, ny, nz = float(parts[2]), float(parts[3]), float(parts[4])
+                normal = np.array([nx, ny, nz])
+                
+                # Rotate normal (no translation needed for normals)
+                normal = rotation_matrix @ normal
+                
+                # Normalize to ensure unit vector
+                normal = normal / np.linalg.norm(normal)
+                
+                # Write rotated normal
+                outfile.write(f"  facet normal {normal[0]:.6e} {normal[1]:.6e} {normal[2]:.6e}\n")
+                
+            else:
+                # Copy other lines as-is
+                outfile.write(line + '\n')
+
+
+def rotate_binary_stl(input_path: Path, output_path: Path, rotation_matrix, center: list) -> None:
+    """Rotate a binary STL file."""
+    import struct
+    import numpy as np
+    
+    center_vec = np.array(center)
+    
+    with open(input_path, 'rb') as infile:
+        # Read header
+        header = infile.read(80)
+        
+        # Read number of triangles
+        num_triangles = struct.unpack('<I', infile.read(4))[0]
+        
+        with open(output_path, 'wb') as outfile:
+            # Write header
+            outfile.write(header)
+            
+            # Write number of triangles
+            outfile.write(struct.pack('<I', num_triangles))
+            
+            # Process each triangle
+            for _ in range(num_triangles):
+                # Read normal and vertices
+                data = struct.unpack('<12fH', infile.read(50))
+                
+                # Extract normal
+                normal = np.array(data[0:3])
+                
+                # Extract vertices
+                v1 = np.array(data[3:6])
+                v2 = np.array(data[6:9])
+                v3 = np.array(data[9:12])
+                
+                # Extract attribute byte count
+                attr = data[12]
+                
+                # Rotate normal
+                normal = rotation_matrix @ normal
+                normal = normal / np.linalg.norm(normal)  # Normalize
+                
+                # Rotate vertices (translate to origin, rotate, translate back)
+                v1 = rotation_matrix @ (v1 - center_vec) + center_vec
+                v2 = rotation_matrix @ (v2 - center_vec) + center_vec
+                v3 = rotation_matrix @ (v3 - center_vec) + center_vec
+                
+                # Pack and write rotated data
+                rotated_data = struct.pack('<12fH',
+                    normal[0], normal[1], normal[2],
+                    v1[0], v1[1], v1[2],
+                    v2[0], v2[1], v2[2],
+                    v3[0], v3[1], v3[2],
+                    attr
+                )
+                outfile.write(rotated_data)
+
+
+def validate_stl_file(stl_path: Path) -> bool:
+    """Validate STL file for basic structural integrity."""
+    try:
+        # Check file size (should be reasonable)
+        file_size = stl_path.stat().st_size
+        if file_size == 0:
+            logger.error(f"STL file is empty: {stl_path}")
+            return False
+        
+        if file_size > 500_000_000:  # 500MB limit
+            logger.warning(f"STL file is very large ({file_size/1024/1024:.1f}MB): {stl_path}")
+        
+        # Check if it's ASCII or binary STL
+        with open(stl_path, 'rb') as f:
+            header = f.read(80)
+            
+            # Check for ASCII STL (starts with "solid")
+            if header.startswith(b'solid'):
+                # ASCII STL - basic validation
+                with open(stl_path, 'r', encoding='utf-8', errors='ignore') as f_text:
+                    content = f_text.read(1000)  # Read first 1000 characters
+                    
+                    # Check for required keywords
+                    if 'solid' not in content or 'facet' not in content or 'normal' not in content:
+                        logger.error(f"ASCII STL file missing required keywords: {stl_path}")
+                        return False
+                    
+                    return True
+            else:
+                # Binary STL - check header structure
+                f.seek(80)  # Skip header
+                triangle_count_bytes = f.read(4)
+                if len(triangle_count_bytes) != 4:
+                    logger.error(f"Binary STL file has invalid triangle count: {stl_path}")
+                    return False
+                
+                triangle_count = int.from_bytes(triangle_count_bytes, byteorder='little')
+                
+                if triangle_count == 0:
+                    logger.error(f"Binary STL file has zero triangles: {stl_path}")
+                    return False
+                
+                if triangle_count > 10_000_000:  # 10 million triangles
+                    logger.warning(f"Binary STL file has very many triangles ({triangle_count:,}): {stl_path}")
+                
+                return True
+    
+    except Exception as e:
+        logger.error(f"Error validating STL file {stl_path}: {e}")
+        return False
 
 
 def generate_blockmesh_dict(mesh_config: Dict[str, Any], state: CFDState) -> Dict[str, Any]:
@@ -1151,8 +1489,56 @@ def generate_allrun_script(state: CFDState) -> str:
     """Generate Allrun script for the case."""
     solver = state["solver_settings"]["solver"]
     mesh_config = state["mesh_config"]
+    mesh_type = mesh_config.get("type", "blockMesh")
     
-    script = f"""#!/bin/sh
+    if mesh_type == "snappyHexMesh":
+        # For snappyHexMesh cases (including STL files)
+        has_stl = mesh_config.get("is_custom_geometry", False) and state.get("stl_file")
+        
+        script = f"""#!/bin/sh
+cd "${{0%/*}}" || exit                                # Run from this directory
+. ${{WM_PROJECT_DIR:?}}/bin/tools/RunFunctions        # Tutorial run functions
+#------------------------------------------------------------------------------
+
+echo "Running {solver} case with snappyHexMesh"
+
+# Generate background mesh
+echo "Generating background mesh..."
+runApplication blockMesh
+
+# Check background mesh quality
+echo "Checking background mesh..."
+runApplication checkMesh
+
+"""
+        
+        # Add surface feature extraction for STL files
+        if has_stl:
+            script += """# Extract surface features from STL geometry
+echo "Extracting surface features from STL geometry..."
+runApplication surfaceFeatureExtract
+
+"""
+        
+        script += f"""# Run snappyHexMesh for mesh refinement
+echo "Running snappyHexMesh for mesh refinement..."
+runApplication snappyHexMesh -overwrite
+
+# Check final mesh quality
+echo "Checking final mesh..."
+runApplication checkMesh
+
+# Run solver
+echo "Running solver {solver}..."
+runApplication {solver}
+
+echo "Case completed successfully"
+
+#------------------------------------------------------------------------------
+"""
+    else:
+        # Original blockMesh approach
+        script = f"""#!/bin/sh
 cd "${{0%/*}}" || exit                                # Run from this directory
 . ${{WM_PROJECT_DIR:?}}/bin/tools/RunFunctions        # Tutorial run functions
 #------------------------------------------------------------------------------
@@ -1570,41 +1956,62 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
     geometry = mesh_config.get("geometry", {})
     snappy_settings = mesh_config.get("snappy_settings", {})
     dimensions = mesh_config.get("dimensions", {})
+    is_custom_geometry = mesh_config.get("is_custom_geometry", False)
     
     # Build geometry section
     geometry_dict = {}
-    for geom_name, geom_data in geometry.items():
-        if geom_data["type"] == "cylinder":
-            geometry_dict[geom_name] = {
-                "type": "searchableCylinder",
-                "point1": geom_data["point1"],
-                "point2": geom_data["point2"],
-                "radius": geom_data["radius"]
-            }
-        elif geom_data["type"] == "sphere":
-            geometry_dict[geom_name] = {
-                "type": "searchableSphere",
-                "centre": geom_data["center"],
-                "radius": geom_data["radius"]
-            }
-        elif geom_data["type"] == "cube":
-            geometry_dict[geom_name] = {
-                "type": "searchableBox",
-                "min": geom_data["min"],
-                "max": geom_data["max"]
-            }
-        elif geom_data["type"] == "airfoil":
-            # Airfoils typically need STL files or custom geometry
-            # For now, use a simple box approximation
-            geometry_dict[geom_name] = {
-                "type": "searchableBox",
-                "min": [geom_data["center"][0] - geom_data["chord"]/2, 
-                       geom_data["center"][1] - geom_data["thickness"]/2,
-                       geom_data["center"][2] - geom_data["span"]/2],
-                "max": [geom_data["center"][0] + geom_data["chord"]/2, 
-                       geom_data["center"][1] + geom_data["thickness"]/2,
-                       geom_data["center"][2] + geom_data["span"]/2]
-            }
+    
+    # Handle STL files for custom geometry
+    if is_custom_geometry and mesh_config.get("stl_file_case_path"):
+        # Use the STL file name as the geometry name
+        stl_name = mesh_config.get("stl_name", "stl_surface")
+        # Ensure the file path is in the correct OpenFOAM format
+        stl_file_path = mesh_config.get("stl_file_case_path", "constant/triSurface/geometry.stl")
+        # Remove any leading path separators and use forward slashes
+        stl_file_path = stl_file_path.replace("\\", "/").lstrip("/")
+        
+        # Use just the filename - OpenFOAM will look in triSurface by default
+        from pathlib import Path
+        stl_filename = Path(stl_file_path).name
+        
+        geometry_dict[stl_name] = {
+            "type": "triSurfaceMesh",
+            "file": f'"{stl_filename}"'  # Use just the filename
+        }
+    else:
+        # Handle built-in geometry types
+        for geom_name, geom_data in geometry.items():
+            if geom_data["type"] == "cylinder":
+                geometry_dict[geom_name] = {
+                    "type": "searchableCylinder",
+                    "point1": geom_data["point1"],
+                    "point2": geom_data["point2"],
+                    "radius": geom_data["radius"]
+                }
+            elif geom_data["type"] == "sphere":
+                geometry_dict[geom_name] = {
+                    "type": "searchableSphere",
+                    "centre": geom_data["center"],
+                    "radius": geom_data["radius"]
+                }
+            elif geom_data["type"] == "cube":
+                geometry_dict[geom_name] = {
+                    "type": "searchableBox",
+                    "min": geom_data["min"],
+                    "max": geom_data["max"]
+                }
+            elif geom_data["type"] == "airfoil":
+                # Airfoils typically need STL files or custom geometry
+                # For now, use a simple box approximation
+                geometry_dict[geom_name] = {
+                    "type": "searchableBox",
+                    "min": [geom_data["center"][0] - geom_data["chord"]/2, 
+                           geom_data["center"][1] - geom_data["thickness"]/2,
+                           geom_data["center"][2] - geom_data["span"]/2],
+                    "max": [geom_data["center"][0] + geom_data["chord"]/2, 
+                           geom_data["center"][1] + geom_data["thickness"]/2,
+                           geom_data["center"][2] + geom_data["span"]/2]
+                }
     
     # Refinement region
     refinement_region = snappy_settings.get("refinement_region", {})
@@ -1612,11 +2019,12 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
     # Build refinement surfaces and layers based on geometry names
     refinement_surfaces = {}
     layers_dict = {}
+    
     for geom_name in geometry_dict.keys():
         refinement_surfaces[geom_name] = {
             "level": [
-                snappy_settings.get("refinement_levels", {}).get("min", 1),
-                snappy_settings.get("refinement_levels", {}).get("max", 3)
+                snappy_settings.get("refinement_levels", {}).get("min", 0),
+                snappy_settings.get("refinement_levels", {}).get("max", 2)
             ],
             "patchInfo": {
                 "type": "wall"
@@ -1625,14 +2033,41 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
         # Add layers if enabled
         if snappy_settings.get("add_layers", False):
             layers_dict[geom_name] = {
-                "nSurfaceLayers": snappy_settings.get("layers", {}).get("n_layers", 5)
+                "nSurfaceLayers": snappy_settings.get("layers", {}).get("n_layers", 3)
             }
+    
+    # Generate location in mesh - for custom geometry, use the specified location
+    if is_custom_geometry:
+        location_in_mesh = snappy_settings.get("location_in_mesh", [0.05, 0.5, 0.5])
+    else:
+        location_in_mesh = generate_location_in_mesh(mesh_config, dimensions)
+    
+    # Get mesh quality controls - use improved settings for STL files
+    mesh_quality = snappy_settings.get("mesh_quality", {})
+    if not mesh_quality:
+        # Default quality controls
+        mesh_quality = {
+            "maxNonOrtho": 65,
+            "maxBoundarySkewness": 20,
+            "maxInternalSkewness": 4,
+            "maxConcave": 80,
+            "minVol": 1e-13,
+            "minTetQuality": 1e-30,
+            "minArea": -1,
+            "minTwist": 0.02,
+            "minDeterminant": 0.001,
+            "minFaceWeight": 0.02,
+            "minVolRatio": 0.01,
+            "minTriangleTwist": -1,
+            "nSmoothScale": 4,
+            "errorReduction": 0.75
+        }
     
     # Build the snappyHexMeshDict
     snappy_dict = {
         "castellatedMesh": snappy_settings.get("castellated_mesh", True),
         "snap": snappy_settings.get("snap", True),
-        "addLayers": snappy_settings.get("add_layers", True),
+        "addLayers": snappy_settings.get("add_layers", False),
         "geometry": geometry_dict,
         "castellatedMeshControls": {
             "maxLocalCells": 1000000,
@@ -1643,21 +2078,16 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
             "features": [],  # Can add feature edge refinement here
             "refinementSurfaces": refinement_surfaces,
             "resolveFeatureAngle": 30,
-            "refinementRegions": {
-                "refinementBox": {
-                    "mode": "inside",
-                    "levels": [(1e15, snappy_settings.get("refinement_levels", {}).get("max", 3) - 1)]
-                }
-            },
-            "locationInMesh": generate_location_in_mesh(mesh_config, dimensions),
+            "refinementRegions": {},
+            "locationInMesh": location_in_mesh,
             "allowFreeStandingZoneFaces": True
         },
         "snapControls": {
             "nSmoothPatch": 3,
-            "tolerance": 2.0,
-            "nSolveIter": 30,
-            "nRelaxIter": 5,
-            "nFeatureSnapIter": 10,
+            "tolerance": 4.0,  # Increased tolerance for complex geometries
+            "nSolveIter": 100,  # More iterations for better convergence
+            "nRelaxIter": 8,    # More relaxation iterations
+            "nFeatureSnapIter": 15,  # More feature snapping iterations
             "implicitFeatureSnap": False,
             "explicitFeatureSnap": True,
             "multiRegionFeatureSnap": False
@@ -1681,22 +2111,7 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
             "nBufferCellsNoExtrude": 0,
             "nLayerIter": 50
         },
-        "meshQualityControls": {
-            "maxNonOrtho": 65,
-            "maxBoundarySkewness": 20,
-            "maxInternalSkewness": 4,
-            "maxConcave": 80,
-            "minVol": 1e-13,
-            "minTetQuality": 1e-30,
-            "minArea": -1,
-            "minTwist": 0.02,
-            "minDeterminant": 0.001,
-            "minFaceWeight": 0.02,
-            "minVolRatio": 0.01,
-            "minTriangleTwist": -1,
-            "nSmoothScale": 4,
-            "errorReduction": 0.75
-        },
+        "meshQualityControls": mesh_quality,  # Use the improved quality controls
         "writeFlags": [],
         "mergeTolerance": 1e-6
     }
@@ -1708,5 +2123,11 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
             "min": refinement_region["min"],
             "max": refinement_region["max"]
         }
+        
+        # Add refinement region to controls
+        snappy_dict["castellatedMeshControls"]["refinementRegions"]["refinementBox"] = {
+            "mode": "inside",
+            "levels": [(1e15, snappy_settings.get("refinement_levels", {}).get("max", 2) - 1)]
+        }
     
-    return snappy_dict 
+    return snappy_dict

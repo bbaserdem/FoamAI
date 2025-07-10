@@ -15,6 +15,8 @@ class CFDStep(str, Enum):
     USER_APPROVAL = "user_approval"
     SIMULATION = "simulation"
     VISUALIZATION = "visualization"
+    RESULTS_REVIEW = "results_review"
+    ERROR_HANDLER = "error_handler"
     COMPLETE = "complete"
     ERROR = "error"
 
@@ -61,6 +63,7 @@ class CFDState(TypedDict):
     
     # User input
     user_prompt: str
+    stl_file: Optional[str]  # Path to STL file for custom geometry
     
     # Parsed parameters from NL interpretation
     parsed_parameters: Dict[str, Any]
@@ -100,4 +103,11 @@ class CFDState(TypedDict):
     # Configuration
     verbose: bool
     export_images: bool
-    output_format: str 
+    output_format: str
+    force_validation: bool
+    
+    # Iterative workflow and conversation context
+    session_history: List[Dict[str, Any]]  # History of all runs in this session
+    current_iteration: int  # Current iteration number (0-based)
+    conversation_active: bool  # Whether to continue the conversation or exit
+    previous_results: Optional[Dict[str, Any]]  # Results from previous iteration for comparison 

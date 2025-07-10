@@ -670,8 +670,9 @@ def get_ai_solver_recommendation(
         return SolverType.SIMPLE_FOAM
     
     # Priority 4: Low Reynolds number without vortex shedding
-    if not features['expects_vortex_shedding'] and features.get('reynolds_number', 0) < 100:
-        logger.info(f"AI Decision: Low Re={features.get('reynolds_number', 0)} without vortex shedding → simpleFoam")
+    reynolds_number = features.get('reynolds_number', 0)
+    if not features['expects_vortex_shedding'] and reynolds_number is not None and reynolds_number < 100:
+        logger.info(f"AI Decision: Low Re={reynolds_number} without vortex shedding → simpleFoam")
         return SolverType.SIMPLE_FOAM
     
     # Priority 5: Keywords strongly suggesting steady state
@@ -1039,10 +1040,12 @@ def generate_control_dict(solver: str, analysis_type: AnalysisType, parsed_param
             velocity = reynolds_number * viscosity / (density * char_length)
             logger.info(f"Calculated velocity {velocity:.3f} m/s from Reynolds number {reynolds_number} for time step calculation")
         
-        # Ensure velocity is valid
+        # Ensure velocity is valid with detailed logging
         if velocity is None or velocity <= 0:
             logger.warning(f"Invalid velocity ({velocity}), using default 1.0 m/s")
             velocity = 1.0
+        else:
+            logger.info(f"Using velocity: {velocity:.3f} m/s")
         
         # Get characteristic length from geometry
         characteristic_length = None
@@ -1101,18 +1104,58 @@ def generate_control_dict(solver: str, analysis_type: AnalysisType, parsed_param
             logger.warning(f"No valid dimensions found, using default characteristic length for {geometry_type_str}: {characteristic_length} m")
         
         # Calculate time step with Courant number consideration
-        target_courant = 0.5
+        # Use user-specified Courant number or default, with null check
+        target_courant = parsed_params.get("courant_number")
+        if target_courant is None or target_courant <= 0:
+            target_courant = 0.5  # Safe default
+        if parsed_params.get("courant_number") is not None:
+            logger.info(f"Using user-specified Courant number: {target_courant}")
+        else:
+            logger.info(f"Using default Courant number: {target_courant}")
+        
         # Estimate cell size (assuming ~20-40 cells across characteristic length)
         mesh_resolution = parsed_params.get("mesh_resolution", "medium")
         cells_per_length = {"coarse": 20, "medium": 30, "fine": 40}.get(mesh_resolution, 30)
+        
+        # Ensure characteristic_length is valid
+        if characteristic_length is None or characteristic_length <= 0:
+            logger.error(f"Invalid characteristic_length: {characteristic_length}")
+            characteristic_length = 0.1  # Emergency fallback
+        
         cell_size = characteristic_length / cells_per_length
         
-        # Calculate time step
-        estimated_dt = target_courant * cell_size / velocity
+        # Ensure all values are valid before calculation
+        if target_courant is None or cell_size is None or velocity is None:
+            logger.error(f"Invalid values for time step calculation: target_courant={target_courant}, cell_size={cell_size}, velocity={velocity}")
+            estimated_dt = 1e-4  # Safe fallback
+        else:
+            # Calculate time step
+            estimated_dt = target_courant * cell_size / velocity
         
-        # Apply reasonable bounds
-        min_dt = 1e-6  # Minimum time step
-        max_dt = 0.01  # Maximum time step for transient flows
+        # Apply reasonable bounds - use user-specified limits or defaults
+        min_dt = parsed_params.get("min_time_step")
+        max_dt = parsed_params.get("max_time_step")
+        
+        # Ensure min_dt and max_dt have valid values
+        if min_dt is None or min_dt <= 0:
+            min_dt = 1e-6  # Safe minimum default
+        if max_dt is None or max_dt <= 0:
+            max_dt = 0.01  # Safe maximum default
+        
+        # Log which values are being used
+        if parsed_params.get("min_time_step") is not None:
+            logger.info(f"Using user-specified minimum time step: {min_dt}")
+        else:
+            logger.info(f"Using default minimum time step: {min_dt}")
+        if parsed_params.get("max_time_step") is not None:
+            logger.info(f"Using user-specified maximum time step: {max_dt}")
+        else:
+            logger.info(f"Using default maximum time step: {max_dt}")
+        
+        # Ensure estimated_dt is valid before comparison
+        if estimated_dt is None or estimated_dt <= 0:
+            logger.error(f"Invalid estimated deltaT: {estimated_dt}, using safe default")
+            estimated_dt = min_dt
         
         if estimated_dt < min_dt:
             logger.warning(f"Calculated deltaT ({estimated_dt:.2e}) too small, using minimum {min_dt}")
@@ -1157,16 +1200,44 @@ def generate_control_dict(solver: str, analysis_type: AnalysisType, parsed_param
         
         # Add adaptive time stepping controls if not using fixed time step
         if use_adaptive:
+            # Use user-specified max Courant number if provided, otherwise use conservative default
+            user_courant = parsed_params.get("courant_number")
+            if user_courant is not None and user_courant > 0:
+                max_courant = user_courant * 1.8  # Allow 1.8x target for max
+            else:
+                max_courant = 0.5 * 1.8  # Use default target_courant
+            
+            # Apply safety bounds
+            if max_courant > 2.0:  # Safety cap
+                max_courant = 2.0
+            elif max_courant < 0.5:  # Minimum reasonable max
+                max_courant = 0.9
+            
+            # Use user-specified max time step or conservative estimate
+            user_max_dt = parsed_params.get("max_time_step")
+            if user_max_dt is not None and user_max_dt > 0:
+                max_delta_t = user_max_dt
+            else:
+                # Ensure estimated_dt is valid before using it
+                if estimated_dt is not None and estimated_dt > 0:
+                    max_delta_t = min(0.01, estimated_dt * 10)  # Cap at 10x initial estimate
+                else:
+                    max_delta_t = 0.01  # Safe fallback
+            
             control_dict.update({
                 "adjustTimeStep": "yes",
-                "maxCo": 0.9,  # Maximum Courant number
-                "maxDeltaT": min(0.01, estimated_dt * 10)  # Cap at 10x initial estimate
+                "maxCo": max_courant,
+                "maxDeltaT": max_delta_t
             })
             
             # Add interFoam-specific parameters
             if solver == "interFoam":
                 control_dict["maxAlphaCo"] = 1.0  # Maximum alpha (VOF) Courant number
-            logger.info(f"Using adaptive time stepping with maxCo=0.9, initial deltaT={estimated_dt:.6f}")
+            
+            # Log adaptive time stepping parameters
+            courant_source = "user-specified" if parsed_params.get("courant_number") is not None else "default"
+            max_dt_source = "user-specified" if parsed_params.get("max_time_step") is not None else "estimated"
+            logger.info(f"Using adaptive time stepping with maxCo={max_courant} ({courant_source}), maxDeltaT={max_delta_t} ({max_dt_source}), initial deltaT={estimated_dt:.6f}")
         else:
             control_dict["adjustTimeStep"] = "no"
             logger.info(f"Using fixed time step: deltaT={fixed_dt}")

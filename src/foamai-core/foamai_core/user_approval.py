@@ -76,6 +76,89 @@ def user_approval_agent(state: CFDState) -> CFDState:
         }
 
 
+def generate_configuration_explanation(state: CFDState) -> str:
+    """Generate explanatory text about defaults and decisions made using OpenAI."""
+    try:
+        # Import OpenAI dependencies
+        from langchain_openai import ChatOpenAI
+        from langchain_core.messages import HumanMessage, SystemMessage
+        
+        # Get settings for API key
+        import sys
+        sys.path.append('src')
+        from foamai.config import get_settings
+        settings = get_settings()
+        
+        # Create LLM
+        llm = ChatOpenAI(
+            api_key=settings.openai_api_key,
+            model="gpt-4o-mini",
+            temperature=0.3,
+            max_tokens=400
+        )
+        
+        # Extract relevant information for explanation
+        parsed_params = state.get("parsed_parameters", {})
+        mesh_config = state.get("mesh_config", {})
+        solver_settings = state.get("solver_settings", {})
+        geometry_info = state.get("geometry_info", {})
+        original_prompt = state.get("user_prompt", "")
+        
+        # Create context for OpenAI
+        context = {
+            "original_prompt": original_prompt,
+            "geometry_type": str(geometry_info.get("type", "Unknown")),
+            "dimensions": geometry_info.get("dimensions", {}),
+            "solver": solver_settings.get("solver", "Unknown"),
+            "flow_type": str(parsed_params.get("flow_type", "Unknown")),
+            "analysis_type": str(parsed_params.get("analysis_type", "Unknown")),
+            "mesh_type": mesh_config.get("type", "Unknown"),
+            "total_cells": mesh_config.get("total_cells", 0),
+            "velocity": parsed_params.get("velocity"),
+            "reynolds_number": parsed_params.get("reynolds_number"),
+            "density": parsed_params.get("density"),
+            "viscosity": parsed_params.get("viscosity"),
+            "time_step": solver_settings.get("controlDict", {}).get("deltaT"),
+            "end_time": solver_settings.get("controlDict", {}).get("endTime"),
+            "domain_size_multiplier": geometry_info.get("flow_context", {}).get("domain_size_multiplier")
+        }
+        
+        # Create prompt for OpenAI
+        system_message = SystemMessage(content="""You are an expert CFD engineer explaining simulation configuration decisions to users. 
+        
+        Your task is to write a brief, clear explanation (2-3 sentences) of the key assumptions, defaults, and decisions made in setting up this CFD simulation that weren't explicitly specified by the user.
+        
+        Focus on:
+        - Important default values that were used (like fluid properties, domain size, time stepping)
+        - Key assumptions made about the physics (steady vs unsteady, laminar vs turbulent)
+        - Mesh and solver choices that were made automatically
+        
+        Write in a friendly, professional tone as if explaining to a colleague. Start with "Based on your prompt, I made the following key decisions:" and be specific about the values used.""")
+        
+        human_message = HumanMessage(content=f"""
+        User's original prompt: "{original_prompt}"
+        
+        Configuration details:
+        - Geometry: {context['geometry_type']} with dimensions {context['dimensions']}
+        - Solver: {context['solver']} for {context['flow_type']} {context['analysis_type']} analysis
+        - Mesh: {context['mesh_type']} with {context['total_cells']:,} cells
+        - Flow properties: velocity={context['velocity']} m/s, Re={context['reynolds_number']}, density={context['density']} kg/m³, viscosity={context['viscosity']} Pa·s
+        - Time settings: dt={context['time_step']} s, end_time={context['end_time']} s
+        - Domain size: {context['domain_size_multiplier']}x object size
+        
+        Explain the key defaults and decisions made that the user didn't explicitly specify.
+        """)
+        
+        # Get response from OpenAI
+        response = llm.invoke([system_message, human_message])
+        
+        return response.content.strip()
+        
+    except Exception as e:
+        logger.warning(f"Could not generate configuration explanation: {e}")
+        return "Configuration explanation unavailable (OpenAI API error)."
+
+
 def display_configuration_summary(state: CFDState) -> None:
     """Display a comprehensive summary of the configuration."""
     
@@ -89,11 +172,17 @@ def display_configuration_summary(state: CFDState) -> None:
         )
     )
     
+    # Display AI explanation of defaults and decisions
+    display_ai_explanation(state)
+    
     # Display solver information
     display_solver_info(state)
     
     # Display mesh information
     display_mesh_info(state)
+    
+    # Display STL rotation if applicable
+    display_stl_rotation_info(state)
     
     # Display boundary conditions
     display_boundary_conditions(state)
@@ -103,6 +192,25 @@ def display_configuration_summary(state: CFDState) -> None:
     
     # Display file locations
     display_file_locations(state)
+
+
+def display_ai_explanation(state: CFDState) -> None:
+    """Display AI-generated explanation of configuration decisions."""
+    console.print("\n")
+    
+    # Generate explanation
+    explanation = generate_configuration_explanation(state)
+    
+    # Display the explanation
+    console.print(
+        Panel(
+            f"[bold yellow]🤖 Configuration Explanation[/bold yellow]\n\n"
+            f"[white]{explanation}[/white]",
+            title="AI Analysis",
+            border_style="yellow",
+            padding=(1, 2)
+        )
+    )
 
 
 def display_solver_info(state: CFDState) -> None:
@@ -191,6 +299,53 @@ def display_mesh_info(state: CFDState) -> None:
         console.print(table)
     else:
         console.print("[yellow]⚠️  No mesh configuration available[/yellow]")
+
+
+def display_stl_rotation_info(state: CFDState) -> None:
+    """Display STL rotation information if applicable."""
+    geometry_info = state.get("geometry_info", {})
+    parsed_params = state.get("parsed_parameters", {})
+    mesh_config = state.get("mesh_config", {})
+    
+    # Check if this is an STL file
+    if not geometry_info.get("is_custom_geometry") or not geometry_info.get("stl_file"):
+        return
+    
+    # Get rotation info from either parsed parameters or mesh config
+    rotation_info = parsed_params.get("rotation_info", {}) or mesh_config.get("rotation_info", {})
+    
+    table = Table(title="🔄 STL Geometry Rotation", show_header=True, header_style="bold cyan")
+    table.add_column("Parameter", style="cyan")
+    table.add_column("Value", style="green")
+    
+    # Display STL file
+    stl_file = geometry_info.get("stl_file", "Unknown")
+    table.add_row("STL File", str(stl_file))
+    
+    # Display rotation status
+    if rotation_info.get("rotate", False):
+        angle = rotation_info.get("rotation_angle", 0)
+        axis = rotation_info.get("rotation_axis", "z")
+        table.add_row("Rotation Angle", f"{angle}°")
+        table.add_row("Rotation Axis", axis.upper())
+        table.add_row("Rotation Center", "Origin (0, 0, 0)")
+    else:
+        table.add_row("Rotation", "No rotation applied")
+        table.add_row("", "[dim]Tip: Add 'rotate 90 degrees' to your prompt[/dim]")
+    
+    console.print(table)
+    
+    # Add warning about orientation
+    console.print(
+        Panel(
+            "[yellow]⚠️  STL Orientation Check[/yellow]\n\n"
+            "Please verify that your geometry is oriented correctly:\n"
+            "• The inlet (red wall in ParaView) should face the front of your object\n"
+            "• For vehicles, the front should face the inlet for proper aerodynamic simulation\n"
+            "• Use rotation to adjust orientation if needed (e.g., 'rotate 90 degrees')",
+            border_style="yellow"
+        )
+    )
 
 
 def display_boundary_conditions(state: CFDState) -> None:
@@ -352,7 +507,8 @@ def get_change_requests() -> str:
             "• Solver selection (e.g., 'use transient solver instead')\n"
             "• Mesh resolution (e.g., 'make mesh finer')\n"
             "• Boundary conditions (e.g., 'increase inlet velocity')\n"
-            "• Simulation parameters (e.g., 'run for longer time')\n\n"
+            "• Simulation parameters (e.g., 'run for longer time')\n"
+            "• STL rotation (e.g., 'rotate 90 degrees around z-axis')\n\n"
             "Be as specific as possible about what you want to change.",
             title="Change Requests",
             border_style="blue"

@@ -1216,10 +1216,25 @@ def remap_boundary_conditions_after_mesh(case_directory: Path, state: CFDState) 
             if not field_file.exists():
                 continue
                 
+            # Debug: Log what we're writing
+            logger.info(f"Writing boundary conditions for field {field_name}")
+            logger.info(f"Field config keys: {list(field_config.keys())}")
+            if "boundaryField" in field_config:
+                logger.info(f"BoundaryField patches: {list(field_config['boundaryField'].keys())}")
+            
             # Write the updated field file
             from .case_writer import write_foam_dict
             write_foam_dict(field_file, field_config)
             result["fields_updated"].append(field_name)
+            
+            # Verify the file was written
+            if field_file.exists():
+                with open(field_file, 'r') as f:
+                    content = f.read()
+                    if "boundaryField" in content and "inlet" in content:
+                        logger.info(f"Successfully verified {field_name} boundary conditions")
+                    else:
+                        logger.warning(f"Boundary conditions may not be written correctly for {field_name}")
         
         # Also update interFoam-specific fields (alpha.water, p_rgh) if they exist
         if state.get("solver_settings", {}).get("solver") == "interFoam":

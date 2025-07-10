@@ -30,6 +30,7 @@ class CFDParameters(BaseModel):
     # Geometry information
     geometry_type: GeometryType = Field(description="Type of geometry (cylinder, airfoil, etc.)")
     geometry_dimensions: Dict[str, float] = Field(description="Geometry dimensions (diameter, length, etc.)")
+    is_custom_geometry: bool = Field(default=False, description="True if using custom STL geometry")
     
     # Flow context
     flow_context: FlowContext = Field(description="Context of the flow (external/internal, domain type)")
@@ -65,6 +66,12 @@ class CFDParameters(BaseModel):
     
     # Mesh preferences
     mesh_resolution: Optional[str] = Field(None, description="Mesh resolution (coarse, medium, fine)")
+    
+    # Advanced user-configurable parameters
+    domain_size_multiplier: Optional[float] = Field(None, description="Domain size multiplier (e.g., 20 for 20x object size)")
+    courant_number: Optional[float] = Field(None, description="Target Courant number for time stepping")
+    min_time_step: Optional[float] = Field(None, description="Minimum time step limit")
+    max_time_step: Optional[float] = Field(None, description="Maximum time step limit")
     
     # Additional parameters
     additional_info: Dict[str, Any] = Field(default_factory=dict, description="Additional extracted information")
@@ -171,48 +178,375 @@ def extract_dimensions_from_text(text: str, geometry_type: GeometryType) -> Dict
     return dimensions
 
 
-def infer_flow_context(text: str, geometry_type: GeometryType) -> FlowContext:
-    """Infer whether flow is external (around object) or internal (through object)."""
+def detect_advanced_parameters(prompt: str) -> Dict[str, Any]:
+    """Detect advanced user-configurable parameters from the prompt with validation."""
+    import re
+    prompt_lower = prompt.lower()
+    advanced_params = {}
+    validation_errors = []
+    
+    # Detect domain size multiplier
+    domain_patterns = [
+        r'domain\s+(?:size\s+)?(?:of\s+)?(\d+(?:\.\d+)?)\s*(?:x|times)',
+        r'(\d+(?:\.\d+)?)\s*(?:x|times)\s+(?:the\s+)?(?:object|cylinder|sphere|airfoil|geometry)\s+(?:size|diameter|dimension)',
+        r'domain\s+(?:size\s+)?(?:multiplier\s+)?(?:of\s+)?(\d+(?:\.\d+)?)',
+        r'use\s+(\d+(?:\.\d+)?)\s*(?:x|times)\s+domain',
+        r'(\d+(?:\.\d+)?)\s*(?:x|times)\s+larger\s+domain',
+        r'domain\s+(\d+(?:\.\d+)?)\s*(?:x|times)\s+(?:the\s+)?(?:object|size)',
+        r'with\s+(\d+(?:\.\d+)?)\s*(?:x|times)\s+domain\s+size',
+        r'(\d+(?:\.\d+)?)\s*(?:x|times)\s+domain\s+size',
+        r'(\d+(?:\.\d+)?)\s*(?:x|times)\s+domain(?:\s|$)'
+    ]
+    
+    for pattern in domain_patterns:
+        match = re.search(pattern, prompt_lower)
+        if match:
+            multiplier = float(match.group(1))
+            if 1.0 <= multiplier <= 200.0:
+                advanced_params["domain_size_multiplier"] = multiplier
+                break
+            else:
+                validation_errors.append({
+                    "parameter": "domain_size_multiplier", 
+                    "value": multiplier,
+                    "min": 1.0,
+                    "max": 200.0,
+                    "reason": "Domain size multiplier must be reasonable for computational efficiency and accuracy. Values below 1x would cut into the geometry, and values above 200x would waste computational resources unnecessarily."
+                })
+                break
+    
+    # Detect Courant number
+    courant_patterns = [
+        r'courant\s+(?:number\s+)?(?:of\s+)?(\d+(?:\.\d+)?)',
+        r'cfl\s+(?:number\s+)?(?:of\s+)?(\d+(?:\.\d+)?)',
+        r'use\s+courant\s+(?:number\s+)?(\d+(?:\.\d+)?)',
+        r'courant\s+(?:number\s+)?(?:=|:|to)\s*(\d+(?:\.\d+)?)',
+        r'cfl\s+(?:=|:)\s*(\d+(?:\.\d+)?)',
+        r'set\s+courant\s+(?:number\s+)?(?:to\s+)?(\d+(?:\.\d+)?)'
+    ]
+    
+    for pattern in courant_patterns:
+        match = re.search(pattern, prompt_lower)
+        if match:
+            courant = float(match.group(1))
+            if 0.1 <= courant <= 2.0:
+                advanced_params["courant_number"] = courant
+                break
+            else:
+                validation_errors.append({
+                    "parameter": "courant_number", 
+                    "value": courant,
+                    "min": 0.1,
+                    "max": 2.0,
+                    "reason": "Courant number must be in a stable range. Values below 0.1 lead to unnecessarily small time steps and long simulation times, while values above 2.0 can cause numerical instability and simulation failure."
+                })
+                break
+    
+    # Detect minimum time step
+    min_dt_patterns = [
+        r'minimum\s+time\s+step\s+(?:of\s+)?(\d+(?:\.\d+)?(?:e[-+]?\d+)?)',
+        r'min\s+(?:time\s+)?step\s+(?:of\s+)?(\d+(?:\.\d+)?(?:e[-+]?\d+)?)',
+        r'minimum\s+dt\s+(?:of\s+)?(\d+(?:\.\d+)?(?:e[-+]?\d+)?)',
+        r'min\s+dt\s+(?:of\s+)?(\d+(?:\.\d+)?(?:e[-+]?\d+)?)'
+    ]
+    
+    for pattern in min_dt_patterns:
+        match = re.search(pattern, prompt_lower)
+        if match:
+            min_dt = float(match.group(1))
+            if 1e-10 <= min_dt <= 1e-2:
+                advanced_params["min_time_step"] = min_dt
+                break
+            else:
+                validation_errors.append({
+                    "parameter": "min_time_step", 
+                    "value": min_dt,
+                    "min": 1e-10,
+                    "max": 1e-2,
+                    "reason": "Minimum time step must be physically meaningful. Values below 1e-10 seconds are smaller than molecular time scales and computationally impractical, while values above 0.01 seconds are too large for most CFD problems and would miss important physics."
+                })
+                break
+    
+    # Detect maximum time step
+    max_dt_patterns = [
+        r'maximum\s+time\s+step\s+(?:of\s+)?(\d+(?:\.\d+)?(?:e[-+]?\d+)?)',
+        r'max\s+(?:time\s+)?step\s+(?:of\s+)?(\d+(?:\.\d+)?(?:e[-+]?\d+)?)',
+        r'maximum\s+dt\s+(?:of\s+)?(\d+(?:\.\d+)?(?:e[-+]?\d+)?)',
+        r'max\s+dt\s+(?:of\s+)?(\d+(?:\.\d+)?(?:e[-+]?\d+)?)'
+    ]
+    
+    for pattern in max_dt_patterns:
+        match = re.search(pattern, prompt_lower)
+        if match:
+            max_dt = float(match.group(1))
+            if 1e-6 <= max_dt <= 1.0:
+                advanced_params["max_time_step"] = max_dt
+                break
+            else:
+                validation_errors.append({
+                    "parameter": "max_time_step", 
+                    "value": max_dt,
+                    "min": 1e-6,
+                    "max": 1.0,
+                    "reason": "Maximum time step must allow for meaningful time resolution. Values below 1e-6 seconds are unnecessarily restrictive for most problems, while values above 1.0 second are too large for transient CFD simulations and would miss important temporal dynamics."
+                })
+                break
+    
+    # Store validation errors if any
+    if validation_errors:
+        advanced_params["validation_errors"] = validation_errors
+    
+    return advanced_params
+
+
+def validate_physical_parameters(parsed_params: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Validate physical parameters extracted by OpenAI and return any validation errors."""
+    validation_errors = []
+    
+    # Validate velocity
+    velocity = parsed_params.get("velocity")
+    if velocity is not None:
+        if velocity <= 0:
+            validation_errors.append({
+                "parameter": "velocity",
+                "value": velocity,
+                "min": 0.001,
+                "max": 1000.0,
+                "reason": "Velocity must be positive. Zero or negative velocities are not physically meaningful for flow simulations."
+            })
+        elif velocity > 1000.0:
+            validation_errors.append({
+                "parameter": "velocity",
+                "value": velocity,
+                "min": 0.001,
+                "max": 1000.0,
+                "reason": "Velocity above 1000 m/s is extremely high and likely an error. For supersonic flows, please specify Mach number instead. Most engineering flows are below 100 m/s."
+            })
+    
+    # Validate Reynolds number
+    reynolds_number = parsed_params.get("reynolds_number")
+    if reynolds_number is not None:
+        if reynolds_number <= 0:
+            validation_errors.append({
+                "parameter": "reynolds_number",
+                "value": reynolds_number,
+                "min": 0.1,
+                "max": 1e8,
+                "reason": "Reynolds number must be positive. It represents the ratio of inertial to viscous forces and cannot be zero or negative."
+            })
+        elif reynolds_number > 1e8:
+            validation_errors.append({
+                "parameter": "reynolds_number",
+                "value": reynolds_number,
+                "min": 0.1,
+                "max": 1e8,
+                "reason": "Reynolds number above 100 million is extremely high and computationally challenging. Most engineering flows have Re < 10 million. Please verify your input."
+            })
+    
+    # Validate temperature
+    temperature = parsed_params.get("temperature")
+    if temperature is not None:
+        if temperature <= 0:
+            validation_errors.append({
+                "parameter": "temperature",
+                "value": temperature,
+                "min": 1.0,
+                "max": 5000.0,
+                "reason": "Temperature must be positive (in Kelvin). Absolute zero (0 K) and negative temperatures are not physically meaningful for CFD simulations."
+            })
+        elif temperature > 5000.0:
+            validation_errors.append({
+                "parameter": "temperature",
+                "value": temperature,
+                "min": 1.0,
+                "max": 5000.0,
+                "reason": "Temperature above 5000 K is extremely high (hotter than most flames). Most engineering applications are below 1500 K. Please verify the temperature is in Kelvin, not Celsius."
+            })
+    
+    # Validate pressure
+    pressure = parsed_params.get("pressure")
+    if pressure is not None:
+        if pressure < 0:
+            validation_errors.append({
+                "parameter": "pressure",
+                "value": pressure,
+                "min": 0.0,
+                "max": 1e8,
+                "reason": "Pressure cannot be negative (assuming absolute pressure). Use gauge pressure with caution, and verify your pressure reference."
+            })
+        elif pressure > 1e8:  # 100 MPa
+            validation_errors.append({
+                "parameter": "pressure",
+                "value": pressure,
+                "min": 0.0,
+                "max": 1e8,
+                "reason": "Pressure above 100 MPa is extremely high. Most engineering applications are below 10 MPa. Please verify the pressure units (Pa, not kPa or MPa)."
+            })
+    
+    # Validate density
+    density = parsed_params.get("density")
+    if density is not None:
+        if density <= 0:
+            validation_errors.append({
+                "parameter": "density",
+                "value": density,
+                "min": 0.001,
+                "max": 20000.0,
+                "reason": "Density must be positive. Zero or negative density is not physically meaningful."
+            })
+        elif density > 20000.0:  # Denser than most metals
+            validation_errors.append({
+                "parameter": "density",
+                "value": density,
+                "min": 0.001,
+                "max": 20000.0,
+                "reason": "Density above 20,000 kg/m³ is extremely high (denser than most metals). Typical fluids: air ~1.2, water ~1000, mercury ~13,500 kg/m³. Please verify your units."
+            })
+    
+    # Validate viscosity
+    viscosity = parsed_params.get("viscosity")
+    if viscosity is not None:
+        if viscosity <= 0:
+            validation_errors.append({
+                "parameter": "viscosity",
+                "value": viscosity,
+                "min": 1e-8,
+                "max": 1e3,
+                "reason": "Viscosity must be positive. Zero or negative viscosity is not physically meaningful."
+            })
+        elif viscosity > 1e3:  # Very high viscosity
+            validation_errors.append({
+                "parameter": "viscosity",
+                "value": viscosity,
+                "min": 1e-8,
+                "max": 1e3,
+                "reason": "Viscosity above 1000 Pa·s is extremely high (thicker than honey). Typical values: air ~1.8e-5, water ~1e-3, oil ~0.1 Pa·s. Please verify your units."
+            })
+    
+    # Validate simulation time
+    simulation_time = parsed_params.get("simulation_time")
+    if simulation_time is not None:
+        if simulation_time <= 0:
+            validation_errors.append({
+                "parameter": "simulation_time",
+                "value": simulation_time,
+                "min": 1e-6,
+                "max": 86400.0,
+                "reason": "Simulation time must be positive. Zero or negative simulation time is not meaningful."
+            })
+        elif simulation_time > 86400.0:  # More than 24 hours
+            validation_errors.append({
+                "parameter": "simulation_time",
+                "value": simulation_time,
+                "min": 1e-6,
+                "max": 86400.0,
+                "reason": "Simulation time above 24 hours (86,400 seconds) is extremely long and may take prohibitively long to compute. Most CFD simulations are seconds to minutes. Please verify your time units."
+            })
+    
+    return validation_errors
+
+
+def format_validation_errors(validation_errors: List[Dict[str, Any]]) -> str:
+    """Format validation errors into a user-friendly error message with next steps."""
+    if not validation_errors:
+        return ""
+    
+    error_lines = ["🚨 PARAMETER VALIDATION FAILED"]
+    error_lines.append("=" * 50)
+    error_lines.append("")
+    error_lines.append("The following parameter values are outside acceptable ranges:")
+    error_lines.append("")
+    
+    for i, error in enumerate(validation_errors, 1):
+        param = error["parameter"]
+        value = error["value"]
+        min_val = error["min"]
+        max_val = error["max"]
+        reason = error["reason"]
+        
+        # Format parameter name nicely
+        param_display = param.replace("_", " ").title()
+        
+        # Format the value with appropriate precision
+        if isinstance(value, float):
+            if value >= 1e6 or value <= 1e-6:
+                value_str = f"{value:.2e}"
+            else:
+                value_str = f"{value:.6g}"
+        else:
+            value_str = str(value)
+        
+        # Format min/max values
+        if isinstance(min_val, float):
+            if min_val >= 1e6 or min_val <= 1e-6:
+                min_str = f"{min_val:.2e}"
+            else:
+                min_str = f"{min_val:.6g}"
+        else:
+            min_str = str(min_val)
+            
+        if isinstance(max_val, float):
+            if max_val >= 1e6 or max_val <= 1e-6:
+                max_str = f"{max_val:.2e}"
+            else:
+                max_str = f"{max_val:.6g}"
+        else:
+            max_str = str(max_val)
+        
+        error_lines.append(f"❌ {i}. {param_display}")
+        error_lines.append(f"    Your value: {value_str}")
+        error_lines.append(f"    Acceptable range: {min_str} to {max_str}")
+        error_lines.append(f"    Why this matters: {reason}")
+        error_lines.append("")
+    
+    error_lines.append("🤔 What would you like to do?")
+    error_lines.append("")
+    error_lines.append("   1️⃣  Modify your prompt with valid parameter values")
+    error_lines.append("   2️⃣  Use the system defaults (recommended)")
+    error_lines.append("   3️⃣  Override validation and proceed anyway (not recommended)")
+    error_lines.append("")
+    error_lines.append("💡 For option 1, please update your prompt with values in the acceptable ranges.")
+    error_lines.append("   For option 2, remove the invalid parameters from your prompt.")
+    error_lines.append("   For option 3, add '--force-validation' to your command (use with caution).")
+    
+    return "\n".join(error_lines)
+
+
+def infer_flow_context(text: str, geometry_type: GeometryType, user_domain_multiplier: Optional[float] = None) -> FlowContext:
+    """Infer flow context from text with optional user-specified domain multiplier."""
     text_lower = text.lower()
     
-    # Keywords indicating external flow
-    external_keywords = ['around', 'over', 'past', 'across', 'external', 'bluff body', 
-                        'drag', 'lift', 'wake', 'vortex shedding', 'aerodynamic']
-    
-    # Keywords indicating internal flow
-    internal_keywords = ['through', 'in', 'inside', 'internal', 'pipe flow', 'channel flow',
-                        'duct', 'pressure drop', 'friction']
-    
-    # Count keyword matches
-    external_score = sum(1 for keyword in external_keywords if keyword in text_lower)
-    internal_score = sum(1 for keyword in internal_keywords if keyword in text_lower)
-    
-    # Geometry-specific defaults
-    if external_score > internal_score:
-        is_external = True
-    elif internal_score > external_score:
+    # Determine if it's external or internal flow
+    if any(keyword in text_lower for keyword in ["around", "over", "past", "external", "cylinder", "sphere", "airfoil", "cube"]):
+        if not any(keyword in text_lower for keyword in ["through", "in", "inside", "internal", "pipe", "channel", "duct"]):
+            is_external = True
+    elif any(keyword in text_lower for keyword in ["through", "in", "inside", "internal", "pipe", "channel", "duct"]):
         is_external = False
     else:
-        # Use geometry-based defaults
+        # Default based on geometry type
         if geometry_type in [GeometryType.CYLINDER, GeometryType.SPHERE, GeometryType.AIRFOIL, GeometryType.CUBE]:
-            is_external = True  # Default to external flow for these geometries
+            is_external = True
         else:
             is_external = False  # Default to internal flow for pipes/channels
     
     # Determine domain type and size
     if is_external:
         domain_type = "unbounded"
-        # Domain size based on geometry type
-        if geometry_type == GeometryType.CYLINDER:
-            domain_size_multiplier = 20.0  # 20x diameter typical for cylinder
-        elif geometry_type == GeometryType.AIRFOIL:
-            domain_size_multiplier = 30.0  # 30x chord for airfoil
-        elif geometry_type == GeometryType.SPHERE:
-            domain_size_multiplier = 20.0  # 20x diameter for sphere
-        elif geometry_type == GeometryType.CUBE:
-            domain_size_multiplier = 20.0  # 20x side length for cube
+        # Use user-specified domain multiplier if provided, otherwise use defaults
+        if user_domain_multiplier is not None:
+            domain_size_multiplier = user_domain_multiplier
         else:
-            domain_size_multiplier = 10.0  # Default
+            # Default domain size based on geometry type
+            if geometry_type == GeometryType.CYLINDER:
+                domain_size_multiplier = 20.0  # 20x diameter typical for cylinder
+            elif geometry_type == GeometryType.AIRFOIL:
+                domain_size_multiplier = 30.0  # 30x chord for airfoil
+            elif geometry_type == GeometryType.SPHERE:
+                domain_size_multiplier = 20.0  # 20x diameter for sphere
+            elif geometry_type == GeometryType.CUBE:
+                domain_size_multiplier = 20.0  # 20x side length for cube
+            else:
+                domain_size_multiplier = 10.0  # Default
     else:
         domain_type = "channel"
         domain_size_multiplier = 1.0  # No expansion for internal flow
@@ -321,6 +655,62 @@ def detect_boundary_conditions(prompt: str) -> Dict[str, Any]:
     return conditions
 
 
+def detect_rotation_request(prompt: str) -> Dict[str, Any]:
+    """Detect rotation specifications from the prompt."""
+    import re
+    rotation_info = {
+        "rotate": False,
+        "rotation_axis": None,
+        "rotation_angle": None,
+        "rotation_center": None
+    }
+    
+    prompt_lower = prompt.lower()
+    
+    # Check for rotation keywords
+    rotation_keywords = [
+        r"\brotate\b", r"\brotation\b", r"\bturn\b", r"\bangle\b", 
+        r"\borientation\b", r"\byaw\b", r"\bpitch\b", r"\broll\b"
+    ]
+    
+    if not any(re.search(keyword, prompt_lower) for keyword in rotation_keywords):
+        return rotation_info
+    
+    # Detect rotation angle
+    angle_patterns = [
+        r'rotate\s*(?:by\s*)?([-+]?\d+(?:\.\d+)?)\s*(?:degree|deg|°)',
+        r'turn\s*(?:by\s*)?([-+]?\d+(?:\.\d+)?)\s*(?:degree|deg|°)',
+        r'([-+]?\d+(?:\.\d+)?)\s*(?:degree|deg|°)\s*rotation',
+        r'angle\s*[:=]?\s*([-+]?\d+(?:\.\d+)?)\s*(?:degree|deg|°)?'
+    ]
+    
+    for pattern in angle_patterns:
+        if match := re.search(pattern, prompt_lower):
+            rotation_info["rotate"] = True
+            rotation_info["rotation_angle"] = float(match.group(1))
+            break
+    
+    # Detect rotation axis
+    if re.search(r'\b(?:around|about)\s*x[-\s]?axis\b', prompt_lower):
+        rotation_info["rotation_axis"] = "x"
+    elif re.search(r'\b(?:around|about)\s*y[-\s]?axis\b', prompt_lower):
+        rotation_info["rotation_axis"] = "y"
+    elif re.search(r'\b(?:around|about)\s*z[-\s]?axis\b', prompt_lower):
+        rotation_info["rotation_axis"] = "z"
+    elif re.search(r'\byaw\b', prompt_lower):
+        rotation_info["rotation_axis"] = "z"  # Yaw is rotation around Z
+    elif re.search(r'\bpitch\b', prompt_lower):
+        rotation_info["rotation_axis"] = "y"  # Pitch is rotation around Y
+    elif re.search(r'\broll\b', prompt_lower):
+        rotation_info["rotation_axis"] = "x"  # Roll is rotation around X
+    
+    # If rotation detected but no axis specified, default to Z (most common for vehicles)
+    if rotation_info["rotate"] and not rotation_info["rotation_axis"]:
+        rotation_info["rotation_axis"] = "z"
+    
+    return rotation_info
+
+
 def detect_multiphase_flow(prompt: str) -> Dict[str, Any]:
     """Detect multiphase flow indicators from the prompt using word boundaries."""
     import re
@@ -403,6 +793,8 @@ def nl_interpreter_agent(state: CFDState) -> CFDState:
     try:
         if state["verbose"]:
             logger.info(f"NL Interpreter: Processing prompt: {state['user_prompt']}")
+            if state.get("stl_file"):
+                logger.info(f"NL Interpreter: STL file provided: {state['stl_file']}")
         
         # Get settings for API key
         import sys
@@ -421,9 +813,25 @@ def nl_interpreter_agent(state: CFDState) -> CFDState:
         # Create output parser
         parser = PydanticOutputParser(pydantic_object=CFDParameters)
         
+        # Modify prompt template to handle STL files
+        stl_instruction = ""
+        if state.get("stl_file"):
+            stl_instruction = f"""
+IMPORTANT: The user is providing an STL file for custom geometry: {state['stl_file']}
+- Set geometry_type to "custom" 
+- Set is_custom_geometry to true
+- Set is_external_flow to true (STL files are typically external flow around objects)
+- Set domain_type to "unbounded"
+- Set domain_size_multiplier to 20.0 (reasonable default for external flow)
+- Do not try to extract specific geometry dimensions - the STL file defines the geometry
+- Focus on extracting flow parameters, boundary conditions, and simulation settings from the prompt
+"""
+        
         # Create prompt template with enhanced instructions
         prompt = ChatPromptTemplate.from_template("""
 You are an expert CFD engineer. Parse the following natural language description of a fluid dynamics problem into structured parameters.
+
+{stl_instruction}
 
 Extract all relevant information including:
 - Geometry type and dimensions (extract numerical values with units)
@@ -434,6 +842,7 @@ Extract all relevant information including:
 - Analysis type (steady/unsteady, laminar/turbulent)
 - Solver preferences
 - Mesh preferences
+- Advanced parameters (domain size, time stepping controls)
 
 IMPORTANT RULES:
 1. For "flow around" objects (cylinder, sphere, airfoil), set is_external_flow=true and domain_type="unbounded"
@@ -444,6 +853,7 @@ IMPORTANT RULES:
 4. Extract ALL numerical dimensions mentioned (with unit conversion to meters)
 5. For external flow, set domain_size_multiplier appropriately (typically 20-30x object size)
 6. DEFAULT TO UNSTEADY (TRANSIENT) ANALYSIS unless the user explicitly mentions "steady", "steady-state", or "stationary"
+7. Extract advanced parameters if specified by user (domain size multiplier, Courant number, time step limits)
 
 Problem Description: {user_prompt}
 
@@ -471,6 +881,15 @@ Examples of mesh resolution:
 - "fine resolution" → mesh_resolution: "fine"
 - No mesh specified → mesh_resolution: null (will default to "medium")
 
+Examples of advanced parameter extraction:
+- "use 50x domain size" → domain_size_multiplier: 50.0
+- "domain 10 times the cylinder diameter" → domain_size_multiplier: 10.0
+- "use Courant number 0.8" → courant_number: 0.8
+- "CFL of 0.5" → courant_number: 0.5
+- "minimum time step 1e-6" → min_time_step: 1e-6
+- "max time step 0.001" → max_time_step: 0.001
+- No advanced parameters specified → all null (will use defaults)
+
 {format_instructions}
 
 Return valid JSON that matches the schema exactly.
@@ -482,38 +901,71 @@ Return valid JSON that matches the schema exactly.
         # Process the user prompt
         result = chain.invoke({
             "user_prompt": state["user_prompt"],
+            "stl_instruction": stl_instruction,
             "format_instructions": parser.get_format_instructions()
         })
         
         # Convert to dictionary
         parsed_params = result.dict()
         
-        # Extract dimensions from text (as backup/enhancement)
-        text_dimensions = extract_dimensions_from_text(state["user_prompt"], parsed_params["geometry_type"])
+        # Handle STL file-specific logic
+        if state.get("stl_file"):
+            # Force custom geometry settings for STL files
+            parsed_params["geometry_type"] = GeometryType.CUSTOM
+            parsed_params["is_custom_geometry"] = True
+            parsed_params["geometry_dimensions"] = {"is_3d": True}  # Mark as 3D
+            
+            # Set appropriate flow context for STL files (typically external flow)
+            parsed_params["flow_context"] = {
+                "is_external_flow": True,
+                "domain_type": "unbounded",
+                "domain_size_multiplier": 20.0
+            }
+            
+            if state["verbose"]:
+                logger.info("NL Interpreter: STL file detected, configured for custom 3D geometry")
+        else:
+            # Extract dimensions from text (as backup/enhancement) for non-STL cases
+            text_dimensions = extract_dimensions_from_text(state["user_prompt"], parsed_params["geometry_type"])
+            
+            # Merge extracted dimensions with LLM-parsed dimensions
+            for key, value in text_dimensions.items():
+                if key not in parsed_params["geometry_dimensions"] or parsed_params["geometry_dimensions"][key] is None:
+                    parsed_params["geometry_dimensions"][key] = value
+            
+            # Apply intelligent defaults for missing dimensions
+            parsed_params["geometry_dimensions"] = apply_intelligent_defaults(
+                parsed_params["geometry_type"],
+                parsed_params["geometry_dimensions"],
+                FlowContext(**parsed_params["flow_context"]),
+                parsed_params.get("reynolds_number")
+            )
+            
+            # For non-STL cases, ensure is_custom_geometry is False
+            parsed_params["is_custom_geometry"] = False
         
-        # Merge extracted dimensions with LLM-parsed dimensions
-        for key, value in text_dimensions.items():
-            if key not in parsed_params["geometry_dimensions"] or parsed_params["geometry_dimensions"][key] is None:
-                parsed_params["geometry_dimensions"][key] = value
-        
-        # Infer flow context if not properly set
-        if "flow_context" not in parsed_params or parsed_params["flow_context"] is None:
-            parsed_params["flow_context"] = infer_flow_context(state["user_prompt"], parsed_params["geometry_type"]).dict()
-        
-        # Apply intelligent defaults for missing dimensions
-        parsed_params["geometry_dimensions"] = apply_intelligent_defaults(
-            parsed_params["geometry_type"],
-            parsed_params["geometry_dimensions"],
-            FlowContext(**parsed_params["flow_context"]),
-            parsed_params.get("reynolds_number")
-        )
+        # Infer flow context if not properly set (for non-STL cases)
+        if not state.get("stl_file") and ("flow_context" not in parsed_params or parsed_params["flow_context"] is None):
+            user_domain_multiplier = parsed_params.get("domain_size_multiplier")
+            parsed_params["flow_context"] = infer_flow_context(
+                state["user_prompt"], 
+                parsed_params["geometry_type"], 
+                user_domain_multiplier
+            ).dict()
+        elif not state.get("stl_file") and parsed_params.get("domain_size_multiplier") is not None:
+            # Update existing flow context with user-specified domain multiplier
+            flow_context = FlowContext(**parsed_params["flow_context"])
+            flow_context.domain_size_multiplier = parsed_params["domain_size_multiplier"]
+            parsed_params["flow_context"] = flow_context.dict()
         
         # Extract geometry information with flow context
         geometry_info = {
             "type": parsed_params["geometry_type"],
             "dimensions": parsed_params["geometry_dimensions"],
             "mesh_resolution": parsed_params.get("mesh_resolution", "medium"),
-            "flow_context": parsed_params["flow_context"]
+            "flow_context": parsed_params["flow_context"],
+            "is_custom_geometry": parsed_params.get("is_custom_geometry", False),
+            "stl_file": state.get("stl_file")  # Pass STL file path to geometry info
         }
         
         # Log results if verbose
@@ -522,6 +974,7 @@ Return valid JSON that matches the schema exactly.
             logger.info(f"NL Interpreter: Flow context: {parsed_params['flow_context']}")
             logger.info(f"NL Interpreter: Flow type: {parsed_params['flow_type']}")
             logger.info(f"NL Interpreter: Analysis type: {parsed_params['analysis_type']}")
+            logger.info(f"NL Interpreter: Custom geometry: {parsed_params.get('is_custom_geometry', False)}")
         
         # Calculate Reynolds number if not provided
         if not parsed_params.get("reynolds_number") and parsed_params.get("velocity"):
@@ -545,6 +998,61 @@ Return valid JSON that matches the schema exactly.
         for key, value in boundary_conditions.items():
             if key not in parsed_params or parsed_params[key] is None:
                 parsed_params[key] = value
+        
+        # Detect rotation request from prompt
+        rotation_info = detect_rotation_request(state["user_prompt"])
+        if rotation_info["rotate"]:
+            parsed_params["rotation_info"] = rotation_info
+            if state["verbose"]:
+                logger.info(f"NL Interpreter: Detected rotation request: {rotation_info}")
+        
+        # Detect advanced parameters from prompt and check for validation errors
+        advanced_params = detect_advanced_parameters(state["user_prompt"])
+        all_validation_errors = []
+        
+        # Check for validation errors from advanced parameters
+        if "validation_errors" in advanced_params:
+            all_validation_errors.extend(advanced_params["validation_errors"])
+            del advanced_params["validation_errors"]  # Remove from params to avoid adding to parsed_params
+        
+        # Add valid advanced parameters
+        for key, value in advanced_params.items():
+            if key not in parsed_params or parsed_params[key] is None:
+                parsed_params[key] = value
+                if state["verbose"]:
+                    logger.info(f"NL Interpreter: User-specified {key}: {value}")
+        
+        # Validate physical parameters extracted by OpenAI
+        physical_validation_errors = validate_physical_parameters(parsed_params)
+        all_validation_errors.extend(physical_validation_errors)
+        
+        # If there are validation errors, check if user wants to override
+        if all_validation_errors:
+            if state.get("force_validation", False):
+                # User has chosen to override validation, proceed with warnings
+                warning_message = f"⚠️  VALIDATION OVERRIDE: Proceeding with {len(all_validation_errors)} out-of-range parameter(s). This may lead to computational issues or simulation failure."
+                logger.warning(f"NL Interpreter: Parameter validation overridden by user: {warning_message}")
+                # Add detailed validation warnings but don't stop execution
+                for error in all_validation_errors:
+                    warning_detail = f"Parameter '{error['parameter']}' = {error['value']} (acceptable range: {error['min']} to {error['max']})"
+                    logger.warning(f"NL Interpreter: {warning_detail}")
+                
+                return {
+                    **state,
+                    "warnings": state["warnings"] + [warning_message],
+                    "parsed_parameters": parsed_params,
+                    "geometry_info": geometry_info,
+                    "current_step": CFDStep.NL_INTERPRETATION
+                }
+            else:
+                # Normal validation failure - stop execution with helpful error message
+                error_message = format_validation_errors(all_validation_errors)
+                logger.error(f"NL Interpreter: Parameter validation failed: {error_message}")
+                return {
+                    **state,
+                    "errors": state["errors"] + [error_message],
+                    "current_step": CFDStep.ERROR
+                }
         
         return {
             **state,

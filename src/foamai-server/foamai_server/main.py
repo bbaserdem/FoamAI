@@ -26,7 +26,7 @@ from project_service import ProjectService, ProjectError
 from command_service import command_service, CommandExecutionError
 from schemas import (
     TaskCreationRequest, TaskUpdateRequest, TaskResponse, TaskRejectionRequest,
-    ProjectCreationRequest, ProjectResponse, ProjectListResponse,
+    ProjectCreationRequest, ProjectResponse, ProjectListResponse, ProjectInfoResponse,
     FileUploadResponse, PVServerStartRequest, PVServerResponse, PVServerListResponse,
     PVServerStopResponse, ProjectPVServerStartRequest, ProjectPVServerResponse,
     ProjectPVServerInfoResponse, ProjectPVServerStopResponse, CombinedPVServerResponse,
@@ -195,11 +195,11 @@ async def list_projects():
     projects = project_service.list_projects()
     return ProjectListResponse(projects=projects, count=len(projects))
 
-@app.get("/api/projects/{project_name}")
+@app.get("/api/projects/{project_name}", response_model=ProjectInfoResponse)
 async def get_project(project_name: str):
     """Get project information"""
     project_info = project_service.get_project_info(project_name)
-    return {"project_name": project_name, **project_info}
+    return project_info
 
 @app.delete("/api/projects/{project_name}")
 async def delete_project(project_name: str):

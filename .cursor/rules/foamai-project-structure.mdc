@@ -1,0 +1,86 @@
+# FoamAI Project Structure
+
+## **Core Architecture**
+FoamAI is an AI-powered OpenFOAM simulation platform with a FastAPI backend and multiple client interfaces.
+
+## **Directory Structure**
+```
+FoamAI/
+├── src/foamai-server/              # Main backend API server
+│   ├── foamai_server/              # Core server package
+│   │   ├── main.py                 # FastAPI application entry point
+│   │   ├── schemas.py              # Pydantic models for API
+│   │   ├── project_service.py      # Project management logic
+│   │   ├── command_service.py      # Command execution service
+│   │   ├── pvserver_service.py     # ParaView server management
+│   │   ├── database.py             # Database operations (legacy)
+│   │   └── config.py               # Configuration settings
+│   ├── _docs/                      # API documentation
+│   │   ├── API_descr.md            # Main API documentation
+│   │   ├── COMMAND_EXECUTION.md    # Command execution feature docs
+│   │   └── all_api_routes.md       # Route summary
+│   └── test_*.py                   # Integration tests
+├── client/                         # GUI client application
+├── src/agents/                     # AI agent implementations
+├── docker/                         # Docker configurations
+├── infra/                          # Terraform infrastructure
+└── _docs/                          # Project documentation
+```
+
+## **Service Layer Architecture**
+- **[main.py](mdc:src/foamai-server/foamai_server/main.py)**: FastAPI application with endpoints
+- **[project_service.py](mdc:src/foamai-server/foamai_server/project_service.py)**: Project management and file operations
+- **[command_service.py](mdc:src/foamai-server/foamai_server/command_service.py)**: Secure command execution
+- **[pvserver_service.py](mdc:src/foamai-server/foamai_server/pvserver_service.py)**: ParaView server lifecycle management
+
+## **API Design Patterns**
+- **Project-based workflow**: Modern approach using `/api/projects/{project_name}/...`
+- **Legacy task-based**: Maintained for backward compatibility
+- **Consistent error handling**: Custom exception classes with proper HTTP status codes
+- **Structured responses**: Pydantic schemas for all request/response models
+
+## **Project Directory Structure**
+Each OpenFOAM project follows this structure:
+```
+project_name/
+├── description.txt                 # Project description
+├── active_run/                     # Working directory for OpenFOAM
+│   ├── system/                     # OpenFOAM system files
+│   │   ├── controlDict
+│   │   ├── blockMeshDict
+│   │   └── ...
+│   ├── constant/                   # Constant properties
+│   │   ├── transportProperties
+│   │   └── ...
+│   └── 0/                          # Initial conditions
+│       ├── U
+│       ├── p
+│       └── ...
+```
+
+## **Key Configuration Files**
+- **[config.py](mdc:src/foamai-server/foamai_server/config.py)**: Server configuration and paths
+- **[pyproject.toml](mdc:pyproject.toml)**: Python project configuration
+- **[docker-compose.yml](mdc:docker-compose.yml)**: Multi-container deployment
+- **[flake.nix](mdc:flake.nix)**: Nix development environment
+
+## **Development Workflow**
+1. **Backend development**: Work in `src/foamai-server/`
+2. **API testing**: Use integration tests in `test_*.py` files
+3. **Documentation**: Update `_docs/` when adding features
+4. **Deployment**: Use Docker containers or direct deployment
+
+## **Current Branch Context**
+- **Branch**: `backend_api_2`
+- **Focus**: Enhanced project info functionality with file listing
+- **Recent changes**: Added comprehensive project information retrieval with active_run file scanning
+
+## **Integration Points**
+- **OpenFOAM**: Direct command execution in project directories
+- **ParaView**: Server management for visualization
+- **AI Agents**: Natural language to OpenFOAM workflow conversion
+- **Infrastructure**: EC2 deployment with Terraform
+description:
+globs:
+alwaysApply: false
+---

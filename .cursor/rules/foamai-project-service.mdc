@@ -1,0 +1,153 @@
+# FoamAI Project Service Patterns
+
+## **Service Architecture**
+- **Separate concerns**: Use dedicated service classes (`ProjectService`, `CommandService`, `PVServerService`)
+- **Wrap standalone functions**: Service classes provide clean interfaces to utility functions
+- **Import structure**: Service classes in [main.py](mdc:src/foamai-server/foamai_server/main.py) as `project_service = ProjectService()`
+
+## **File System Operations**
+
+### **Project Structure**
+```
+project_name/
+├── description.txt          # Project description
+├── active_run/             # Working directory for OpenFOAM
+│   ├── system/
+│   ├── constant/
+│   └── 0/
+```
+
+### **Path Handling**
+```python
+# Always use Path objects for file operations
+project_path = self.base_path / project_name
+active_run_path = project_path / "active_run"
+
+# File paths relative to active_run
+relative_path = item.relative_to(active_run_path)
+files.append(str(relative_path))
+```
+
+### **File Scanning Pattern**
+```python
+def scan_active_run_directory(active_run_path: Path) -> Tuple[List[str], int, int]:
+    """Scan directory with graceful error handling"""
+    if not active_run_path.exists() or not active_run_path.is_dir():
+        return [], 0, 0
+    
+    files = []
+    total_size = 0
+    
+    try:
+        for item in active_run_path.rglob("*"):
+            if item.is_file():
+                try:
+                    relative_path = item.relative_to(active_run_path)
+                    files.append(str(relative_path))
+                    total_size += item.stat().st_size
+                except (PermissionError, OSError, FileNotFoundError):
+                    continue  # Skip unreadable files
+    except (PermissionError, OSError):
+        return [], 0, 0
+    
+    return files, len(files), total_size
+```
+
+## **Error Handling Patterns**
+
+### **Custom Exception Hierarchy**
+```python
+class ProjectError(Exception):
+    """Base exception for project operations"""
+    pass
+
+class ProjectExistsError(ProjectError):
+    """Raised when project already exists"""
+    pass
+
+class InvalidProjectNameError(ProjectError):
+    """Raised when project name is invalid"""
+    pass
+```
+
+### **Graceful Degradation**
+- **File operations**: Continue on permission errors, skip unreadable files
+- **Optional features**: Don't fail core operations if auxiliary features fail
+- **Fallback values**: Return sensible defaults when operations fail
+
+```python
+def read_project_description(project_path: Path) -> str:
+    """Read description with fallback to empty string"""
+    try:
+        description_file = project_path / "description.txt"
+        if description_file.exists():
+            return description_file.read_text(encoding='utf-8').strip()
+    except (PermissionError, OSError, UnicodeDecodeError):
+        pass  # Return empty string on any error
+    return ""
+```
+
+## **Service Method Patterns**
+
+### **Project Creation**
+```python
+def create_project(self, project_name: str, description: Optional[str] = None) -> Dict:
+    """Create project with optional description"""
+    validate_project_name(project_name)
+    
+    project_path = self.base_path / project_name
+    if project_path.exists():
+        raise ProjectExistsError(f"Project '{project_name}' already exists")
+    
+    try:
+        project_path.mkdir(parents=True, exist_ok=False)
+        
+        # Write description file if provided
+        if description:
+            write_project_description(project_path, description)
+        
+        return {
+            "project_name": project_name,
+            "project_path": str(project_path),
+            "description": description or "",
+            "created": True
+        }
+    except OSError as e:
+        raise ProjectError(f"Failed to create project: {e}")
+```
+
+### **Information Retrieval**
+```python
+def get_project_info(self, project_name: str) -> Dict:
+    """Get comprehensive project information"""
+    if not self.project_exists(project_name):
+        raise ProjectError(f"Project '{project_name}' not found")
+    
+    project_path = self.base_path / project_name
+    active_run_path = project_path / "active_run"
+    
+    # Gather all information
+    description = read_project_description(project_path)
+    created_at = get_directory_creation_time(project_path)
+    files, file_count, total_size = scan_active_run_directory(active_run_path)
+    
+    return {
+        "project_name": project_name,
+        "project_path": str(project_path),
+        "description": description,
+        "created_at": created_at,
+        "files": files,
+        "file_count": file_count,
+        "total_size": total_size
+    }
+```
+
+## **Validation Patterns**
+- **Project names**: Alphanumeric, hyphens, underscores only
+- **Path security**: Prevent directory traversal attacks
+- **Existence checks**: Always validate before operations
+- **Type validation**: Use Path objects consistently
+description:
+globs:
+alwaysApply: false
+---

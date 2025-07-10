@@ -26,6 +26,7 @@ dependencies = [
     # Data handling
     "pyyaml>=6.0.0",
     "toml>=0.10.0",
+    "numpy>=1.24.0",  # For STL file analysis
     # Async support
     "aiofiles>=23.0.0",
 ]

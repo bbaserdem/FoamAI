@@ -1962,11 +1962,18 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
     geometry_dict = {}
     
     # Handle STL files for custom geometry
-    if is_custom_geometry and mesh_config.get("stl_file_case_path"):
+    if is_custom_geometry and (mesh_config.get("stl_file_case_path") or mesh_config.get("stl_file")):
         # Use the STL file name as the geometry name
         stl_name = mesh_config.get("stl_name", "stl_surface")
-        # Ensure the file path is in the correct OpenFOAM format
-        stl_file_path = mesh_config.get("stl_file_case_path", "constant/triSurface/geometry.stl")
+        
+        # Get STL file path - either from case path or original file
+        if mesh_config.get("stl_file_case_path"):
+            stl_file_path = mesh_config.get("stl_file_case_path")
+        else:
+            # Use original file and assume it will be copied to triSurface
+            from pathlib import Path
+            stl_file_path = f"constant/triSurface/{Path(mesh_config.get('stl_file', 'geometry.stl')).name}"
+        
         # Remove any leading path separators and use forward slashes
         stl_file_path = stl_file_path.replace("\\", "/").lstrip("/")
         
@@ -1978,8 +1985,47 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
             "type": "triSurfaceMesh",
             "file": f'"{stl_filename}"'  # Use just the filename
         }
+    elif geometry:
+        # Use geometry section from mesh config if available
+        for geom_name, geom_data in geometry.items():
+            if geom_data.get("type") == "triSurfaceMesh":
+                geometry_dict[geom_name] = {
+                    "type": "triSurfaceMesh",
+                    "file": f'"{geom_data.get("file", "geometry.stl")}"'
+                }
+            elif geom_data.get("type") == "cylinder":
+                geometry_dict[geom_name] = {
+                    "type": "searchableCylinder",
+                    "point1": geom_data["point1"],
+                    "point2": geom_data["point2"],
+                    "radius": geom_data["radius"]
+                }
+            elif geom_data.get("type") == "sphere":
+                geometry_dict[geom_name] = {
+                    "type": "searchableSphere",
+                    "centre": geom_data["center"],
+                    "radius": geom_data["radius"]
+                }
+            elif geom_data.get("type") == "cube":
+                geometry_dict[geom_name] = {
+                    "type": "searchableBox",
+                    "min": geom_data["min"],
+                    "max": geom_data["max"]
+                }
+            elif geom_data.get("type") == "airfoil":
+                # Airfoils typically need STL files or custom geometry
+                # For now, use a simple box approximation
+                geometry_dict[geom_name] = {
+                    "type": "searchableBox",
+                    "min": [geom_data["center"][0] - geom_data["chord"]/2, 
+                           geom_data["center"][1] - geom_data["thickness"]/2,
+                           geom_data["center"][2] - geom_data["span"]/2],
+                    "max": [geom_data["center"][0] + geom_data["chord"]/2, 
+                           geom_data["center"][1] + geom_data["thickness"]/2,
+                           geom_data["center"][2] + geom_data["span"]/2]
+                }
     else:
-        # Handle built-in geometry types
+        # Handle built-in geometry types (legacy support)
         for geom_name, geom_data in geometry.items():
             if geom_data["type"] == "cylinder":
                 geometry_dict[geom_name] = {
@@ -2021,15 +2067,24 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
     layers_dict = {}
     
     for geom_name in geometry_dict.keys():
+        # Check if this is an STL surface (triSurfaceMesh)
+        is_stl_surface = geometry_dict[geom_name].get("type") == "triSurfaceMesh"
+        
         refinement_surfaces[geom_name] = {
             "level": [
                 snappy_settings.get("refinement_levels", {}).get("min", 0),
                 snappy_settings.get("refinement_levels", {}).get("max", 2)
-            ],
-            "patchInfo": {
+            ]
+        }
+        
+        # For STL surfaces, we need proper patchInfo to create boundary patches
+        if is_stl_surface:
+            refinement_surfaces[geom_name]["patchInfo"] = {
                 "type": "wall"
             }
-        }
+            # Add merge angle to help merge multiple patches into one
+            refinement_surfaces[geom_name]["mergeAngle"] = 60  # Merge patches with angles less than 60 degrees
+        
         # Add layers if enabled
         if snappy_settings.get("add_layers", False):
             layers_dict[geom_name] = {
@@ -2045,18 +2100,18 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
     # Get mesh quality controls - use improved settings for STL files
     mesh_quality = snappy_settings.get("mesh_quality", {})
     if not mesh_quality:
-        # Default quality controls
+        # Improved quality controls for better mesh quality
         mesh_quality = {
             "maxNonOrtho": 65,
             "maxBoundarySkewness": 20,
             "maxInternalSkewness": 4,
             "maxConcave": 80,
             "minVol": 1e-13,
-            "minTetQuality": 1e-30,
+            "minTetQuality": 1e-15,  # Improved from 1e-30
             "minArea": -1,
-            "minTwist": 0.02,
+            "minTwist": 0.05,       # Improved from 0.02
             "minDeterminant": 0.001,
-            "minFaceWeight": 0.02,
+            "minFaceWeight": 0.05,  # Improved from 0.02
             "minVolRatio": 0.01,
             "minTriangleTwist": -1,
             "nSmoothScale": 4,
@@ -2075,7 +2130,7 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
             "minRefinementCells": 0,
             "maxLoadUnbalance": 0.10,
             "nCellsBetweenLevels": 3,
-            "features": [],  # Can add feature edge refinement here
+            "features": [],  # Feature extraction requires .eMesh files, not STL
             "refinementSurfaces": refinement_surfaces,
             "resolveFeatureAngle": 30,
             "refinementRegions": {},
@@ -2084,13 +2139,16 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
         },
         "snapControls": {
             "nSmoothPatch": 3,
-            "tolerance": 4.0,  # Increased tolerance for complex geometries
-            "nSolveIter": 100,  # More iterations for better convergence
-            "nRelaxIter": 8,    # More relaxation iterations
-            "nFeatureSnapIter": 15,  # More feature snapping iterations
+            "tolerance": 2.0,       # Reduced from 4.0 for better quality
+            "nSolveIter": 30,       # Reduced from 100 to prevent over-snapping
+            "nRelaxIter": 5,        # Reduced from 8
+            "nFeatureSnapIter": 10, # Reduced from 15
             "implicitFeatureSnap": False,
-            "explicitFeatureSnap": True,
-            "multiRegionFeatureSnap": False
+            "explicitFeatureSnap": False,  # Disable explicit feature snapping without .eMesh files
+            "multiRegionFeatureSnap": False,
+            "detectNearSurfacesSnap": True,  # Help detect and merge nearby surfaces
+            "nSmoothDisplacement": 4,        # Smooth displacement field
+            "nSnap": 2                       # Number of patch smoothing iterations
         },
         "addLayersControls": {
             "relativeSizes": True,

@@ -30,7 +30,8 @@ def orchestrator_agent(state: CFDState) -> CFDState:
         return {
             **state,
             "current_step": CFDStep.ERROR,
-            "errors": state["errors"] + ["Maximum retries exceeded"]
+            "errors": state["errors"] + ["Maximum retries exceeded"],
+            "conversation_active": False
         }
     
     # Handle errors first - route to intelligent error handler
@@ -56,7 +57,8 @@ def orchestrator_agent(state: CFDState) -> CFDState:
             return {
                 **state,
                 "current_step": CFDStep.COMPLETE,
-                "retry_count": 0
+                "retry_count": 0,
+                "conversation_active": False
             }
     
     # Handle quality checks and refinement (only if simulation hasn't already succeeded)
@@ -102,7 +104,8 @@ def handle_refinement(state: CFDState) -> CFDState:
         return {
             **state,
             "current_step": CFDStep.MESH_GENERATION,
-            "warnings": state["warnings"] + ["Mesh quality low, refining mesh"]
+            "warnings": state["warnings"] + ["Mesh quality low, refining mesh"],
+            "retry_count": state["retry_count"] + 1
         }
     
     if state["convergence_metrics"] and not state["convergence_metrics"].get("converged", False):
@@ -110,7 +113,8 @@ def handle_refinement(state: CFDState) -> CFDState:
         return {
             **state,
             "current_step": CFDStep.SOLVER_SELECTION,
-            "warnings": state["warnings"] + ["Poor convergence, adjusting solver"]
+            "warnings": state["warnings"] + ["Poor convergence, adjusting solver"],
+            "retry_count": state["retry_count"] + 1
         }
     
     # Default to continuing workflow
@@ -120,6 +124,14 @@ def handle_refinement(state: CFDState) -> CFDState:
 def handle_normal_progression(state: CFDState) -> CFDState:
     """Handle normal workflow progression."""
     current_step = state["current_step"]
+    
+    # If we're already at COMPLETE, ensure we terminate properly
+    if current_step == CFDStep.COMPLETE:
+        return {
+            **state,
+            "conversation_active": False,
+            "retry_count": 0
+        }
     
     # Determine next step based on current step
     next_step_map = {
@@ -139,6 +151,15 @@ def handle_normal_progression(state: CFDState) -> CFDState:
     
     if state["verbose"]:
         logger.info(f"Normal progression: {current_step} -> {next_step}")
+    
+    # If next step is COMPLETE, set conversation_active to False
+    if next_step == CFDStep.COMPLETE:
+        return {
+            **state,
+            "current_step": next_step,
+            "conversation_active": False,
+            "retry_count": 0
+        }
     
     return {
         **state,

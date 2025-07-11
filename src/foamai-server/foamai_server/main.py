@@ -28,7 +28,7 @@ from schemas import (
     TaskCreationRequest, TaskUpdateRequest, TaskResponse, TaskRejectionRequest,
     ProjectCreationRequest, ProjectResponse, ProjectListResponse, ProjectInfoResponse,
     FileUploadResponse, PVServerStartRequest, PVServerResponse, PVServerListResponse,
-    PVServerStopResponse, ProjectPVServerStartRequest, ProjectPVServerResponse,
+    PVServerStopResponse, ClearAllPVServersResponse, ProjectPVServerStartRequest, ProjectPVServerResponse,
     ProjectPVServerInfoResponse, ProjectPVServerStopResponse, CombinedPVServerResponse,
     CommandRequest, CommandResponse,
     ErrorResponse, HealthCheckResponse, DatabaseStatsResponse
@@ -377,6 +377,19 @@ async def list_all_pvservers():
         total_count=len(all_pvservers),
         running_count=len(all_pvservers)
     )
+
+@app.post("/api/pvservers/clear-all", response_model=ClearAllPVServersResponse)
+async def clear_all_pvservers():
+    """Clear all running pvserver processes (both database-tracked and system processes)"""
+    try:
+        result = pvserver_service.clear_all_pvservers()
+        return ClearAllPVServersResponse(**result)
+    except PVServerServiceError as e:
+        logger.error(f"Failed to clear all pvservers: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to clear all pvservers: {str(e)}")
+    except Exception as e:
+        logger.exception("Unexpected error clearing all pvservers")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 # =============================================================================
 # PROJECT-BASED PVSERVER ENDPOINTS

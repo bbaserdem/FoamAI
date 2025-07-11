@@ -105,6 +105,18 @@ class PVServerStopResponse(BaseModel):
     status: str
     message: str
 
+class ClearAllPVServersResponse(BaseModel):
+    """Response for clearing all pvserver processes"""
+    status: str
+    total_stopped: int
+    total_failed: int
+    database_stopped: int
+    database_failed: int
+    system_stopped: int
+    system_failed: int
+    errors: List[str]
+    message: str
+
 # =============================================================================
 # PROJECT-BASED PVSERVER SCHEMAS
 # =============================================================================

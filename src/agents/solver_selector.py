@@ -1034,7 +1034,7 @@ def check_reactive_flow_indicators(prompt: str, params: Dict[str, Any]) -> bool:
 
 def extract_keywords_with_context(prompt: str) -> Dict[str, float]:
     """
-    Enhanced keyword extraction with context analysis and weighting.
+    Enhanced keyword extraction with context analysis and intelligent multiphase detection.
     Returns physics category scores based on weighted keyword detection.
     """
     import re
@@ -1058,8 +1058,11 @@ def extract_keywords_with_context(prompt: str) -> Dict[str, float]:
                 physics_scores[category] += 2.0
                 logger.debug(f"Context phrase detected: '{phrase}' -> {category} (+2.0)")
     
-    # Then check individual keywords with weights
+    # Then check individual keywords with weights for all categories EXCEPT multiphase
     for category, keywords in KEYWORD_WEIGHTS.items():
+        if category == "multiphase":
+            continue  # Skip - we'll use intelligent detection instead
+            
         for keyword, weight in keywords.items():
             # Use word boundaries for better matching
             if keyword.startswith(r"\b") or keyword.endswith(r"\b"):
@@ -1071,16 +1074,44 @@ def extract_keywords_with_context(prompt: str) -> Dict[str, float]:
                 physics_scores[category] += weight
                 logger.debug(f"Keyword detected: '{keyword}' -> {category} ({weight:+.1f})")
     
+    # INTELLIGENT MULTIPHASE DETECTION - Use OpenAI instead of keywords
+    try:
+        from agents.nl_interpreter import detect_multiphase_flow
+        multiphase_info = detect_multiphase_flow(prompt)
+        
+        if multiphase_info.get("is_multiphase", False):
+            physics_scores["multiphase"] += 3.0  # High confidence from AI
+            logger.debug(f"AI multiphase detection: TRUE -> multiphase (+3.0)")
+            logger.debug(f"AI explanation: {multiphase_info.get('explanation', 'No explanation')}")
+        else:
+            physics_scores["multiphase"] = 0.0  # AI says it's single-phase
+            logger.debug(f"AI multiphase detection: FALSE -> single-phase (0.0)")
+            logger.debug(f"AI explanation: {multiphase_info.get('explanation', 'No explanation')}")
+    except Exception as e:
+        logger.warning(f"AI multiphase detection failed: {e}, falling back to keyword detection")
+        # Fallback to keyword detection if AI fails
+        for keyword, weight in KEYWORD_WEIGHTS.get("multiphase", {}).items():
+            if keyword.startswith(r"\b") or keyword.endswith(r"\b"):
+                pattern = keyword
+            else:
+                pattern = rf"\b{re.escape(keyword)}\b"
+            
+            if re.search(pattern, prompt_lower):
+                physics_scores["multiphase"] += weight
+                logger.debug(f"Fallback keyword detected: '{keyword}' -> multiphase ({weight:+.1f})")
+    
     # Special handling for "shock wave" vs "water wave"
     if "shock wave" in prompt_lower or "shockwave" in prompt_lower:
         physics_scores["compressible"] += 2.0
         physics_scores["multiphase"] -= 1.0  # Reduce multiphase score
         logger.debug("'shock wave' detected -> compressible (+2.0), multiphase (-1.0)")
     
-    # Special handling for air-water combinations
+    # Special handling for air-water combinations (only if not overridden by AI)
     if re.search(r"\bair\b", prompt_lower) and re.search(r"\bwater\b", prompt_lower):
-        physics_scores["multiphase"] += 1.5
-        logger.debug("Air-water combination detected -> multiphase (+1.5)")
+        # Only add if AI didn't already detect multiphase
+        if physics_scores["multiphase"] < 1.0:
+            physics_scores["multiphase"] += 1.5
+            logger.debug("Air-water combination detected -> multiphase (+1.5)")
     
     # Normalize negative scores to zero
     for category in physics_scores:

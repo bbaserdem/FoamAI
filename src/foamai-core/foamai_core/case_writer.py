@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional, List
 from loguru import logger
 
 from .state import CFDState, CFDStep
+from .remote_executor import RemoteExecutor, LocalToRemoteAdapter
 
 
 def case_writer_agent(state: CFDState) -> CFDState:
@@ -17,44 +18,20 @@ def case_writer_agent(state: CFDState) -> CFDState:
     
     Assembles complete OpenFOAM case directory structure from generated
     mesh, boundary conditions, and solver configurations.
+    
+    Can write files locally or upload to remote server based on configuration.
     """
     try:
         if state["verbose"]:
             logger.info("Case Writer: Starting case assembly")
         
-        # Create case directory
-        case_directory = create_case_directory(state)
+        # Determine execution mode
+        execution_mode = state.get("execution_mode", "local")  # "local" or "remote"
         
-        # Write mesh configuration
-        write_mesh_files(case_directory, state)
-        
-        # Update state with case directory for boundary condition mapping
-        updated_state = {**state, "case_directory": str(case_directory)}
-        
-        # Write boundary condition files with intelligent mapping
-        write_boundary_condition_files_with_mapping(case_directory, updated_state)
-        
-        # Write solver configuration files
-        write_solver_files(case_directory, updated_state)
-        
-        # Validate case completeness
-        validation_result = validate_case_structure(case_directory)
-        if not validation_result["valid"]:
-            logger.warning(f"Case validation issues: {validation_result['warnings']}")
-            return {
-                **state,
-                "errors": state["errors"] + validation_result["errors"],
-                "warnings": state["warnings"] + validation_result["warnings"]
-            }
-        
-        if state["verbose"]:
-            logger.info(f"Case Writer: Case assembled at {case_directory}")
-        
-        return {
-            **updated_state,
-            "work_directory": str(case_directory.parent),
-            "errors": []
-        }
+        if execution_mode == "remote":
+            return case_writer_remote(state)
+        else:
+            return case_writer_local(state)
         
     except Exception as e:
         logger.error(f"Case Writer error: {str(e)}")
@@ -63,6 +40,197 @@ def case_writer_agent(state: CFDState) -> CFDState:
             "errors": state["errors"] + [f"Case writing failed: {str(e)}"],
             "current_step": CFDStep.ERROR
         }
+
+
+def case_writer_remote(state: CFDState) -> CFDState:
+    """
+    Case Writer for remote execution - uploads files to server.
+    """
+    try:
+        # Get remote execution configuration
+        server_url = state.get("server_url", "http://localhost:8000")
+        project_name = state.get("project_name")
+        
+        if not project_name:
+            raise ValueError("Project name is required for remote execution")
+        
+        if state["verbose"]:
+            logger.info(f"Case Writer: Remote execution - uploading to project '{project_name}' on server '{server_url}'")
+        
+        # Initialize remote executor
+        with RemoteExecutor(server_url, project_name) as remote:
+            # Ensure project exists
+            if not remote.ensure_project_exists():
+                remote.create_project_if_not_exists("LangGraph generated case")
+            
+            # Create local temporary directory for file generation
+            import tempfile
+            with tempfile.TemporaryDirectory(prefix="foamai_case_") as temp_dir:
+                case_directory = Path(temp_dir) / "case"
+                case_directory.mkdir(parents=True, exist_ok=True)
+                
+                # Create standard OpenFOAM directory structure
+                (case_directory / "0").mkdir(exist_ok=True)
+                (case_directory / "constant").mkdir(exist_ok=True)
+                (case_directory / "system").mkdir(exist_ok=True)
+                (case_directory / "constant" / "triSurface").mkdir(exist_ok=True)
+                
+                # Generate all files locally first
+                write_mesh_files_local(case_directory, state)
+                
+                # Update state with case directory for boundary condition mapping
+                updated_state = {**state, "case_directory": str(case_directory)}
+                
+                write_boundary_condition_files_with_mapping_local(case_directory, updated_state)
+                write_solver_files_local(case_directory, updated_state)
+                
+                # Upload all generated files to server
+                upload_results = upload_case_files_to_server(remote, case_directory, state)
+                
+                if state["verbose"]:
+                    logger.info(f"Case Writer: Uploaded {upload_results['uploaded_count']} files to remote server")
+                    if upload_results['failed_count'] > 0:
+                        logger.warning(f"Case Writer: {upload_results['failed_count']} files failed to upload")
+                
+                # Validate that essential files were uploaded
+                if upload_results['failed_count'] > 0:
+                    essential_files = ["system/controlDict", "system/blockMeshDict"]
+                    failed_essential = [f for f in upload_results['failed_files'] 
+                                      if any(essential in f for essential in essential_files)]
+                    if failed_essential:
+                        raise Exception(f"Failed to upload essential files: {failed_essential}")
+        
+        if state["verbose"]:
+            logger.info("Case Writer: Remote case assembly completed successfully")
+        
+        return {
+            **updated_state,
+            "work_directory": f"remote://{server_url}/projects/{project_name}",
+            "case_directory": f"remote://{server_url}/projects/{project_name}/active_run",
+            "errors": []
+        }
+        
+    except Exception as e:
+        logger.error(f"Remote Case Writer error: {str(e)}")
+        return {
+            **state,
+            "errors": state["errors"] + [f"Remote case writing failed: {str(e)}"],
+            "current_step": CFDStep.ERROR
+        }
+
+
+def case_writer_local(state: CFDState) -> CFDState:
+    """
+    Case Writer for local execution (original behavior).
+    """
+    # Create case directory
+    case_directory = create_case_directory(state)
+    
+    # Write mesh configuration
+    write_mesh_files(case_directory, state)
+    
+    # Update state with case directory for boundary condition mapping
+    updated_state = {**state, "case_directory": str(case_directory)}
+    
+    # Write boundary condition files with intelligent mapping
+    write_boundary_condition_files_with_mapping(case_directory, updated_state)
+    
+    # Write solver configuration files
+    write_solver_files(case_directory, updated_state)
+    
+    # Validate case completeness
+    validation_result = validate_case_structure(case_directory)
+    if not validation_result["valid"]:
+        logger.warning(f"Case validation issues: {validation_result['warnings']}")
+        return {
+            **state,
+            "errors": state["errors"] + validation_result["errors"],
+            "warnings": state["warnings"] + validation_result["warnings"]
+        }
+    
+    if state["verbose"]:
+        logger.info(f"Case Writer: Case assembled at {case_directory}")
+    
+    return {
+        **updated_state,
+        "work_directory": str(case_directory.parent),
+        "errors": []
+    }
+
+
+def upload_case_files_to_server(remote: RemoteExecutor, case_directory: Path, state: CFDState) -> Dict[str, Any]:
+    """
+    Upload all generated case files to the remote server.
+    
+    Args:
+        remote: RemoteExecutor instance
+        case_directory: Local case directory with generated files
+        state: CFD state
+        
+    Returns:
+        Upload results summary
+    """
+    upload_results = {
+        "uploaded_count": 0,
+        "failed_count": 0,
+        "uploaded_files": [],
+        "failed_files": []
+    }
+    
+    try:
+        # Find all files in the case directory
+        all_files = []
+        for root, dirs, files in os.walk(case_directory):
+            for file in files:
+                file_path = Path(root) / file
+                relative_path = file_path.relative_to(case_directory)
+                all_files.append((file_path, str(relative_path)))
+        
+        if state["verbose"]:
+            logger.info(f"Uploading {len(all_files)} files to remote server...")
+        
+        # Upload each file
+        for local_path, relative_path in all_files:
+            try:
+                # Normalize path separators for Unix/Linux server
+                unix_relative_path = relative_path.replace('\\', '/')
+                
+                result = remote.upload_file(local_path, unix_relative_path)
+                upload_results["uploaded_count"] += 1
+                upload_results["uploaded_files"].append(unix_relative_path)
+                
+                if state["verbose"]:
+                    logger.debug(f"Uploaded: {unix_relative_path}")
+                    
+            except Exception as e:
+                logger.error(f"Failed to upload {relative_path}: {str(e)}")
+                upload_results["failed_count"] += 1
+                upload_results["failed_files"].append(relative_path)
+        
+        if state["verbose"]:
+            logger.info(f"Upload complete: {upload_results['uploaded_count']} successful, {upload_results['failed_count']} failed")
+        
+    except Exception as e:
+        logger.error(f"Error during file upload: {str(e)}")
+        upload_results["error"] = str(e)
+    
+    return upload_results
+
+
+# Local file writing functions (renamed for clarity)
+def write_mesh_files_local(case_directory: Path, state: CFDState) -> None:
+    """Write mesh configuration files locally."""
+    return write_mesh_files(case_directory, state)
+
+
+def write_boundary_condition_files_with_mapping_local(case_directory: Path, state: CFDState) -> None:
+    """Write boundary condition files with mapping locally."""
+    return write_boundary_condition_files_with_mapping(case_directory, state)
+
+
+def write_solver_files_local(case_directory: Path, state: CFDState) -> None:
+    """Write solver configuration files locally."""
+    return write_solver_files(case_directory, state)
 
 
 def create_case_directory(state: CFDState) -> Path:
@@ -77,19 +245,10 @@ def create_case_directory(state: CFDState) -> Path:
     # Generate unique case name
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     geometry_type = state["geometry_info"].get("type", "unknown")
-    
     # Convert enum to string if needed
     if hasattr(geometry_type, 'value'):
         geometry_type = geometry_type.value
-    
-    # Check if this is a custom STL geometry
-    if geometry_type == "custom" and state.get("stl_file"):
-        # Use STL filename for the case name
-        from pathlib import Path
-        stl_filename = Path(state["stl_file"]).stem  # Get filename without extension
-        case_name = f"{timestamp}_{stl_filename}_case"
-    else:
-        case_name = f"{timestamp}_{geometry_type}_case"
+    case_name = f"{timestamp}_{geometry_type}_case"
     
     case_dir = settings.get_work_dir() / case_name
     
@@ -1585,7 +1744,7 @@ def format_foam_dict(content: Dict[str, Any], file_name: str) -> str:
     try:
         import sys
         sys.path.append('src')
-        from foamai.config import get_settings
+        from .config import get_settings
         settings = get_settings()
         variant = settings.openfoam_variant
         version = settings.openfoam_version
@@ -1855,24 +2014,17 @@ def generate_background_blockmesh_dict(background_mesh: Dict[str, Any]) -> Dict[
     # Check if this is 2D or 3D
     is_2d = nz == 1
     
-    # Check if vertices are provided in the background mesh config
-    if "vertices" in background_mesh:
-        # Use the provided vertices (already positioned correctly for STL)
-        vertices = background_mesh["vertices"]
-        # Format vertices for OpenFOAM
-        formatted_vertices = []
-        for vertex in vertices:
-            formatted_vertices.append(f"({vertex[0]} {vertex[1]} {vertex[2]})")
-    else:
-        # Fallback to default domain bounds - centered at origin for simplicity
-        x_min = 0
-        x_max = length
-        y_min = 0
-        y_max = height
-        z_min = 0
-        z_max = width
-        
-        formatted_vertices = [
+    # Domain bounds - centered at origin for simplicity
+    x_min = 0
+    x_max = length
+    y_min = 0
+    y_max = height
+    z_min = 0
+    z_max = width
+    
+    return {
+        "convertToMeters": 1.0,
+        "vertices": [
             f"({x_min} {y_min} {z_min})",
             f"({x_max} {y_min} {z_min})",
             f"({x_max} {y_max} {z_min})",
@@ -1881,11 +2033,7 @@ def generate_background_blockmesh_dict(background_mesh: Dict[str, Any]) -> Dict[
             f"({x_max} {y_min} {z_max})",
             f"({x_max} {y_max} {z_max})",
             f"({x_min} {y_max} {z_max})"
-        ]
-    
-    return {
-        "convertToMeters": 1.0,
-        "vertices": formatted_vertices,
+        ],
         "blocks": [
             f"hex (0 1 2 3 4 5 6 7) ({nx} {ny} {nz}) simpleGrading (1 1 1)"
         ],
@@ -1982,18 +2130,11 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
     geometry_dict = {}
     
     # Handle STL files for custom geometry
-    if is_custom_geometry and (mesh_config.get("stl_file_case_path") or mesh_config.get("stl_file")):
+    if is_custom_geometry and mesh_config.get("stl_file_case_path"):
         # Use the STL file name as the geometry name
         stl_name = mesh_config.get("stl_name", "stl_surface")
-        
-        # Get STL file path - either from case path or original file
-        if mesh_config.get("stl_file_case_path"):
-            stl_file_path = mesh_config.get("stl_file_case_path")
-        else:
-            # Use original file and assume it will be copied to triSurface
-            from pathlib import Path
-            stl_file_path = f"constant/triSurface/{Path(mesh_config.get('stl_file', 'geometry.stl')).name}"
-        
+        # Ensure the file path is in the correct OpenFOAM format
+        stl_file_path = mesh_config.get("stl_file_case_path", "constant/triSurface/geometry.stl")
         # Remove any leading path separators and use forward slashes
         stl_file_path = stl_file_path.replace("\\", "/").lstrip("/")
         
@@ -2005,47 +2146,8 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
             "type": "triSurfaceMesh",
             "file": f'"{stl_filename}"'  # Use just the filename
         }
-    elif geometry:
-        # Use geometry section from mesh config if available
-        for geom_name, geom_data in geometry.items():
-            if geom_data.get("type") == "triSurfaceMesh":
-                geometry_dict[geom_name] = {
-                    "type": "triSurfaceMesh",
-                    "file": f'"{geom_data.get("file", "geometry.stl")}"'
-                }
-            elif geom_data.get("type") == "cylinder":
-                geometry_dict[geom_name] = {
-                    "type": "searchableCylinder",
-                    "point1": geom_data["point1"],
-                    "point2": geom_data["point2"],
-                    "radius": geom_data["radius"]
-                }
-            elif geom_data.get("type") == "sphere":
-                geometry_dict[geom_name] = {
-                    "type": "searchableSphere",
-                    "centre": geom_data["center"],
-                    "radius": geom_data["radius"]
-                }
-            elif geom_data.get("type") == "cube":
-                geometry_dict[geom_name] = {
-                    "type": "searchableBox",
-                    "min": geom_data["min"],
-                    "max": geom_data["max"]
-                }
-            elif geom_data.get("type") == "airfoil":
-                # Airfoils typically need STL files or custom geometry
-                # For now, use a simple box approximation
-                geometry_dict[geom_name] = {
-                    "type": "searchableBox",
-                    "min": [geom_data["center"][0] - geom_data["chord"]/2, 
-                           geom_data["center"][1] - geom_data["thickness"]/2,
-                           geom_data["center"][2] - geom_data["span"]/2],
-                    "max": [geom_data["center"][0] + geom_data["chord"]/2, 
-                           geom_data["center"][1] + geom_data["thickness"]/2,
-                           geom_data["center"][2] + geom_data["span"]/2]
-                }
     else:
-        # Handle built-in geometry types (legacy support)
+        # Handle built-in geometry types
         for geom_name, geom_data in geometry.items():
             if geom_data["type"] == "cylinder":
                 geometry_dict[geom_name] = {
@@ -2087,24 +2189,15 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
     layers_dict = {}
     
     for geom_name in geometry_dict.keys():
-        # Check if this is an STL surface (triSurfaceMesh)
-        is_stl_surface = geometry_dict[geom_name].get("type") == "triSurfaceMesh"
-        
         refinement_surfaces[geom_name] = {
             "level": [
                 snappy_settings.get("refinement_levels", {}).get("min", 0),
                 snappy_settings.get("refinement_levels", {}).get("max", 2)
-            ]
-        }
-        
-        # For STL surfaces, we need proper patchInfo to create boundary patches
-        if is_stl_surface:
-            refinement_surfaces[geom_name]["patchInfo"] = {
+            ],
+            "patchInfo": {
                 "type": "wall"
             }
-            # Add merge angle to help merge multiple patches into one
-            refinement_surfaces[geom_name]["mergeAngle"] = 60  # Merge patches with angles less than 60 degrees
-        
+        }
         # Add layers if enabled
         if snappy_settings.get("add_layers", False):
             layers_dict[geom_name] = {
@@ -2120,18 +2213,18 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
     # Get mesh quality controls - use improved settings for STL files
     mesh_quality = snappy_settings.get("mesh_quality", {})
     if not mesh_quality:
-        # Improved quality controls for better mesh quality
+        # Default quality controls
         mesh_quality = {
             "maxNonOrtho": 65,
             "maxBoundarySkewness": 20,
             "maxInternalSkewness": 4,
             "maxConcave": 80,
             "minVol": 1e-13,
-            "minTetQuality": 1e-15,  # Improved from 1e-30
+            "minTetQuality": 1e-30,
             "minArea": -1,
-            "minTwist": 0.05,       # Improved from 0.02
+            "minTwist": 0.02,
             "minDeterminant": 0.001,
-            "minFaceWeight": 0.05,  # Improved from 0.02
+            "minFaceWeight": 0.02,
             "minVolRatio": 0.01,
             "minTriangleTwist": -1,
             "nSmoothScale": 4,
@@ -2150,7 +2243,7 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
             "minRefinementCells": 0,
             "maxLoadUnbalance": 0.10,
             "nCellsBetweenLevels": 3,
-            "features": [],  # Feature extraction requires .eMesh files, not STL
+            "features": [],  # Can add feature edge refinement here
             "refinementSurfaces": refinement_surfaces,
             "resolveFeatureAngle": 30,
             "refinementRegions": {},
@@ -2159,16 +2252,13 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
         },
         "snapControls": {
             "nSmoothPatch": 3,
-            "tolerance": 2.0,       # Reduced from 4.0 for better quality
-            "nSolveIter": 30,       # Reduced from 100 to prevent over-snapping
-            "nRelaxIter": 5,        # Reduced from 8
-            "nFeatureSnapIter": 10, # Reduced from 15
+            "tolerance": 4.0,  # Increased tolerance for complex geometries
+            "nSolveIter": 100,  # More iterations for better convergence
+            "nRelaxIter": 8,    # More relaxation iterations
+            "nFeatureSnapIter": 15,  # More feature snapping iterations
             "implicitFeatureSnap": False,
-            "explicitFeatureSnap": False,  # Disable explicit feature snapping without .eMesh files
-            "multiRegionFeatureSnap": False,
-            "detectNearSurfacesSnap": True,  # Help detect and merge nearby surfaces
-            "nSmoothDisplacement": 4,        # Smooth displacement field
-            "nSnap": 2                       # Number of patch smoothing iterations
+            "explicitFeatureSnap": True,
+            "multiRegionFeatureSnap": False
         },
         "addLayersControls": {
             "relativeSizes": True,

@@ -111,8 +111,7 @@ def map_boundary_conditions_to_patches(
     boundary_conditions: Dict[str, Any], 
     actual_patches: List[str],
     geometry_type: GeometryType,
-    case_directory: Path = None,
-    state: Dict[str, Any] = None
+    case_directory: Path = None
 ) -> Dict[str, Any]:
     """Map generated boundary conditions to actual mesh patches with proper type handling."""
     
@@ -189,8 +188,6 @@ def map_boundary_conditions_to_patches(
     if geometry_type == GeometryType.CUSTOM:
         # Find STL surface patches (usually start with "surface_" or have "wall" type)
         stl_patches = []
-        stl_name = None
-        
         if case_directory:
             patches_info = read_mesh_patches_with_types(case_directory)
             for patch_info in patches_info:
@@ -199,28 +196,11 @@ def map_boundary_conditions_to_patches(
                 # Look for wall patches or patches starting with "surface_"
                 if patch_type == 'wall' or patch_name.startswith('surface_'):
                     stl_patches.append(patch_name)
-                    
-            # Also look for patches with _patch suffix (e.g., F_105D_patch0)
-            # Try to get the STL name from state
-            stl_name = "stl_surface"  # Default name
-            if state:
-                mesh_config = state.get("mesh_config", {})
-                stl_name = mesh_config.get("stl_name", "stl_surface")
-            
-            # Find all patches that start with the STL name
-            for patch_info in patches_info:
-                patch_name = patch_info['name']
-                if patch_name.startswith(stl_name) and patch_name not in stl_patches:
-                    stl_patches.append(patch_name)
-                    logger.info(f"Found STL patch with suffix: {patch_name}")
         
         # Add STL surface patches to mapping
         if stl_patches:
             mapping["stl_surface"] = stl_patches
             mapping["geometry"] = stl_patches
-            mapping["walls"] = stl_patches  # Also map to walls
-            if stl_name:
-                mapping[stl_name] = stl_patches  # Map the actual STL name too
             logger.info(f"Added STL surface patches to mapping: {stl_patches}")
     
     # For each field in boundary conditions
@@ -436,7 +416,7 @@ def generate_boundary_conditions_with_mapping(
             
             # Map boundary conditions to actual patches
             mapped_conditions = map_boundary_conditions_to_patches(
-                boundary_conditions, actual_patches, geometry_type, case_directory, state
+                boundary_conditions, actual_patches, geometry_type
             )
             
             # For complex solvers, enhance with AI boundary conditions

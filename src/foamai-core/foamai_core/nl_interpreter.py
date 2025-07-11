@@ -712,88 +712,75 @@ def detect_rotation_request(prompt: str) -> Dict[str, Any]:
 
 
 def detect_multiphase_flow(prompt: str) -> Dict[str, Any]:
-    """Detect multiphase flow indicators from the prompt using OpenAI intelligence."""
-    try:
-        # Get settings for API key
-        import sys
-        sys.path.append('src')
-        from foamai.config import get_settings
-        settings = get_settings()
-        
-        # Create LLM for multiphase detection
-        from langchain_openai import ChatOpenAI
-        from langchain.schema import HumanMessage
-        
-        llm = ChatOpenAI(
-            api_key=settings.openai_api_key,
-            model="gpt-4o-mini",
-            temperature=0.1,
-            max_tokens=500
-        )
-        
-        # Create intelligent multiphase detection prompt
-        detection_prompt = f"""
-Analyze the following fluid dynamics scenario and determine if it involves multiphase flow:
-
-SCENARIO: "{prompt}"
-
-IMPORTANT RULES:
-1. SINGLE-PHASE FLOW: Only ONE fluid type is present and flowing
-   - Examples: "oil flow around cylinder", "water through pipe", "air over wing"
-   - Even if the fluid is NOT air/water, it's still single-phase if only one fluid
-
-2. MULTIPHASE FLOW: Multiple fluid types interact simultaneously
-   - Examples: "water and oil mixing", "air bubbles in water", "oil-water interface"
-   - Free surface flows: "dam break", "wave sloshing", "water filling tank"
-   - Droplet/bubble flows: "droplets in air", "bubbles in liquid"
-
-3. CONTEXT MATTERS:
-   - "Oil flow around cylinder" = SINGLE-PHASE (just oil flowing)
-   - "Oil and water in pipe" = MULTIPHASE (two fluids interacting)
-   - "Flow around cylinder" = SINGLE-PHASE (default single fluid)
-
-Respond with ONLY this JSON format:
-{{
-    "is_multiphase": true/false,
-    "phases": ["phase1", "phase2", ...],
-    "free_surface": true/false,
-    "explanation": "Brief explanation of decision"
-}}
-
-PHASES should be from: ["water", "air", "oil", "gas", "steam", "other"]
-FREE_SURFACE is true only for flows with air-liquid interfaces (waves, dam breaks, etc.)
-"""
-        
-        # Get AI response
-        response = llm.invoke([HumanMessage(content=detection_prompt)])
-        
-        # Parse JSON response
-        import json
-        try:
-            result = json.loads(response.content)
-            return {
-                "is_multiphase": result.get("is_multiphase", False),
-                "phases": result.get("phases", []),
-                "free_surface": result.get("free_surface", False),
-                "explanation": result.get("explanation", "AI-based detection")
-            }
-        except json.JSONDecodeError:
-            # Fallback to simple single-phase if JSON parsing fails
-            return {
-                "is_multiphase": False,
-                "phases": [],
-                "free_surface": False,
-                "explanation": "JSON parsing failed, defaulting to single-phase"
-            }
-            
-    except Exception as e:
-        # Fallback to simple single-phase detection if OpenAI fails
-        return {
-            "is_multiphase": False,
-            "phases": [],
-            "free_surface": False,
-            "explanation": f"OpenAI detection failed: {str(e)}, defaulting to single-phase"
-        }
+    """Detect multiphase flow indicators from the prompt using word boundaries."""
+    import re
+    prompt_lower = prompt.lower()
+    multiphase_info = {
+        "is_multiphase": False,
+        "phases": [],
+        "free_surface": False
+    }
+    
+    # Keywords that indicate multiphase flow with word boundaries
+    multiphase_keywords = [
+        r"\bwater\b", r"\bliquid\b", r"\boil\b", r"\bgas\b", r"\binterface\b",
+        r"\bfree surface\b", r"\bvof\b", r"\bvolume of fluid\b", r"\bmultiphase\b",
+        r"\bdam break\b", r"\bwave\b", r"\bdroplet\b", r"\bbubble\b", r"\bsplash\b",
+        r"\bfilling\b", r"\bdraining\b", r"\bsloshing\b", r"\bmarine\b", r"\bnaval\b",
+        r"\btwo-phase\b", r"\btwo phase\b"
+    ]
+    
+    # Check for multiphase keywords
+    found_keywords = []
+    for keyword in multiphase_keywords:
+        if re.search(keyword, prompt_lower):
+            found_keywords.append(keyword)
+    
+    # Identify specific phases mentioned using word boundaries
+    phases = []
+    # Water/liquid detection
+    if any(re.search(pattern, prompt_lower) for pattern in [r"\bwater\b", r"\bliquid\b"]):
+        phases.append("water")
+    
+    # Air/gas detection - special handling for "air" to avoid false positives
+    air_detected = False
+    if re.search(r"\bair\b", prompt_lower):
+        # Check if it's in context of multiphase flow (with other fluids)
+        other_fluids = [r"\bwater\b", r"water", r"\bliquid\b", r"liquid", r"\boil\b"]
+        if any(re.search(fluid, prompt_lower) for fluid in other_fluids):
+            air_detected = True
+        # Check for explicit multiphase contexts
+        multiphase_contexts = [
+            r"\bair.*water\b", r"\bwater.*air\b", r"water.*air", r"air.*water",
+            r"\btwo.*phase\b", r"\bfree surface\b", r"\bdam break\b", r"\bwave\b"
+        ]
+        if any(re.search(context, prompt_lower) for context in multiphase_contexts):
+            air_detected = True
+    
+    # Gas detection (broader than air)
+    if re.search(r"\bgas\b", prompt_lower) or air_detected:
+        phases.append("air")
+    
+    # Oil detection
+    if re.search(r"\boil\b", prompt_lower):
+        phases.append("oil")
+    
+    # Check for free surface indicators
+    free_surface_keywords = [r"\bfree surface\b", r"\bdam break\b", r"\bwave\b", r"\bsloshing\b", r"\binterface\b"]
+    if any(re.search(keyword, prompt_lower) for keyword in free_surface_keywords):
+        multiphase_info["free_surface"] = True
+    
+    # Determine if this is multiphase
+    explicit_multiphase = any(re.search(pattern, prompt_lower) for pattern in [r"\bmultiphase\b", r"\btwo-phase\b", r"\btwo phase\b", r"\bvof\b"])
+    
+    if len(phases) >= 2 or explicit_multiphase or multiphase_info["free_surface"]:
+        multiphase_info["is_multiphase"] = True
+        if not phases:  # Default to water-air if no specific phases mentioned
+            phases = ["water", "air"]
+    
+    multiphase_info["phases"] = phases
+    
+    return multiphase_info
 
 
 def nl_interpreter_agent(state: CFDState) -> CFDState:
@@ -809,11 +796,11 @@ def nl_interpreter_agent(state: CFDState) -> CFDState:
             if state.get("stl_file"):
                 logger.info(f"NL Interpreter: STL file provided: {state['stl_file']}")
         
-        # Get settings for API key
-        import sys
-        sys.path.append('src')
-        from foamai.config import get_settings
+        # Get API key from config
+        from .config import get_settings
         settings = get_settings()
+        if not settings.openai_api_key:
+            raise ValueError("OPENAI_API_KEY environment variable is required")
         
         # Create LLM with structured output
         llm = ChatOpenAI(
@@ -975,7 +962,7 @@ Return valid JSON that matches the schema exactly.
         geometry_info = {
             "type": parsed_params["geometry_type"],
             "dimensions": parsed_params["geometry_dimensions"],
-            "mesh_resolution": parsed_params.get("mesh_resolution", "coarse"),  # Changed default to coarse for faster testing
+            "mesh_resolution": parsed_params.get("mesh_resolution", "medium"),
             "flow_context": parsed_params["flow_context"],
             "is_custom_geometry": parsed_params.get("is_custom_geometry", False),
             "stl_file": state.get("stl_file")  # Pass STL file path to geometry info
@@ -996,8 +983,6 @@ Return valid JSON that matches the schema exactly.
                 parsed_params["reynolds_number"] = reynolds_number
         
         # Set default fluid properties if not specified
-        # Pass the original prompt to detect Mars simulation
-        parsed_params["original_prompt"] = state["user_prompt"]
         parsed_params = set_default_fluid_properties(parsed_params)
         
         # Detect multiphase flow indicators
@@ -1138,40 +1123,14 @@ def get_characteristic_length(geometry_info: Dict[str, Any]) -> Optional[float]:
         return 0.1  # Default characteristic length
 
 
-def detect_mars_simulation(prompt: str) -> bool:
-    """Detect if the user is requesting a Mars simulation."""
-    mars_keywords = [
-        "mars", "martian", "red planet", "on mars", "mars atmosphere",
-        "mars surface", "mars conditions", "mars environment"
-    ]
-    
-    prompt_lower = prompt.lower()
-    return any(keyword in prompt_lower for keyword in mars_keywords)
-
-
 def set_default_fluid_properties(params: Dict[str, Any]) -> Dict[str, Any]:
     """Set default fluid properties if not specified."""
-    # Check if this is a Mars simulation
-    original_prompt = params.get("original_prompt", "")
-    is_mars_simulation = detect_mars_simulation(original_prompt)
-    
-    if is_mars_simulation:
-        # Mars atmospheric conditions
-        defaults = {
-            "density": 0.02,  # Mars atmosphere density (kg/m³)
-            "viscosity": 1.0e-5,  # Mars atmosphere viscosity (Pa·s) 
-            "temperature": 210.0,  # Mars surface temperature (K) - approximately -63°C
-            "pressure": 610.0,  # Mars atmospheric pressure (Pa) - about 0.6% of Earth's
-        }
-        logger.info("Using Mars atmospheric conditions for simulation")
-    else:
-        # Earth atmospheric conditions (default)
-        defaults = {
-            "density": 1.225,  # Air at sea level (kg/m³)
-            "viscosity": 1.81e-5,  # Air at 20°C (Pa·s)
-            "temperature": 293.15,  # 20°C in Kelvin
-            "pressure": 101325,  # Atmospheric pressure (Pa)
-        }
+    defaults = {
+        "density": 1.225,  # Air at sea level (kg/m³)
+        "viscosity": 1.81e-5,  # Air at 20°C (Pa·s)
+        "temperature": 293.15,  # 20°C in Kelvin
+        "pressure": 101325,  # Atmospheric pressure (Pa)
+    }
     
     for key, value in defaults.items():
         if key not in params or params[key] is None:

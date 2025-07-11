@@ -84,16 +84,43 @@ def extract_stl_vertices(stl_path: Path) -> List[List[float]]:
     vertices = []
     
     try:
-        # Check if binary or ASCII
+        # Read first part of file to determine format
         with open(stl_path, 'rb') as f:
             header = f.read(80)
             
+        # Check if it's a proper ASCII STL file
         if header.startswith(b'solid'):
-            # ASCII STL
-            vertices = extract_ascii_stl_vertices(stl_path)
+            # Read more data to verify it's actually ASCII
+            with open(stl_path, 'r', encoding='utf-8', errors='ignore') as f:
+                first_lines = f.readlines()[:10]  # Read first 10 lines
+                
+            # Check if we can find valid ASCII STL content
+            has_valid_ascii = False
+            for line in first_lines:
+                if 'vertex' in line.lower() or 'normal' in line.lower() or 'facet' in line.lower():
+                    has_valid_ascii = True
+                    break
+            
+            if has_valid_ascii:
+                # Try ASCII parsing
+                vertices = extract_ascii_stl_vertices(stl_path)
+                if vertices:
+                    logger.info(f"Successfully parsed as ASCII STL: {len(vertices)} vertices")
+                else:
+                    logger.warning("ASCII STL parsing failed, trying binary parsing")
+                    vertices = extract_binary_stl_vertices(stl_path)
+            else:
+                # Header says 'solid' but no valid ASCII content found - likely binary
+                logger.warning("STL file has 'solid' header but appears to be binary format")
+                vertices = extract_binary_stl_vertices(stl_path)
         else:
             # Binary STL
             vertices = extract_binary_stl_vertices(stl_path)
+            
+        if vertices:
+            logger.info(f"Successfully extracted {len(vertices)} vertices from STL file")
+        else:
+            logger.error(f"Failed to extract vertices from STL file: {stl_path}")
             
     except Exception as e:
         logger.error(f"Error reading STL file {stl_path}: {e}")
@@ -130,19 +157,48 @@ def extract_binary_stl_vertices(stl_path: Path) -> List[List[float]]:
             f.read(80)
             
             # Read number of triangles
-            num_triangles = struct.unpack('<I', f.read(4))[0]
+            num_triangles_data = f.read(4)
+            if len(num_triangles_data) != 4:
+                logger.error(f"Invalid binary STL file: cannot read triangle count")
+                return vertices
+                
+            num_triangles = struct.unpack('<I', num_triangles_data)[0]
+            logger.info(f"Binary STL file contains {num_triangles} triangles")
             
-            for _ in range(num_triangles):
-                # Read triangle data (normal + 3 vertices + attribute)
-                data = struct.unpack('<12fH', f.read(50))
-                
-                # Extract vertices (skip normal at indices 0-2)
-                v1 = [data[3], data[4], data[5]]
-                v2 = [data[6], data[7], data[8]]
-                v3 = [data[9], data[10], data[11]]
-                
-                vertices.extend([v1, v2, v3])
-                
+            # Validate triangle count is reasonable
+            if num_triangles > 10000000:  # 10M triangles is very large
+                logger.warning(f"STL file has very large triangle count: {num_triangles}")
+            
+            for i in range(num_triangles):
+                try:
+                    # Read triangle data (normal + 3 vertices + attribute)
+                    triangle_data = f.read(50)
+                    if len(triangle_data) != 50:
+                        logger.warning(f"Incomplete triangle data at triangle {i}")
+                        break
+                        
+                    data = struct.unpack('<12fH', triangle_data)
+                    
+                    # Extract vertices (skip normal at indices 0-2)
+                    v1 = [data[3], data[4], data[5]]
+                    v2 = [data[6], data[7], data[8]]
+                    v3 = [data[9], data[10], data[11]]
+                    
+                    # Validate vertices are not NaN or infinite
+                    all_vertices = [v1, v2, v3]
+                    for vertex in all_vertices:
+                        if all(isinstance(coord, (int, float)) and not (np.isnan(coord) or np.isinf(coord)) for coord in vertex):
+                            vertices.append(vertex)
+                        else:
+                            logger.warning(f"Invalid vertex data at triangle {i}: {vertex}")
+                            
+                except struct.error as e:
+                    logger.warning(f"Error unpacking triangle {i}: {e}")
+                    break
+                except Exception as e:
+                    logger.warning(f"Error processing triangle {i}: {e}")
+                    break
+                    
     except Exception as e:
         logger.error(f"Error reading binary STL {stl_path}: {e}")
         
@@ -196,9 +252,10 @@ def get_default_stl_dimensions() -> Dict[str, Any]:
         "characteristic_length": 10.0,
         "scaled_characteristic_length": 10.0,
         "dimensions": {"x": 10.0, "y": 10.0, "z": 10.0},
+        "center": [5, 5, 5],  # Add missing center key at root level
         "volume": 1000.0,
         "detected_units": "as-is",
-        "scale_factor": 1.0,
+        "scale_factor": 1.0,  # Add missing scale factor
         "vertex_count": 0
     }
 

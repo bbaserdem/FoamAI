@@ -25,7 +25,11 @@ def cli():
 @click.option('--max-retries', default=3, help='Maximum retry attempts')
 @click.option('--stl-file', type=click.Path(exists=True), help='Path to STL file for custom geometry')
 @click.option('--force-validation', is_flag=True, help='Override parameter validation and proceed with out-of-range values (use with caution)')
-def solve(prompt: str, output_format: str, no_export_images: bool, no_user_approval: bool, verbose: bool, max_retries: int, stl_file: str, force_validation: bool):
+@click.option('--mesh-study', is_flag=True, help='Perform mesh convergence study')
+@click.option('--mesh-levels', default=4, help='Number of mesh refinement levels for convergence study')
+@click.option('--mesh-target-params', help='Comma-separated list of parameters to monitor for convergence (e.g., drag_coefficient,pressure_drop)')
+@click.option('--mesh-convergence-threshold', default=1.0, help='Convergence threshold percentage (default: 1.0%)')
+def solve(prompt: str, output_format: str, no_export_images: bool, no_user_approval: bool, verbose: bool, max_retries: int, stl_file: str, force_validation: bool, mesh_study: bool, mesh_levels: int, mesh_target_params: str, mesh_convergence_threshold: float):
     """Solve a CFD problem from natural language description."""
     
     # Import here to avoid circular imports and startup time
@@ -40,6 +44,12 @@ def solve(prompt: str, output_format: str, no_export_images: bool, no_user_appro
     # Display initial problem setup
     export_images = not no_export_images  # Convert negative flag to positive
     user_approval_enabled = not no_user_approval  # Convert negative flag to positive
+    
+    # Parse mesh target parameters
+    target_params = []
+    if mesh_target_params:
+        target_params = [param.strip() for param in mesh_target_params.split(',')]
+    
     console.print(
         Panel(
             f"[bold blue]FoamAI CFD Solver[/bold blue]\n\n"
@@ -51,7 +61,11 @@ def solve(prompt: str, output_format: str, no_export_images: bool, no_user_appro
             f"[green]Verbose:[/green] {verbose}\n"
             f"[green]Max Retries:[/green] {max_retries}\n"
             f"[green]Force Validation:[/green] {force_validation}" +
-            (" [red](⚠️ Parameter validation disabled)[/red]" if force_validation else " [green](✅ Parameter validation enabled)[/green]"),
+            (" [red](⚠️ Parameter validation disabled)[/red]" if force_validation else " [green](✅ Parameter validation enabled)[/green]") +
+            f"\n[green]Mesh Convergence Study:[/green] {mesh_study}" +
+            (f"\n[green]  Mesh Levels:[/green] {mesh_levels}" if mesh_study else "") +
+            (f"\n[green]  Target Parameters:[/green] {', '.join(target_params) if target_params else 'Auto-detect'}" if mesh_study else "") +
+            (f"\n[green]  Convergence Threshold:[/green] {mesh_convergence_threshold}%" if mesh_study else ""),
             title="CFD Problem Setup",
             border_style="blue"
         )
@@ -67,7 +81,11 @@ def solve(prompt: str, output_format: str, no_export_images: bool, no_user_appro
             max_retries=max_retries,
             user_approval_enabled=user_approval_enabled,
             stl_file=stl_file,
-            force_validation=force_validation
+            force_validation=force_validation,
+            mesh_convergence_active=mesh_study,
+            mesh_convergence_levels=mesh_levels,
+            mesh_convergence_target_params=target_params,
+            mesh_convergence_threshold=mesh_convergence_threshold
         )
         
         # Create workflow
@@ -143,6 +161,10 @@ def display_results(final_state, verbose: bool):
     # Display summary table
     create_summary_table(final_state, verbose)
     
+    # Display mesh convergence results if applicable
+    if final_state.get("mesh_convergence_active", False):
+        display_mesh_convergence_results(final_state, verbose)
+    
     # Display file locations
     display_output_locations(final_state)
 
@@ -208,6 +230,58 @@ def create_summary_table(final_state, verbose: bool):
     console.print(table)
 
 
+def display_mesh_convergence_results(final_state, verbose: bool):
+    """Display mesh convergence study results."""
+    console.print("\n[bold]🔍 Mesh Convergence Study Results:[/bold]")
+    
+    mesh_convergence_results = final_state.get("mesh_convergence_results", {})
+    mesh_convergence_report = final_state.get("mesh_convergence_report", {})
+    recommended_level = final_state.get("recommended_mesh_level", 0)
+    
+    if not mesh_convergence_results:
+        console.print("[yellow]No mesh convergence results available[/yellow]")
+        return
+    
+    # Display summary
+    summary = mesh_convergence_report.get("summary", {})
+    console.print(f"[cyan]Total Mesh Levels:[/cyan] {summary.get('total_levels', 'N/A')}")
+    console.print(f"[cyan]Successful Levels:[/cyan] {summary.get('successful_levels', 'N/A')}")
+    console.print(f"[cyan]Parameters Assessed:[/cyan] {summary.get('parameters_assessed', 'N/A')}")
+    console.print(f"[cyan]Converged Parameters:[/cyan] {summary.get('converged_parameters', 'N/A')}")
+    console.print(f"[cyan]Recommended Mesh Level:[/cyan] {recommended_level}")
+    
+    # Display convergence table
+    if verbose and mesh_convergence_results.get("assessment"):
+        console.print("\n[bold]📊 Convergence Assessment:[/bold]")
+        
+        assessment = mesh_convergence_results["assessment"]
+        conv_table = Table(title="Parameter Convergence")
+        conv_table.add_column("Parameter", style="cyan")
+        conv_table.add_column("Status", style="green")
+        conv_table.add_column("Final Change (%)", style="yellow")
+        conv_table.add_column("GCI (%)", style="blue")
+        conv_table.add_column("Uncertainty", style="red")
+        
+        for param, param_assessment in assessment.items():
+            status = "✅ CONVERGED" if param_assessment.get("is_converged", False) else "❌ NOT CONVERGED"
+            final_change = param_assessment.get("relative_changes", [])
+            final_change_val = f"{final_change[-1]:.2f}" if final_change else "N/A"
+            gci_val = param_assessment.get("gci", {})
+            gci_str = f"{gci_val.get('gci', 0):.2f}" if isinstance(gci_val, dict) else f"{gci_val:.2f}" if gci_val else "N/A"
+            uncertainty = f"±{param_assessment.get('uncertainty', 0):.2f}%" if param_assessment.get('uncertainty') else "N/A"
+            
+            conv_table.add_row(param, status, final_change_val, gci_str, uncertainty)
+        
+        console.print(conv_table)
+    
+    # Display recommendations
+    recommendations = mesh_convergence_report.get("recommendations", [])
+    if recommendations:
+        console.print("\n[bold]💡 Mesh Convergence Recommendations:[/bold]")
+        for rec in recommendations:
+            console.print(f"  {rec}")
+
+
 def display_output_locations(final_state):
     """Display locations of generated files."""
     console.print("\n[bold]📁 Generated Files:[/bold]")
@@ -216,6 +290,17 @@ def display_output_locations(final_state):
     case_directory = final_state.get("case_directory", "")
     if case_directory:
         console.print(f"[cyan]OpenFOAM Case:[/cyan] {case_directory}")
+    
+    # Mesh convergence case directories
+    if final_state.get("mesh_convergence_active", False):
+        mesh_results = final_state.get("mesh_convergence_results", {})
+        if mesh_results.get("levels"):
+            console.print(f"[cyan]Mesh Convergence Cases:[/cyan]")
+            for level_result in mesh_results["levels"]:
+                level_case_dir = level_result.get("case_directory", "")
+                if level_case_dir:
+                    level_name = level_result.get("mesh_level", {}).get("description", f"Level {level_result.get('level', 'N/A')}")
+                    console.print(f"  • {level_name}: {level_case_dir}")
     
     # Visualization files
     visualization_path = final_state.get("visualization_path", "")
@@ -256,6 +341,19 @@ def visualize(case_dir: str, output_dir: str):
 
 
 @cli.command()
+@click.option('--case-dir', type=click.Path(exists=True), help='Base OpenFOAM case directory', required=True)
+@click.option('--mesh-levels', default=4, help='Number of mesh refinement levels')
+@click.option('--target-params', help='Comma-separated list of parameters to monitor (e.g., drag_coefficient,pressure_drop)')
+@click.option('--convergence-threshold', default=1.0, help='Convergence threshold percentage')
+@click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
+def mesh_convergence(case_dir: str, mesh_levels: int, target_params: str, convergence_threshold: float, verbose: bool):
+    """Run mesh convergence study on existing OpenFOAM case."""
+    console.print("[yellow]Standalone mesh convergence command not yet implemented[/yellow]")
+    console.print("[dim]Use the 'solve' command with --mesh-study flag[/dim]")
+    console.print(f"[dim]Example: foamai solve 'Flow around cylinder' --mesh-study --mesh-levels {mesh_levels}[/dim]")
+
+
+@cli.command()
 def list_examples():
     """List example CFD problems that can be solved."""
     console.print("\n[bold]📋 Example CFD Problems:[/bold]\n")
@@ -280,6 +378,18 @@ def list_examples():
         {
             "description": "Flow around a sphere",
             "command": 'foamai solve "Steady flow around a sphere at Re=100"'
+        },
+        {
+            "description": "Mesh convergence study for cylinder flow",
+            "command": 'foamai solve "Flow around cylinder" --mesh-study --mesh-levels 4'
+        },
+        {
+            "description": "Mesh convergence with specific parameters",
+            "command": 'foamai solve "Flow around sphere" --mesh-study --mesh-target-params drag_coefficient,pressure_drop'
+        },
+        {
+            "description": "Fine mesh convergence study",
+            "command": 'foamai solve "Flow around airfoil" --mesh-study --mesh-levels 5 --mesh-convergence-threshold 0.5'
         }
     ]
     

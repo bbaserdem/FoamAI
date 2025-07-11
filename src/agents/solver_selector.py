@@ -1,11 +1,253 @@
 """Solver Selector Agent - Chooses appropriate OpenFOAM solvers and configurations."""
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from loguru import logger
 import re
 
 from .state import CFDState, CFDStep, GeometryType, FlowType, AnalysisType, SolverType
 
+
+# Enhanced keyword detection with context analysis and weighting
+KEYWORD_WEIGHTS = {
+    "compressible": {
+        "shock": 3.0,
+        "supersonic": 2.5,
+        "transonic": 2.0,
+        "mach": 2.0,
+        "compressible": 2.0,
+        "gas dynamics": 1.5,
+        "high-speed": 1.5,
+        "high speed": 1.5,
+        "nozzle": 1.0,
+        "jet": 1.0,
+        "blast": 1.5,
+        "sonic boom": 2.0,
+        "rocket": 1.0,
+        # Negative weights for conflicting contexts
+        "wave": -1.0,  # "shock wave" vs "water wave"
+        "water": -2.0,  # Compressible flows rarely involve water
+        "liquid": -2.0,
+        "free surface": -1.5,
+        "dam break": -2.0,
+        "sloshing": -2.0
+    },
+    "multiphase": {
+        "water": 2.0,
+        "liquid": 1.5,
+        "gas": 1.0,
+        "interface": 2.0,
+        "free surface": 2.5,
+        "vof": 3.0,
+        "volume of fluid": 3.0,
+        "multiphase": 3.0,
+        "dam break": 2.5,
+        "wave": 1.5,  # Water waves, not shock waves
+        "droplet": 2.0,
+        "bubble": 2.0,
+        "splash": 2.0,
+        "filling": 1.5,
+        "draining": 1.5,
+        "sloshing": 2.0,
+        "marine": 1.5,
+        "naval": 1.5,
+        "air": 0.5,  # Only when combined with other fluids
+        # Negative weights for conflicting contexts
+        "shock": -2.0,  # Shock waves are compressible phenomena
+        "supersonic": -2.0,
+        "mach": -2.0,
+        "compressible": -2.0,
+        "gas dynamics": -1.5
+    },
+    "heat_transfer": {
+        "heat": 2.0,
+        "thermal": 2.0,
+        "temperature": 1.5,
+        "cooling": 1.5,
+        "heating": 1.5,
+        "heat transfer": 3.0,
+        "conjugate": 2.5,
+        "conduction": 2.0,
+        "convection": 2.0,
+        "radiation": 1.5,
+        "heat flux": 2.0,
+        "thermal boundary": 2.0,
+        "heat exchanger": 2.5,
+        "insulation": 1.5,
+        "heat sink": 2.0,
+        "thermal management": 2.0,
+        "cfd-cht": 3.0,
+        "multi-region": 2.5,
+        "multi region": 2.5,
+        "solid-fluid": 2.0,
+        "solid fluid": 2.0,
+        "wall temperature": 1.5,
+        "wall conduction": 2.0,
+        "solid wall": 1.5,
+        "cht": 3.0,
+        "coupling": 1.5
+    },
+    "reactive": {
+        "combustion": 3.0,
+        "burning": 2.5,
+        "flame": 2.5,
+        "ignition": 2.0,
+        "reaction": 2.0,
+        "chemical": 2.0,
+        "species": 2.0,
+        "fuel": 2.0,
+        "oxidizer": 2.0,
+        "premixed": 2.5,
+        "non-premixed": 2.5,
+        "diffusion flame": 2.5,
+        "detonation": 2.5,
+        "deflagration": 2.5,
+        "burner": 2.0,
+        "combustor": 2.0,
+        "engine": 1.5,
+        "propulsion": 1.5,
+        "fire": 2.0,
+        "reacting": 3.0,
+        "reactive": 3.0,
+        "chemistry": 2.0,
+        "mixture fraction": 2.0,
+        "methane": 2.0,
+        "propane": 2.0,
+        "hydrogen": 2.0,
+        "ethane": 2.0,
+        "gasoline": 2.0
+    },
+    "steady": {
+        "steady": 2.0,
+        "steady-state": 2.5,
+        "equilibrium": 2.0,
+        "final": 1.5,
+        "converged": 2.0,
+        "pressure drop": 2.0,
+        "drag coefficient": 1.5,
+        "lift coefficient": 1.5,
+        # Negative weights for conflicting contexts
+        "transient": -2.0,
+        "time": -1.0,
+        "unsteady": -2.0,
+        "vortex": -1.5,
+        "shedding": -2.0,
+        "oscillat": -2.0,
+        "frequency": -2.0,
+        "startup": -2.0,
+        "development": -1.5,
+        "periodic": -2.0
+    },
+    "transient": {
+        "transient": 2.5,
+        "time": 1.5,
+        "unsteady": 2.5,
+        "vortex": 2.0,
+        "shedding": 2.5,
+        "oscillat": 2.0,
+        "frequency": 2.0,
+        "startup": 2.0,
+        "development": 1.5,
+        "periodic": 2.0,
+        "time-dependent": 2.5,
+        "strouhal": 2.0,
+        # Negative weights for conflicting contexts
+        "steady": -2.0,
+        "steady-state": -2.5,
+        "equilibrium": -2.0,
+        "final": -1.5,
+        "converged": -2.0
+    }
+}
+
+# Context-aware phrase detection
+CONTEXT_PHRASES = {
+    "compressible": [
+        "shock wave",
+        "sonic boom",
+        "gas dynamics",
+        "high-speed flow",
+        "high speed flow",
+        "mach number",
+        "compressible flow"
+    ],
+    "multiphase": [
+        "free surface",
+        "dam break",
+        "volume of fluid",
+        "air-water interface",
+        "liquid-gas interface",
+        "two-phase flow",
+        "multiphase flow"
+    ],
+    "heat_transfer": [
+        "heat transfer",
+        "conjugate heat transfer",
+        "thermal boundary",
+        "heat exchanger",
+        "heat sink",
+        "thermal management",
+        "multi-region",
+        "solid-fluid coupling"
+    ]
+}
+
+# Parameter validation requirements for each solver
+SOLVER_PARAMETER_REQUIREMENTS = {
+    SolverType.SIMPLE_FOAM: {
+        "required": ["reynolds_number", "velocity"],
+        "optional": ["pressure", "turbulence_intensity"],
+        "physics_checks": ["incompressible", "steady_state_compatible"]
+    },
+    SolverType.PIMPLE_FOAM: {
+        "required": ["reynolds_number", "velocity"],
+        "optional": ["pressure", "turbulence_intensity", "end_time"],
+        "physics_checks": ["incompressible", "transient_compatible"]
+    },
+    SolverType.INTER_FOAM: {
+        "required": ["velocity", "phases"],
+        "optional": ["surface_tension", "gravity", "contact_angle"],
+        "physics_checks": ["multiphase", "transient_only"]
+    },
+    SolverType.RHO_PIMPLE_FOAM: {
+        "required": ["velocity", "temperature", "pressure"],
+        "optional": ["mach_number", "turbulence_intensity"],
+        "physics_checks": ["compressible", "density_varying"]
+    },
+    SolverType.CHT_MULTI_REGION_FOAM: {
+        "required": ["velocity", "temperature"],
+        "optional": ["heat_flux", "thermal_conductivity", "solid_regions"],
+        "physics_checks": ["heat_transfer", "multi_region", "conjugate"]
+    },
+    SolverType.REACTING_FOAM: {
+        "required": ["velocity", "temperature", "species"],
+        "optional": ["reaction_rate", "mixture_fraction", "fuel_composition"],
+        "physics_checks": ["combustion", "chemical_reactions"]
+    }
+}
+
+# Intelligent defaults for missing parameters
+INTELLIGENT_DEFAULTS = {
+    "reynolds_number": {
+        "cylinder": {"low": 100, "medium": 1000, "high": 10000},
+        "sphere": {"low": 300, "medium": 3000, "high": 30000},
+        "airfoil": {"low": 100000, "medium": 1000000, "high": 10000000}
+    },
+    "velocity": {
+        "low_speed": 1.0,
+        "medium_speed": 10.0,
+        "high_speed": 100.0
+    },
+    "temperature": {
+        "ambient": 293.15,  # 20°C
+        "cold": 273.15,     # 0°C
+        "hot": 373.15       # 100°C
+    },
+    "pressure": {
+        "atmospheric": 101325.0,
+        "low": 50000.0,
+        "high": 200000.0
+    }
+}
 
 # Solver Registry - defines available solvers and their characteristics
 SOLVER_REGISTRY = {
@@ -257,10 +499,32 @@ def solver_selector_agent(state: CFDState) -> CFDState:
             SOLVER_REGISTRY
         )
         
-        # Build solver settings with the recommended solver
+        # Validate and enhance parameters for the selected solver
+        missing_params, suggested_defaults = validate_solver_parameters(
+            solver_recommendation, 
+            parsed_params, 
+            geometry_info
+        )
+        
+        # Apply intelligent defaults for missing parameters
+        enhanced_params = parsed_params.copy()
+        for param, default_value in suggested_defaults.items():
+            if param not in enhanced_params or enhanced_params[param] is None:
+                enhanced_params[param] = default_value
+                if state["verbose"]:
+                    logger.info(f"Applied intelligent default: {param} = {default_value}")
+        
+        # Log any missing critical parameters
+        if missing_params:
+            warning_msg = f"Missing parameters for {solver_recommendation.value}: {missing_params}"
+            if suggested_defaults:
+                warning_msg += f" (applied defaults: {list(suggested_defaults.keys())})"
+            logger.warning(warning_msg)
+        
+        # Build solver settings with the recommended solver and enhanced parameters
         solver_settings = build_solver_settings(
             solver_recommendation,
-            parsed_params,
+            enhanced_params,
             geometry_info
         )
         
@@ -345,28 +609,37 @@ def extract_problem_features(state: CFDState) -> Dict[str, Any]:
         reynolds_number
     )
     
-    # Extract keywords from original prompt
+    # Extract keywords from original prompt using enhanced detection
     original_prompt = state.get("original_prompt", state.get("user_prompt", ""))
     keywords = extract_keywords(original_prompt)
+    physics_scores = extract_keywords_with_context(original_prompt)
     
-    # Check for multiphase indicators
-    is_multiphase = params.get("is_multiphase", False) or check_multiphase_indicators(original_prompt, params)
+    # Enhanced physics detection using weighted scores
+    is_multiphase = (params.get("is_multiphase", False) or 
+                    physics_scores.get("multiphase", 0) > 1.0 or
+                    check_multiphase_indicators(original_prompt, params))
     phases = params.get("phases", [])
-    free_surface = params.get("free_surface", False) or any("free surface" in kw.lower() for kw in keywords)
+    free_surface = params.get("free_surface", False) or physics_scores.get("multiphase", 0) > 2.0
     
-    # Check for compressibility
-    is_compressible = params.get("compressible", False) or (mach_number is not None and mach_number > 0.3) or check_compressible_indicators(original_prompt)
+    # Check for compressibility with enhanced detection
+    is_compressible = (params.get("compressible", False) or 
+                      (mach_number is not None and mach_number > 0.3) or
+                      physics_scores.get("compressible", 0) > 1.0 or
+                      check_compressible_indicators(original_prompt))
     
-    # Check for heat transfer
-    has_heat_transfer = check_heat_transfer_indicators(original_prompt, params)
+    # Check for heat transfer with enhanced detection
+    has_heat_transfer = (physics_scores.get("heat_transfer", 0) > 1.0 or
+                        check_heat_transfer_indicators(original_prompt, params))
     
-    # Check for reactive flows
-    has_reactive_flow = check_reactive_flow_indicators(original_prompt, params)
+    # Check for reactive flows with enhanced detection
+    has_reactive_flow = (physics_scores.get("reactive", 0) > 1.0 or
+                        check_reactive_flow_indicators(original_prompt, params))
     
-    # Check for multi-region (solid-fluid coupling)
+    # Check for multi-region (solid-fluid coupling) with enhanced detection
     multi_region_keywords = ["multi-region", "multiregion", "multi region", "solid-fluid", "solid fluid", 
                             "conjugate", "cht", "solid wall", "wall conduction", "coupling between"]
-    is_multi_region = any(kw in original_prompt.lower() for kw in multi_region_keywords)
+    is_multi_region = (physics_scores.get("heat_transfer", 0) > 2.0 or
+                      any(kw in original_prompt.lower() for kw in multi_region_keywords))
     
     return {
         "geometry_type": geometry["type"].value if hasattr(geometry["type"], 'value') else str(geometry["type"]),
@@ -524,70 +797,162 @@ def check_reactive_flow_indicators(prompt: str, params: Dict[str, Any]) -> bool:
     return False
 
 
-def extract_keywords(prompt: str) -> List[str]:
-    """Extract relevant keywords from user prompt."""
+def extract_keywords_with_context(prompt: str) -> Dict[str, float]:
+    """
+    Enhanced keyword extraction with context analysis and weighting.
+    Returns physics category scores based on weighted keyword detection.
+    """
     import re
-    # Convert to lowercase for matching
     prompt_lower = prompt.lower()
     
-    # Keywords that suggest specific solver needs - using word boundaries
-    steady_keywords = [r"\bsteady\b", r"\bequilibrium\b", r"\bfinal\b", r"\bconverged\b", 
-                      r"\bpressure drop\b", r"\bdrag coefficient\b"]
-    transient_keywords = [r"\btransient\b", r"\btime\b", r"\bunsteady\b", r"\bvortex\b", 
-                         r"\bshedding\b", r"\boscillat\w*\b", r"\bfrequency\b", 
-                         r"\bstartup\b", r"\bdevelopment\b", r"\bperiodic\b"]
-    multiphase_keywords = [r"\bwater\b", r"\binterface\b", r"\bfree surface\b", r"\bvof\b", 
-                          r"\bmultiphase\b", r"\bdam break\b", r"\bwave\b", r"\bdroplet\b", 
-                          r"\bbubble\b", r"\bsloshing\b"]
-    compressible_keywords = [r"\bshock\b", r"\bsupersonic\b", r"\btransonic\b", r"\bmach\b", 
-                            r"\bcompressible\b", r"\bhigh-speed\b", r"\bgas dynamics\b", 
-                            r"\bnozzle\b", r"\bjet\b", r"\bblast\b"]
-    heat_transfer_keywords = [r"\bheat\b", r"\bthermal\b", r"\btemperature\b", r"\bcooling\b", 
-                             r"\bheating\b", r"\bconjugate\b", r"\bconduction\b", r"\bconvection\b", 
-                             r"\bheat exchanger\b", r"\bheat sink\b", r"\binsulation\b", 
-                             r"\bmulti-region\b", r"\bmulti region\b", r"\bwall conduction\b", 
-                             r"\bsolid wall\b", r"\bcht\b", r"\bcoupling\b"]
-    reactive_keywords = [r"\bcombustion\b", r"\bflame\b", r"\breaction\b", r"\bchemical\b", 
-                        r"\bburning\b", r"\bfuel\b", r"\bignition\b", r"\bspecies\b", 
-                        r"\bburner\b", r"\bengine\b", r"\breacting\b", r"\bmethane\b", 
-                        r"\bpropane\b", r"\bhydrogen\b", r"\bethane\b", r"\bgasoline\b"]
+    # Initialize physics category scores
+    physics_scores = {
+        "compressible": 0.0,
+        "multiphase": 0.0,
+        "heat_transfer": 0.0,
+        "reactive": 0.0,
+        "steady": 0.0,
+        "transient": 0.0
+    }
     
+    # First, check for context phrases (higher priority)
+    for category, phrases in CONTEXT_PHRASES.items():
+        for phrase in phrases:
+            if phrase in prompt_lower:
+                # Context phrases get full weight
+                physics_scores[category] += 2.0
+                logger.debug(f"Context phrase detected: '{phrase}' -> {category} (+2.0)")
+    
+    # Then check individual keywords with weights
+    for category, keywords in KEYWORD_WEIGHTS.items():
+        for keyword, weight in keywords.items():
+            # Use word boundaries for better matching
+            if keyword.startswith(r"\b") or keyword.endswith(r"\b"):
+                pattern = keyword
+            else:
+                pattern = rf"\b{re.escape(keyword)}\b"
+            
+            if re.search(pattern, prompt_lower):
+                physics_scores[category] += weight
+                logger.debug(f"Keyword detected: '{keyword}' -> {category} ({weight:+.1f})")
+    
+    # Special handling for "shock wave" vs "water wave"
+    if "shock wave" in prompt_lower or "shockwave" in prompt_lower:
+        physics_scores["compressible"] += 2.0
+        physics_scores["multiphase"] -= 1.0  # Reduce multiphase score
+        logger.debug("'shock wave' detected -> compressible (+2.0), multiphase (-1.0)")
+    
+    # Special handling for air-water combinations
+    if re.search(r"\bair\b", prompt_lower) and re.search(r"\bwater\b", prompt_lower):
+        physics_scores["multiphase"] += 1.5
+        logger.debug("Air-water combination detected -> multiphase (+1.5)")
+    
+    # Normalize negative scores to zero
+    for category in physics_scores:
+        physics_scores[category] = max(0.0, physics_scores[category])
+    
+    return physics_scores
+
+
+def extract_keywords(prompt: str) -> List[str]:
+    """
+    Legacy keyword extraction function for backward compatibility.
+    Now uses the enhanced context-aware detection.
+    """
+    physics_scores = extract_keywords_with_context(prompt)
+    
+    # Convert scores back to legacy format
     found_keywords = []
-    
-    for keyword in steady_keywords:
-        if re.search(keyword, prompt_lower):
-            found_keywords.append(f"steady:{keyword}")
-    
-    for keyword in transient_keywords:
-        if re.search(keyword, prompt_lower):
-            found_keywords.append(f"transient:{keyword}")
-    
-    # Special handling for "air" in multiphase context
-    air_pattern = r"\bair\b"
-    if re.search(air_pattern, prompt_lower):
-        # Only include as multiphase if there's clear multiphase context
-        # Include compound words like "underwater"
-        other_fluids = [r"\bwater\b", r"water", r"\bliquid\b", r"liquid", r"\boil\b"]
-        if any(re.search(fluid, prompt_lower) for fluid in other_fluids):
-            found_keywords.append("multiphase:air")
-    
-    for keyword in multiphase_keywords:
-        if re.search(keyword, prompt_lower):
-            found_keywords.append(f"multiphase:{keyword}")
-    
-    for keyword in compressible_keywords:
-        if re.search(keyword, prompt_lower):
-            found_keywords.append(f"compressible:{keyword}")
-    
-    for keyword in heat_transfer_keywords:
-        if re.search(keyword, prompt_lower):
-            found_keywords.append(f"heat_transfer:{keyword}")
-    
-    for keyword in reactive_keywords:
-        if re.search(keyword, prompt_lower):
-            found_keywords.append(f"reactive:{keyword}")
+    for category, score in physics_scores.items():
+        if score > 0.5:  # Threshold for keyword detection
+            found_keywords.append(f"{category}:{score:.1f}")
     
     return found_keywords
+
+
+def validate_solver_parameters(solver_type: SolverType, params: Dict[str, Any], 
+                              geometry_info: Dict[str, Any]) -> Tuple[List[str], Dict[str, Any]]:
+    """
+    Validate and suggest missing parameters for solver type.
+    Returns (missing_params, suggested_defaults).
+    """
+    requirements = SOLVER_PARAMETER_REQUIREMENTS.get(solver_type, {})
+    required_params = requirements.get("required", [])
+    
+    missing_params = []
+    suggested_defaults = {}
+    
+    for param in required_params:
+        if param not in params or params[param] is None:
+            missing_params.append(param)
+            default_value = get_intelligent_default(param, solver_type, params, geometry_info)
+            if default_value is not None:
+                suggested_defaults[param] = default_value
+    
+    return missing_params, suggested_defaults
+
+
+def get_intelligent_default(param: str, solver_type: SolverType, params: Dict[str, Any], 
+                          geometry_info: Dict[str, Any]) -> Any:
+    """
+    Generate intelligent default values for missing parameters.
+    """
+    geometry_type = geometry_info.get("type", GeometryType.CYLINDER)
+    
+    if param == "reynolds_number":
+        # Base Reynolds number on geometry type and flow regime
+        geometry_name = geometry_type.value if hasattr(geometry_type, 'value') else str(geometry_type).lower()
+        
+        if geometry_name in INTELLIGENT_DEFAULTS["reynolds_number"]:
+            defaults = INTELLIGENT_DEFAULTS["reynolds_number"][geometry_name]
+            # Choose based on solver type
+            if solver_type == SolverType.SIMPLE_FOAM:
+                return defaults["low"]  # Conservative for steady-state
+            elif solver_type in [SolverType.PIMPLE_FOAM, SolverType.INTER_FOAM]:
+                return defaults["medium"]  # Moderate for transient
+            else:
+                return defaults["high"]  # Higher for complex physics
+        else:
+            return 1000  # Generic default
+    
+    elif param == "velocity":
+        # Base velocity on flow regime and solver
+        if solver_type == SolverType.RHO_PIMPLE_FOAM:
+            return INTELLIGENT_DEFAULTS["velocity"]["high_speed"]  # Compressible flows
+        elif solver_type == SolverType.INTER_FOAM:
+            return INTELLIGENT_DEFAULTS["velocity"]["low_speed"]   # Multiphase flows
+        else:
+            return INTELLIGENT_DEFAULTS["velocity"]["medium_speed"]  # General flows
+    
+    elif param == "temperature":
+        # Base temperature on solver type and application
+        if solver_type in [SolverType.RHO_PIMPLE_FOAM, SolverType.CHT_MULTI_REGION_FOAM, SolverType.REACTING_FOAM]:
+            return INTELLIGENT_DEFAULTS["temperature"]["ambient"]
+        else:
+            return None  # Not required for incompressible solvers
+    
+    elif param == "pressure":
+        # Base pressure on solver type
+        if solver_type == SolverType.RHO_PIMPLE_FOAM:
+            return INTELLIGENT_DEFAULTS["pressure"]["atmospheric"]
+        else:
+            return None  # Usually relative pressure for incompressible
+    
+    elif param == "phases":
+        # Default phases for multiphase flows
+        if solver_type == SolverType.INTER_FOAM:
+            return ["water", "air"]
+        else:
+            return None
+    
+    elif param == "species":
+        # Default species for reactive flows
+        if solver_type == SolverType.REACTING_FOAM:
+            return ["CH4", "O2", "CO2", "H2O", "N2"]  # Methane combustion
+        else:
+            return None
+    
+    return None
 
 
 def infer_time_scale_interest(params: Dict[str, Any], keywords: List[str]) -> str:
@@ -708,7 +1073,10 @@ def build_solver_settings(
     parsed_params: Dict[str, Any],
     geometry_info: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """Build complete solver settings based on selected solver type."""
+    """
+    Build complete solver settings based on selected solver type.
+    Returns standardized configuration format.
+    """
     flow_type = parsed_params.get("flow_type", FlowType.LAMINAR)
     reynolds_number = parsed_params.get("reynolds_number", None)
     
@@ -728,85 +1096,135 @@ def build_solver_settings(
     # Get solver info from registry
     solver_info = SOLVER_REGISTRY[solver_type]
     
+    # Build standardized solver settings following SOLVER_CONFIG_SCHEMA
     solver_settings = {
+        # Core solver information
         "solver": solver_info["name"],
         "solver_type": solver_type,
-        "flow_type": flow_type,
         "analysis_type": analysis_type,
+        "flow_type": flow_type,
+        
+        # Physics properties (standardized)
+        "compressible": solver_info["capabilities"]["compressible"],
+        "multiphase": solver_info["capabilities"]["multiphase"],
+        "heat_transfer": solver_info["capabilities"]["heat_transfer"],
+        
+        # Flow parameters (standardized)
         "reynolds_number": reynolds_number,
         "mach_number": parsed_params.get("mach_number", 0),
-        "compressible": solver_info["capabilities"]["compressible"],
-        "multiphase": solver_info["capabilities"]["multiphase"]
+        "velocity": parsed_params.get("velocity"),
+        "temperature": parsed_params.get("temperature"),
+        "pressure": parsed_params.get("pressure"),
+        
+        # Standardized field initialization (will be populated below)
+        "fields": {},
+        
+        # Standardized physics properties (will be populated below)
+        "properties": {},
+        
+        # Configuration files (will be populated by generate_solver_config)
+        "controlDict": {},
+        "fvSchemes": {},
+        "fvSolution": {},
+        
+        # Metadata for tracking and debugging
+        "metadata": {
+            "solver_capabilities": solver_info["capabilities"],
+            "recommended_for": solver_info.get("recommended_for", []),
+            "selection_confidence": 1.0,  # Can be enhanced with confidence scoring
+            "parameter_defaults_applied": []
+        }
     }
     
-    # Turbulence model selection
+    # Turbulence model selection (standardized in properties)
     if flow_type == FlowType.TURBULENT:
         # Special handling for compressible flows
         if solver_type == SolverType.RHO_PIMPLE_FOAM:
             mach_number = parsed_params.get("mach_number", 0)
             if mach_number > 1.0 or any("shock" in str(kw) for kw in parsed_params.get("keywords", [])):
-                solver_settings["turbulence_model"] = "kOmegaSST"  # Better for shocks
+                turbulence_model = "kOmegaSST"  # Better for shocks
             elif reynolds_number is not None and reynolds_number > 1e6:
-                solver_settings["turbulence_model"] = "kEpsilon"
+                turbulence_model = "kEpsilon"
             else:
-                solver_settings["turbulence_model"] = "kOmegaSST"
+                turbulence_model = "kOmegaSST"
         else:
             # Standard turbulence model selection
             if reynolds_number is not None and reynolds_number < 10000:
-                solver_settings["turbulence_model"] = "kOmegaSST"
+                turbulence_model = "kOmegaSST"
             elif reynolds_number is not None and reynolds_number >= 10000:
-                solver_settings["turbulence_model"] = "kEpsilon"
+                turbulence_model = "kEpsilon"
             else:
-                solver_settings["turbulence_model"] = "kOmegaSST"
+                turbulence_model = "kOmegaSST"
     else:
-        solver_settings["turbulence_model"] = "laminar"
+        turbulence_model = "laminar"
     
-    # Add phase properties for multiphase solvers
+    solver_settings["properties"]["turbulence_model"] = turbulence_model
+    
+    # Add phase properties for multiphase solvers (standardized)
     if solver_type == SolverType.INTER_FOAM:
         phases = parsed_params.get("phases", ["water", "air"])
-        solver_settings["phases"] = phases
-        solver_settings["phase_properties"] = {}
+        solver_settings["properties"]["phases"] = phases
+        solver_settings["properties"]["phase_properties"] = {}
+        
         for phase in phases:
             if phase in DEFAULT_PHASE_PROPERTIES:
-                solver_settings["phase_properties"][phase] = DEFAULT_PHASE_PROPERTIES[phase].copy()
+                solver_settings["properties"]["phase_properties"][phase] = DEFAULT_PHASE_PROPERTIES[phase].copy()
             else:
                 # Use water properties as default for unknown fluids
-                solver_settings["phase_properties"][phase] = DEFAULT_PHASE_PROPERTIES["water"].copy()
+                solver_settings["properties"]["phase_properties"][phase] = DEFAULT_PHASE_PROPERTIES["water"].copy()
                 logger.warning(f"Unknown phase '{phase}', using water properties as default")
         
         # Surface tension between phases
         if "water" in phases and "air" in phases:
-            solver_settings["surface_tension"] = DEFAULT_PHASE_PROPERTIES["water"]["surface_tension"]
+            solver_settings["properties"]["surface_tension"] = DEFAULT_PHASE_PROPERTIES["water"]["surface_tension"]
         else:
-            solver_settings["surface_tension"] = 0.07  # Default surface tension
+            solver_settings["properties"]["surface_tension"] = 0.07  # Default surface tension
+        
+        # Standard multiphase fields
+        solver_settings["fields"]["g"] = {
+            "dimensions": "[0 1 -2 0 0 0 0]",
+            "value": "(0 -9.81 0)"
+        }
+        solver_settings["fields"]["sigma"] = solver_settings["properties"]["surface_tension"]
     
-    # Add thermophysical properties for compressible solvers
+    # Add thermophysical properties for compressible solvers (standardized)
     if solver_type == SolverType.RHO_PIMPLE_FOAM:
-        solver_settings["thermophysical_model"] = "perfectGas"
-        solver_settings["transport_model"] = "const"
-        solver_settings["thermo_type"] = "hePsiThermo"
-        solver_settings["mixture"] = "pureMixture"
-        solver_settings["equation_of_state"] = "perfectGas"
-        solver_settings["specie"] = "specie"
-        solver_settings["energy"] = "sensibleInternalEnergy"
+        solver_settings["properties"]["thermophysical_model"] = "perfectGas"
+        solver_settings["properties"]["transport_model"] = "const"
+        solver_settings["properties"]["thermo_type"] = "hePsiThermo"
+        solver_settings["properties"]["mixture"] = "pureMixture"
+        solver_settings["properties"]["equation_of_state"] = "perfectGas"
+        solver_settings["properties"]["specie"] = "specie"
+        solver_settings["properties"]["energy"] = "sensibleInternalEnergy"
+        
+        # Standard compressible fields
+        solver_settings["fields"]["T"] = solver_settings["temperature"] or INTELLIGENT_DEFAULTS["temperature"]["ambient"]
+        solver_settings["fields"]["p"] = solver_settings["pressure"] or INTELLIGENT_DEFAULTS["pressure"]["atmospheric"]
     
-    # Add settings for chtMultiRegionFoam
+    # Add settings for chtMultiRegionFoam (standardized)
     if solver_type == SolverType.CHT_MULTI_REGION_FOAM:
-        solver_settings["multi_region"] = True
-        solver_settings["regions"] = parsed_params.get("regions", ["fluid", "solid"])
-        solver_settings["thermophysical_model"] = "perfectGas"
-        solver_settings["transport_model"] = "const"
-        solver_settings["thermo_type"] = "hePsiThermo"
-        solver_settings["thermal_coupling"] = True
+        solver_settings["properties"]["multi_region"] = True
+        solver_settings["properties"]["regions"] = parsed_params.get("regions", ["fluid", "solid"])
+        solver_settings["properties"]["thermophysical_model"] = "perfectGas"
+        solver_settings["properties"]["transport_model"] = "const"
+        solver_settings["properties"]["thermo_type"] = "hePsiThermo"
+        solver_settings["properties"]["thermal_coupling"] = True
+        
+        # Standard heat transfer fields
+        solver_settings["fields"]["T"] = solver_settings["temperature"] or INTELLIGENT_DEFAULTS["temperature"]["ambient"]
     
-    # Add settings for reactingFoam
+    # Add settings for reactingFoam (standardized)
     if solver_type == SolverType.REACTING_FOAM:
-        solver_settings["thermophysical_model"] = "psiReactionThermo"
-        solver_settings["chemistry"] = True
-        solver_settings["combustion_model"] = parsed_params.get("combustion_model", "PaSR")
-        solver_settings["chemistry_solver"] = parsed_params.get("chemistry_solver", "ode")
-        solver_settings["species"] = parsed_params.get("chemical_species", ["CH4", "O2", "CO2", "H2O", "N2"])
-        solver_settings["reaction_mechanism"] = parsed_params.get("reaction_mechanism", "GRI-Mech3.0")
+        solver_settings["properties"]["thermophysical_model"] = "psiReactionThermo"
+        solver_settings["properties"]["chemistry"] = True
+        solver_settings["properties"]["combustion_model"] = parsed_params.get("combustion_model", "PaSR")
+        solver_settings["properties"]["chemistry_solver"] = parsed_params.get("chemistry_solver", "ode")
+        solver_settings["properties"]["species"] = parsed_params.get("chemical_species", ["CH4", "O2", "CO2", "H2O", "N2"])
+        solver_settings["properties"]["reaction_mechanism"] = parsed_params.get("reaction_mechanism", "GRI-Mech3.0")
+        
+        # Standard reactive fields
+        solver_settings["fields"]["T"] = solver_settings["temperature"] or INTELLIGENT_DEFAULTS["temperature"]["ambient"]
+        solver_settings["fields"]["p"] = solver_settings["pressure"] or INTELLIGENT_DEFAULTS["pressure"]["atmospheric"]
     
     return solver_settings
 

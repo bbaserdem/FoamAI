@@ -9,6 +9,7 @@ class CFDStep(str, Enum):
     START = "start"
     NL_INTERPRETATION = "nl_interpretation"
     MESH_GENERATION = "mesh_generation"
+    MESH_CONVERGENCE = "mesh_convergence"
     BOUNDARY_CONDITIONS = "boundary_conditions"
     SOLVER_SELECTION = "solver_selection"
     CASE_WRITING = "case_writing"
@@ -110,4 +111,13 @@ class CFDState(TypedDict):
     session_history: List[Dict[str, Any]]  # History of all runs in this session
     current_iteration: int  # Current iteration number (0-based)
     conversation_active: bool  # Whether to continue the conversation or exit
-    previous_results: Optional[Dict[str, Any]]  # Results from previous iteration for comparison 
+    previous_results: Optional[Dict[str, Any]]  # Results from previous iteration for comparison
+    
+    # Mesh convergence study
+    mesh_convergence_active: bool = False
+    mesh_convergence_levels: int = 4
+    mesh_convergence_threshold: float = 1.0
+    mesh_convergence_target_params: List[str] = []
+    mesh_convergence_results: Dict[str, Any] = {}
+    mesh_convergence_report: Dict[str, Any] = {}
+    recommended_mesh_level: int = 0 

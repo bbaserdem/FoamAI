@@ -1,7 +1,7 @@
 """System Orchestrator Agent - Central workflow controller."""
 
 import uuid
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from loguru import logger
 
 from langgraph.graph import StateGraph, END
@@ -140,7 +140,8 @@ def handle_normal_progression(state: CFDState) -> CFDState:
         CFDStep.MESH_GENERATION: CFDStep.BOUNDARY_CONDITIONS,
         CFDStep.BOUNDARY_CONDITIONS: CFDStep.SOLVER_SELECTION,
         CFDStep.SOLVER_SELECTION: CFDStep.CASE_WRITING,
-        CFDStep.CASE_WRITING: CFDStep.USER_APPROVAL if state.get("user_approval_enabled", True) else CFDStep.SIMULATION,
+        CFDStep.CASE_WRITING: CFDStep.MESH_CONVERGENCE if state.get("mesh_convergence_active", False) else (CFDStep.USER_APPROVAL if state.get("user_approval_enabled", True) else CFDStep.SIMULATION),
+        CFDStep.MESH_CONVERGENCE: CFDStep.VISUALIZATION,  # Mesh convergence includes simulation
         CFDStep.USER_APPROVAL: CFDStep.SIMULATION,
         CFDStep.SIMULATION: CFDStep.VISUALIZATION,
         CFDStep.VISUALIZATION: CFDStep.RESULTS_REVIEW,
@@ -173,6 +174,7 @@ def determine_next_agent(state: CFDState) -> str:
     step_to_agent = {
         CFDStep.NL_INTERPRETATION: "nl_interpreter",
         CFDStep.MESH_GENERATION: "mesh_generator",
+        CFDStep.MESH_CONVERGENCE: "mesh_convergence",
         CFDStep.BOUNDARY_CONDITIONS: "boundary_condition",
         CFDStep.SOLVER_SELECTION: "solver_selector",
         CFDStep.CASE_WRITING: "case_writer",
@@ -192,6 +194,7 @@ def create_cfd_workflow():
     """Create and compile the CFD workflow graph."""
     from .nl_interpreter import nl_interpreter_agent
     from .mesh_generator import mesh_generator_agent
+    from .mesh_convergence import mesh_convergence_agent
     from .boundary_condition import boundary_condition_agent
     from .solver_selector import solver_selector_agent
     from .case_writer import case_writer_agent
@@ -208,6 +211,7 @@ def create_cfd_workflow():
     workflow.add_node("orchestrator", orchestrator_agent)
     workflow.add_node("nl_interpreter", nl_interpreter_agent)
     workflow.add_node("mesh_generator", mesh_generator_agent)
+    workflow.add_node("mesh_convergence", mesh_convergence_agent)
     workflow.add_node("boundary_condition", boundary_condition_agent)
     workflow.add_node("solver_selector", solver_selector_agent)
     workflow.add_node("case_writer", case_writer_agent)
@@ -227,6 +231,7 @@ def create_cfd_workflow():
         {
             "nl_interpreter": "nl_interpreter",
             "mesh_generator": "mesh_generator",
+            "mesh_convergence": "mesh_convergence",
             "boundary_condition": "boundary_condition",
             "solver_selector": "solver_selector",
             "case_writer": "case_writer",
@@ -242,6 +247,7 @@ def create_cfd_workflow():
     # All agents return to orchestrator for next step determination
     workflow.add_edge("nl_interpreter", "orchestrator")
     workflow.add_edge("mesh_generator", "orchestrator")
+    workflow.add_edge("mesh_convergence", "orchestrator")
     workflow.add_edge("boundary_condition", "orchestrator")
     workflow.add_edge("solver_selector", "orchestrator")
     workflow.add_edge("case_writer", "orchestrator")
@@ -263,7 +269,11 @@ def create_initial_state(
         max_retries: int = 3,
         user_approval_enabled: bool = True,
         stl_file: Optional[str] = None,
-        force_validation: bool = False
+        force_validation: bool = False,
+        mesh_convergence_active: bool = False,
+        mesh_convergence_levels: int = 4,
+        mesh_convergence_target_params: List[str] = None,
+        mesh_convergence_threshold: float = 1.0
     ) -> CFDState:
     """Create initial state for the CFD workflow."""
     return CFDState(
@@ -296,4 +306,11 @@ def create_initial_state(
         current_iteration=0,
         conversation_active=True,
         previous_results=None,
+        mesh_convergence_active=mesh_convergence_active,
+        mesh_convergence_levels=mesh_convergence_levels,
+        mesh_convergence_target_params=mesh_convergence_target_params or [],
+        mesh_convergence_threshold=mesh_convergence_threshold,
+        mesh_convergence_results={},
+        mesh_convergence_report={},
+        recommended_mesh_level=0,
     ) 

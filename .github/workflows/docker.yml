@@ -81,7 +81,15 @@ jobs:
       matrix:
         service: [openfoam, api, pvserver]
     
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    
     steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
     - name: Run Trivy vulnerability scanner
       uses: aquasecurity/trivy-action@master
       with:
@@ -90,7 +98,7 @@ jobs:
         output: 'trivy-results.sarif'
 
     - name: Upload Trivy scan results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v2
+      uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: 'trivy-results.sarif'
 

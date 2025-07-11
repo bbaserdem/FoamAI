@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # FoamAI EC2 Instance Startup Script
 # This script runs on first boot to setup Docker and FoamAI services
 # Updated to use GitHub Container Registry (ghcr.io) instead of Docker Hub
@@ -115,18 +115,18 @@ fi
 
 # Setup application directories
 echo "Setting up application directories..."
-mkdir -p /opt/foamai
-chown ubuntu:ubuntu /opt/foamai
+mkdir -p /opt/FoamAI
+chown ubuntu:ubuntu /opt/FoamAI
 
 # Clone the FoamAI repository
 echo "Cloning FoamAI repository..."
 cd /opt
-git clone https://github.com/batuhan/foamai.git foamai
-chown -R ubuntu:ubuntu /opt/foamai
+git clone https://github.com/bbaserdem/FoamAI.git FoamAI
+chown -R ubuntu:ubuntu /opt/FoamAI
 
 # Create environment file for Docker Compose with GitHub Container Registry URLs
 echo "Creating environment configuration..."
-cat > /opt/foamai/.env << EOF
+cat > /opt/FoamAI/.env << EOF
 # FoamAI Environment Configuration
 COMPOSE_PROJECT_NAME=foamai
 DATA_DIR=/data
@@ -138,9 +138,9 @@ GHCR_REGISTRY=ghcr.io
 GITHUB_ORG=batuhan
 
 # Docker image settings - Using GitHub Container Registry
-GHCR_API_URL=ghcr.io/batuhan/foamai/api
-GHCR_OPENFOAM_URL=ghcr.io/batuhan/foamai/openfoam
-GHCR_PVSERVER_URL=ghcr.io/batuhan/foamai/pvserver
+GHCR_API_URL=ghcr.io/bbaserdem/foamai/api
+GHCR_OPENFOAM_URL=ghcr.io/bbaserdem/foamai/openfoam
+GHCR_PVSERVER_URL=ghcr.io/bbaserdem/foamai/pvserver
 IMAGE_TAG=latest
 
 # API Configuration
@@ -168,7 +168,7 @@ Requires=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/opt/foamai
+WorkingDirectory=/opt/FoamAI
 ExecStart=/usr/local/bin/docker-compose up -d
 ExecStop=/usr/local/bin/docker-compose down
 TimeoutStartSec=300
@@ -204,11 +204,11 @@ sleep 10
 
 # Pull Docker images from GitHub Container Registry
 echo "Pulling Docker images from GitHub Container Registry..."
-su - ubuntu -c "cd /opt/foamai && docker-compose pull" || echo "Docker images will be pulled when they become available"
+su - ubuntu -c "cd /opt/FoamAI && docker-compose pull" || echo "Docker images will be pulled when they become available"
 
 # Start FoamAI services
 echo "Starting FoamAI services..."
-su - ubuntu -c "cd /opt/foamai && docker-compose up -d" || echo "Services will start when images are available"
+su - ubuntu -c "cd /opt/FoamAI && docker-compose up -d" || echo "Services will start when images are available"
 
 # Create status check script
 echo "Creating status check script..."

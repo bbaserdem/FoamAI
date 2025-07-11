@@ -1,0 +1,61 @@
+---
+description: CRITICAL - Never operate outside repository boundaries under any circumstances
+globs: **/*
+alwaysApply: true
+---
+
+# 🚨 CRITICAL WORKSPACE BOUNDARY RULE - HIGHEST PRIORITY
+
+## ⛔ ABSOLUTE PROHIBITION
+
+**NEVER, UNDER ANY CIRCUMSTANCES, perform ANY operations outside this repository directory.**
+
+### 🚫 FORBIDDEN OPERATIONS
+- **NEVER** create files in `~/.ssh/`, `~/`, `/home/`, `/etc/`, or ANY path outside repo
+- **NEVER** modify files outside the repository boundary  
+- **NEVER** read files outside the repository (except standard system commands)
+- **NEVER** suggest operations that touch external directories
+- **NEVER** "fix mistakes" by operating outside the repo
+
+### ✅ ALLOWED OPERATIONS
+- **ONLY** operate within the current repository directory tree
+- **ONLY** create/modify files within `./` (current repo)
+- **ONLY** use relative paths that stay within repo bounds
+- **ONLY** suggest solutions that work entirely within repository
+
+### 🛡️ WORKSPACE BOUNDARIES
+```
+ALLOWED:   ./src/*, ./infra/*, ./docs/*, etc.
+FORBIDDEN: ~/.ssh/*, ~/*, /home/*, /etc/*, /usr/*, /var/*, etc.
+```
+
+### 🔒 SSH KEY EXAMPLE
+```bash
+# ❌ NEVER DO THIS
+ssh-keygen -f ~/.ssh/key-name
+
+# ✅ ALWAYS DO THIS  
+mkdir -p ./keys
+ssh-keygen -f ./keys/key-name
+```
+
+### 🚨 ENFORCEMENT
+- **IF** user requests external operations → **REFUSE** and suggest repo-internal alternatives
+- **IF** scripts need external files → **REDESIGN** to work within repo
+- **IF** "fixing mistakes" → **ONLY** fix within repo boundaries
+
+### 📝 VIOLATION CONSEQUENCES
+- Immediate acknowledgment of mistake
+- Clear explanation of workspace boundary violation
+- Repository-only solution provided
+
+## 🎯 IMPLEMENTATION CHECKLIST
+
+Before ANY file operation, verify:
+- [ ] Path starts with `./` or is relative within repo
+- [ ] No `~`, `/home/`, `/etc/` paths involved
+- [ ] Operation stays within repository tree
+- [ ] No external directory access required
+
+## 🔥 REMEMBER
+**The repository directory is the ENTIRE universe. Nothing exists outside it.**

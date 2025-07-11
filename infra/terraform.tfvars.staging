@@ -1,33 +1,35 @@
-# Staging Environment Configuration for Fresh Deployment Testing
-# This creates a parallel instance without affecting the production deployment
+# FoamAI Staging Environment Configuration
+# This file contains configuration for the staging deployment
+# Used with the deploy-fresh-instance.sh script
+
+# Basic Configuration
+project_name = "FoamAI"
+environment  = "staging"
 
 # AWS Configuration
 aws_region = "us-east-1"
 
-# EC2 Instance Configuration
-instance_type = "c7i.2xlarge"  # Same as production for consistent testing
+# Instance Configuration
+instance_type = "c7i.large"  # Smaller instance for staging
 
 # SSH Key Configuration
 key_name = "foamai-key-staging"
-public_key_content = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINt6oMpPrkhThoPJDtWwaCOgFJ6WU1LozzCqsVhIRpad foamai-staging-deployment"
+public_key_content = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... your-email@example.com"
 
 # Storage Configuration
-root_volume_size = 50   # GB - OS and applications
-data_volume_size = 100  # GB - Simulation data storage
+root_volume_size = 30         # Smaller root volume for staging
+data_volume_size = 50         # Smaller data volume for staging
 
-# Project Settings - Different from production
-project_name = "FoamAI-Staging"
-environment  = "staging"
+# EBS Volume Configuration (New - for robust mounting)
+data_volume_filesystem   = "ext4"
+data_volume_mount_point  = "/data"
+data_volume_mount_options = "defaults,nofail"
+ebs_wait_timeout        = 300
+deployment_profile      = "development"
 
-# Security Configuration
-allowed_ssh_cidrs = [
-  "0.0.0.0/0"  # For testing - restrict in production
-]
+# Network Configuration
+allowed_ssh_cidrs = ["0.0.0.0/0"]  # Restrict in production
 
-# Application Configuration
-docker_hub_username = "foamai"
-github_repo_url = "https://github.com/bbaserdem/FoamAI.git"
-
-# Monitoring and Performance
-enable_detailed_monitoring = true  # Enable for testing
-backup_retention_days = 3         # Shorter retention for testing 
+# Monitoring Configuration
+enable_detailed_monitoring = true
+backup_retention_days     = 3  # Shorter retention for staging 

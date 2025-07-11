@@ -110,4 +110,58 @@ variable "backup_retention_days" {
     condition     = var.backup_retention_days >= 1 && var.backup_retention_days <= 365
     error_message = "Backup retention must be between 1 and 365 days."
   }
+}
+
+# ========================================================================
+# EBS Volume Configuration Variables
+# ========================================================================
+
+variable "data_volume_filesystem" {
+  description = "Filesystem type for the data volume"
+  type        = string
+  default     = "ext4"
+  
+  validation {
+    condition     = contains(["ext4", "xfs"], var.data_volume_filesystem)
+    error_message = "Filesystem must be ext4 or xfs."
+  }
+}
+
+variable "data_volume_mount_point" {
+  description = "Mount point for the data volume"
+  type        = string
+  default     = "/data"
+  
+  validation {
+    condition     = can(regex("^/[a-zA-Z0-9_/-]+$", var.data_volume_mount_point))
+    error_message = "Mount point must be a valid absolute path."
+  }
+}
+
+variable "data_volume_mount_options" {
+  description = "Mount options for the data volume"
+  type        = string
+  default     = "defaults,nofail"
+}
+
+variable "ebs_wait_timeout" {
+  description = "Timeout in seconds to wait for EBS volume attachment"
+  type        = number
+  default     = 300
+  
+  validation {
+    condition     = var.ebs_wait_timeout >= 60 && var.ebs_wait_timeout <= 1800
+    error_message = "EBS wait timeout must be between 60 and 1800 seconds (1-30 minutes)."
+  }
+}
+
+variable "deployment_profile" {
+  description = "Deployment configuration profile"
+  type        = string
+  default     = "standard"
+  
+  validation {
+    condition     = contains(["minimal", "standard", "performance", "development"], var.deployment_profile)
+    error_message = "Deployment profile must be one of: minimal, standard, performance, development."
+  }
 } 

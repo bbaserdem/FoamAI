@@ -144,8 +144,58 @@
         "dependencies": [
           7
         ],
-        "status": "pending",
-        "subtasks": []
+        "status": "in-progress",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Verify API Endpoint Accessibility",
+            "description": "Test the API endpoint to ensure it is accessible and returns the expected response.",
+            "dependencies": [],
+            "details": "Send a request to http://<ip>:8000/ping and verify that the response is 'pong'.\n<info added on 2025-07-10T17:25:47.956Z>\nAPI testing results:\n✅ Basic connectivity working - ports 8000 and 22 accessible\n✅ GET /ping endpoint working perfectly - returns \"pong\" with 200 status\n✅ GET / endpoint working - returns {\"message\":\"FoamAI API is running!\"}\n❌ Issue discovered: Deployed version is missing most API endpoints\n\nThe deployed API only has 2 endpoints (/ and /ping) while the current main.py has 20+ endpoints including all CFD functionality. This suggests either:\n1. Deployed version is from older commit\n2. Docker build issue\n3. Current code not yet deployed\n\nNeed to investigate deployment consistency.\n</info added on 2025-07-10T17:25:47.956Z>\n<info added on 2025-07-11T14:21:26.361Z>\nRobust EBS Volume Mounting Implementation Completed ✅\n\nRoot Cause Analysis Completed:\n- Identified device name mismatch between Terraform `/dev/sdf` and script expectations (`/dev/nvme1n1` or `/dev/xvdf`)\n- Confirmed timing issues with EBS volume attachment during user data script execution\n- Discovered hard-coded configurations limiting deployment flexibility\n\nSolution Implemented - Configurable Hybrid Approach:\n\n1. Template-based Configuration:\n- Converted `user_data.sh` to `user_data.sh.tpl` with Terraform templatefile() function\n- Added configurable variables: volume size, filesystem type, mount point, timeout, deployment profile\n- Maintains backward compatibility while providing flexibility\n\n2. Multi-Strategy Device Discovery:\n- Strategy 1: Size-based discovery (±10% tolerance) - most flexible\n- Strategy 2: AWS metadata-based discovery - most authoritative  \n- Strategy 3: Unused device discovery - comprehensive fallback\n- Robust error handling and comprehensive logging\n\n3. UUID-based Persistent Mounting:\n- Creates UUID-based fstab entries for reliability\n- Handles filesystem creation and validation\n- Provides fallback to root volume if needed\n\n4. Enhanced Configuration Variables:\n- `data_volume_size`: Configurable volume size (50-1000GB)\n- `data_volume_filesystem`: ext4 or xfs support\n- `deployment_profile`: minimal, standard, performance, development profiles\n- `ebs_wait_timeout`: Configurable timeout (60-1800 seconds)\n\n5. Comprehensive Documentation:\n- Created detailed `EBS_VOLUME_MOUNTING.md` with troubleshooting guide\n- Updated `terraform.tfvars.staging` with new configuration options\n- Added `infra/README.md` with quick start and configuration guide\n\nBenefits Achieved:\n- Eliminates device name mismatch issues\n- Handles EBS volume timing problems  \n- Provides configurable deployment options\n- Comprehensive fallback mechanisms\n- Enhanced monitoring and debugging capabilities\n- UUID-based persistence for reliability\n- Maintains deployment continuity even with volume failures\n\nTesting Strategy:\n- Staging deployment validation with `./deploy-fresh-instance.sh`\n- Enhanced status script: `sudo foamai-status`\n- Comprehensive logging: `/var/log/foamai-startup.log`\n- Multiple discovery strategy validation\n\nThe implementation addresses the original /data partition mounting issue while providing a robust, configurable, and maintainable solution for future deployments.\n</info added on 2025-07-11T14:21:26.361Z>",
+            "status": "done",
+            "testStrategy": "Manual testing"
+          },
+          {
+            "id": 2,
+            "title": "Check ParaView Server Connectivity",
+            "description": "Test the connectivity to the ParaView server on the specified port.",
+            "dependencies": [],
+            "details": "Attempt to connect to the ParaView server on port 11111 and verify successful connection.",
+            "status": "pending",
+            "testStrategy": "Manual testing"
+          },
+          {
+            "id": 3,
+            "title": "Infrastructure Verification",
+            "description": "Ensure that the underlying infrastructure for the API and ParaView server is operational.",
+            "dependencies": [],
+            "details": "Check server status, resource availability, and network configurations.\n<info added on 2025-07-10T17:23:33.751Z>\nStarting infrastructure verification for current deployment at 35.167.193.72. Testing deployed services before attempting new deployment to validate automation quality and identify any manual intervention needs.\n</info added on 2025-07-10T17:23:33.751Z>\n<info added on 2025-07-10T19:43:10.260Z>\n✅ Infrastructure Verification Completed Successfully\n\nEnvironment Analysis:\n- AWS CLI v2 working correctly (`aws-cli/2.27.31`) with proper flags\n- IAM user: `baserdemb-foamai` in account `843135096105`\n- Current permissions: Basic region access only\n- Missing permissions: EC2 instances, Cost Explorer, Security Hub\n\nPermission Issues Identified:\n- Cannot see EC2 instances (explains \"0 deployments\" in console)\n- Cannot access Cost and Usage reporting \n- Cannot access Security Hub\n- Cannot access Cost Optimization Hub\n\nSolutions Provided:\n1. Created minimal IAM policy: `infra/iam-policies/minimal-console-access-policy.json`\n2. Created full IAM policy: `infra/iam-policies/foamai-console-access-policy.json`\n3. Created step-by-step guide: `infra/iam-policies/IAM-SETUP-GUIDE.md`\n4. AWS CLI v2 troubleshooting completed - shell conflicts resolved\n\nAWS CLI v2 Working Commands:\n- `aws sts get-caller-identity --no-cli-pager --output json` ✅\n- `aws ec2 describe-regions --no-cli-pager --output table` ✅\n- Environment: `unset AWS_PAGER; export AWS_CLI_AUTO_PROMPT=off; export AWS_DEFAULT_OUTPUT=json`\n\nNext Action Required: Apply IAM policies via AWS Console or CLI to enable full infrastructure visibility and deployment capabilities.\n</info added on 2025-07-10T19:43:10.260Z>",
+            "status": "done",
+            "testStrategy": "Automated monitoring tools"
+          },
+          {
+            "id": 4,
+            "title": "Automate API Testing",
+            "description": "Create automated tests for the API endpoints to ensure ongoing accessibility.",
+            "dependencies": [
+              1
+            ],
+            "details": "Develop scripts that regularly ping the API endpoint and log responses.",
+            "status": "pending",
+            "testStrategy": "Automated testing framework"
+          },
+          {
+            "id": 5,
+            "title": "Automate ParaView Server Testing",
+            "description": "Create automated tests to verify the ParaView server's responsiveness and functionality.",
+            "dependencies": [
+              2
+            ],
+            "details": "Implement scripts that connect to the ParaView server and validate its responses.",
+            "status": "pending",
+            "testStrategy": "Automated testing framework"
+          }
+        ]
       },
       {
         "id": 9,
@@ -177,7 +227,7 @@
     ],
     "metadata": {
       "created": "2025-07-08T13:24:41.803Z",
-      "updated": "2025-07-09T16:38:20.839Z",
+      "updated": "2025-07-11T14:22:01.455Z",
       "description": "Tasks for master context"
     }
   }

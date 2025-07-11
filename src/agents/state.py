@@ -37,13 +37,16 @@ class SolverType(str, Enum):
     """Available OpenFOAM solvers."""
     SIMPLE_FOAM = "simpleFoam"
     PIMPLE_FOAM = "pimpleFoam"
+    PISO_FOAM = "pisoFoam"  # Transient incompressible flow using PISO algorithm
     INTER_FOAM = "interFoam"  # Multiphase flow solver
     RHO_PIMPLE_FOAM = "rhoPimpleFoam"  # Compressible transient solver
+    SONIC_FOAM = "sonicFoam"  # Transient compressible flow for trans-sonic/supersonic
     CHT_MULTI_REGION_FOAM = "chtMultiRegionFoam"  # Conjugate heat transfer
     REACTING_FOAM = "reactingFoam"  # Reactive flows with combustion
+    BUOYANT_SIMPLE_FOAM = "buoyantSimpleFoam"  # Heat transfer with buoyancy
+    MRF_SIMPLE_FOAM = "MRFSimpleFoam"  # Steady incompressible flow with rotating machinery
     # Future additions:
     # RHOSIMPLE_FOAM = "rhoSimpleFoam"  # Compressible steady
-    # BUOYANT_SIMPLE_FOAM = "buoyantSimpleFoam"  # Heat transfer with buoyancy
 
 
 class FlowType(str, Enum):

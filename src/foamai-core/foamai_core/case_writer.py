@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional, List
 from loguru import logger
 
 from .state import CFDState, CFDStep
+from .remote_executor import RemoteExecutor, LocalToRemoteAdapter
 
 
 def case_writer_agent(state: CFDState) -> CFDState:
@@ -17,44 +18,20 @@ def case_writer_agent(state: CFDState) -> CFDState:
     
     Assembles complete OpenFOAM case directory structure from generated
     mesh, boundary conditions, and solver configurations.
+    
+    Can write files locally or upload to remote server based on configuration.
     """
     try:
         if state["verbose"]:
             logger.info("Case Writer: Starting case assembly")
         
-        # Create case directory
-        case_directory = create_case_directory(state)
+        # Determine execution mode
+        execution_mode = state.get("execution_mode", "local")  # "local" or "remote"
         
-        # Write mesh configuration
-        write_mesh_files(case_directory, state)
-        
-        # Update state with case directory for boundary condition mapping
-        updated_state = {**state, "case_directory": str(case_directory)}
-        
-        # Write boundary condition files with intelligent mapping
-        write_boundary_condition_files_with_mapping(case_directory, updated_state)
-        
-        # Write solver configuration files
-        write_solver_files(case_directory, updated_state)
-        
-        # Validate case completeness
-        validation_result = validate_case_structure(case_directory)
-        if not validation_result["valid"]:
-            logger.warning(f"Case validation issues: {validation_result['warnings']}")
-            return {
-                **state,
-                "errors": state["errors"] + validation_result["errors"],
-                "warnings": state["warnings"] + validation_result["warnings"]
-            }
-        
-        if state["verbose"]:
-            logger.info(f"Case Writer: Case assembled at {case_directory}")
-        
-        return {
-            **updated_state,
-            "work_directory": str(case_directory.parent),
-            "errors": []
-        }
+        if execution_mode == "remote":
+            return case_writer_remote(state)
+        else:
+            return case_writer_local(state)
         
     except Exception as e:
         logger.error(f"Case Writer error: {str(e)}")
@@ -63,6 +40,197 @@ def case_writer_agent(state: CFDState) -> CFDState:
             "errors": state["errors"] + [f"Case writing failed: {str(e)}"],
             "current_step": CFDStep.ERROR
         }
+
+
+def case_writer_remote(state: CFDState) -> CFDState:
+    """
+    Case Writer for remote execution - uploads files to server.
+    """
+    try:
+        # Get remote execution configuration
+        server_url = state.get("server_url", "http://localhost:8000")
+        project_name = state.get("project_name")
+        
+        if not project_name:
+            raise ValueError("Project name is required for remote execution")
+        
+        if state["verbose"]:
+            logger.info(f"Case Writer: Remote execution - uploading to project '{project_name}' on server '{server_url}'")
+        
+        # Initialize remote executor
+        with RemoteExecutor(server_url, project_name) as remote:
+            # Ensure project exists
+            if not remote.ensure_project_exists():
+                remote.create_project_if_not_exists("LangGraph generated case")
+            
+            # Create local temporary directory for file generation
+            import tempfile
+            with tempfile.TemporaryDirectory(prefix="foamai_case_") as temp_dir:
+                case_directory = Path(temp_dir) / "case"
+                case_directory.mkdir(parents=True, exist_ok=True)
+                
+                # Create standard OpenFOAM directory structure
+                (case_directory / "0").mkdir(exist_ok=True)
+                (case_directory / "constant").mkdir(exist_ok=True)
+                (case_directory / "system").mkdir(exist_ok=True)
+                (case_directory / "constant" / "triSurface").mkdir(exist_ok=True)
+                
+                # Generate all files locally first
+                write_mesh_files_local(case_directory, state)
+                
+                # Update state with case directory for boundary condition mapping
+                updated_state = {**state, "case_directory": str(case_directory)}
+                
+                write_boundary_condition_files_with_mapping_local(case_directory, updated_state)
+                write_solver_files_local(case_directory, updated_state)
+                
+                # Upload all generated files to server
+                upload_results = upload_case_files_to_server(remote, case_directory, state)
+                
+                if state["verbose"]:
+                    logger.info(f"Case Writer: Uploaded {upload_results['uploaded_count']} files to remote server")
+                    if upload_results['failed_count'] > 0:
+                        logger.warning(f"Case Writer: {upload_results['failed_count']} files failed to upload")
+                
+                # Validate that essential files were uploaded
+                if upload_results['failed_count'] > 0:
+                    essential_files = ["system/controlDict", "system/blockMeshDict"]
+                    failed_essential = [f for f in upload_results['failed_files'] 
+                                      if any(essential in f for essential in essential_files)]
+                    if failed_essential:
+                        raise Exception(f"Failed to upload essential files: {failed_essential}")
+        
+        if state["verbose"]:
+            logger.info("Case Writer: Remote case assembly completed successfully")
+        
+        return {
+            **updated_state,
+            "work_directory": f"remote://{server_url}/projects/{project_name}",
+            "case_directory": f"remote://{server_url}/projects/{project_name}/active_run",
+            "errors": []
+        }
+        
+    except Exception as e:
+        logger.error(f"Remote Case Writer error: {str(e)}")
+        return {
+            **state,
+            "errors": state["errors"] + [f"Remote case writing failed: {str(e)}"],
+            "current_step": CFDStep.ERROR
+        }
+
+
+def case_writer_local(state: CFDState) -> CFDState:
+    """
+    Case Writer for local execution (original behavior).
+    """
+    # Create case directory
+    case_directory = create_case_directory(state)
+    
+    # Write mesh configuration
+    write_mesh_files(case_directory, state)
+    
+    # Update state with case directory for boundary condition mapping
+    updated_state = {**state, "case_directory": str(case_directory)}
+    
+    # Write boundary condition files with intelligent mapping
+    write_boundary_condition_files_with_mapping(case_directory, updated_state)
+    
+    # Write solver configuration files
+    write_solver_files(case_directory, updated_state)
+    
+    # Validate case completeness
+    validation_result = validate_case_structure(case_directory)
+    if not validation_result["valid"]:
+        logger.warning(f"Case validation issues: {validation_result['warnings']}")
+        return {
+            **state,
+            "errors": state["errors"] + validation_result["errors"],
+            "warnings": state["warnings"] + validation_result["warnings"]
+        }
+    
+    if state["verbose"]:
+        logger.info(f"Case Writer: Case assembled at {case_directory}")
+    
+    return {
+        **updated_state,
+        "work_directory": str(case_directory.parent),
+        "errors": []
+    }
+
+
+def upload_case_files_to_server(remote: RemoteExecutor, case_directory: Path, state: CFDState) -> Dict[str, Any]:
+    """
+    Upload all generated case files to the remote server.
+    
+    Args:
+        remote: RemoteExecutor instance
+        case_directory: Local case directory with generated files
+        state: CFD state
+        
+    Returns:
+        Upload results summary
+    """
+    upload_results = {
+        "uploaded_count": 0,
+        "failed_count": 0,
+        "uploaded_files": [],
+        "failed_files": []
+    }
+    
+    try:
+        # Find all files in the case directory
+        all_files = []
+        for root, dirs, files in os.walk(case_directory):
+            for file in files:
+                file_path = Path(root) / file
+                relative_path = file_path.relative_to(case_directory)
+                all_files.append((file_path, str(relative_path)))
+        
+        if state["verbose"]:
+            logger.info(f"Uploading {len(all_files)} files to remote server...")
+        
+        # Upload each file
+        for local_path, relative_path in all_files:
+            try:
+                # Normalize path separators for Unix/Linux server
+                unix_relative_path = relative_path.replace('\\', '/')
+                
+                result = remote.upload_file(local_path, unix_relative_path)
+                upload_results["uploaded_count"] += 1
+                upload_results["uploaded_files"].append(unix_relative_path)
+                
+                if state["verbose"]:
+                    logger.debug(f"Uploaded: {unix_relative_path}")
+                    
+            except Exception as e:
+                logger.error(f"Failed to upload {relative_path}: {str(e)}")
+                upload_results["failed_count"] += 1
+                upload_results["failed_files"].append(relative_path)
+        
+        if state["verbose"]:
+            logger.info(f"Upload complete: {upload_results['uploaded_count']} successful, {upload_results['failed_count']} failed")
+        
+    except Exception as e:
+        logger.error(f"Error during file upload: {str(e)}")
+        upload_results["error"] = str(e)
+    
+    return upload_results
+
+
+# Local file writing functions (renamed for clarity)
+def write_mesh_files_local(case_directory: Path, state: CFDState) -> None:
+    """Write mesh configuration files locally."""
+    return write_mesh_files(case_directory, state)
+
+
+def write_boundary_condition_files_with_mapping_local(case_directory: Path, state: CFDState) -> None:
+    """Write boundary condition files with mapping locally."""
+    return write_boundary_condition_files_with_mapping(case_directory, state)
+
+
+def write_solver_files_local(case_directory: Path, state: CFDState) -> None:
+    """Write solver configuration files locally."""
+    return write_solver_files(case_directory, state)
 
 
 def create_case_directory(state: CFDState) -> Path:
@@ -1576,7 +1744,7 @@ def format_foam_dict(content: Dict[str, Any], file_name: str) -> str:
     try:
         import sys
         sys.path.append('src')
-        from foamai.config import get_settings
+        from .config import get_settings
         settings = get_settings()
         variant = settings.openfoam_variant
         version = settings.openfoam_version

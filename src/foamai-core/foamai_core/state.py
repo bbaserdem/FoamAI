@@ -111,3 +111,13 @@ class CFDState(TypedDict):
     current_iteration: int  # Current iteration number (0-based)
     conversation_active: bool  # Whether to continue the conversation or exit
     previous_results: Optional[Dict[str, Any]]  # Results from previous iteration for comparison 
+    
+    # Remote execution configuration
+    execution_mode: str  # "local" or "remote"
+    server_url: Optional[str]  # URL of remote OpenFOAM server
+    project_name: Optional[str]  # Name of project on remote server
+    
+    # User approval workflow fields for desktop UI integration
+    awaiting_user_approval: bool  # True when workflow is paused for user approval
+    workflow_paused: bool  # True when workflow is paused waiting for external input
+    config_summary: Optional[Dict[str, Any]]  # Configuration summary for UI display 

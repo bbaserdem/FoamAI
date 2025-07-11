@@ -12,6 +12,8 @@ class ComponentState(Enum):
     POPULATED = "populated"
     LOCKED = "locked"
     ERROR = "error"
+    PROCESSING = "processing"
+    COMPLETE = "complete"
 
 @dataclass
 class MeshData:

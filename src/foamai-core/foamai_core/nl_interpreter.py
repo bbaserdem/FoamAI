@@ -796,11 +796,11 @@ def nl_interpreter_agent(state: CFDState) -> CFDState:
             if state.get("stl_file"):
                 logger.info(f"NL Interpreter: STL file provided: {state['stl_file']}")
         
-        # Get settings for API key
-        import sys
-        sys.path.append('src')
-        from foamai.config import get_settings
+        # Get API key from config
+        from .config import get_settings
         settings = get_settings()
+        if not settings.openai_api_key:
+            raise ValueError("OPENAI_API_KEY environment variable is required")
         
         # Create LLM with structured output
         llm = ChatOpenAI(

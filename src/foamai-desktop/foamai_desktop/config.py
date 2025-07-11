@@ -19,14 +19,30 @@ class Config:
     PARAVIEW_SERVER_HOST = os.getenv('PARAVIEW_SERVER_HOST', 'localhost')
     PARAVIEW_SERVER_PORT = int(os.getenv('PARAVIEW_SERVER_PORT', '11111'))
     
-    # API Endpoints
+    # New Project-Based API Endpoints
     API_ENDPOINTS = {
-        'submit_scenario': '/submit_scenario',
-        'approve_mesh': '/approve_mesh',
-        'reject_mesh': '/reject_mesh',
-        'run_simulation': '/run_simulation',
-        'get_results': '/results',
-        'get_status': '/status'
+        # Health check
+        'health': '/health',
+        
+        # Project management
+        'projects': '/api/projects',
+        'project_detail': '/api/projects/{project_name}',
+        'project_delete': '/api/projects/{project_name}',
+        
+        # File management
+        'upload_file': '/api/projects/{project_name}/upload',
+        
+        # Command execution
+        'run_command': '/api/projects/{project_name}/run_command',
+        
+        # ParaView server management
+        'start_pvserver': '/api/projects/{project_name}/pvserver/start',
+        'stop_pvserver': '/api/projects/{project_name}/pvserver/stop',
+        'pvserver_info': '/api/projects/{project_name}/pvserver/info',
+        
+        # System information
+        'list_pvservers': '/api/pvservers',
+        'system_stats': '/api/system/stats',
     }
     
     # Application Settings
@@ -42,15 +58,20 @@ class Config:
     # Request Timeout
     REQUEST_TIMEOUT = int(os.getenv('REQUEST_TIMEOUT', '60'))
     
+    # File Upload Settings
+    MAX_UPLOAD_SIZE = int(os.getenv('MAX_UPLOAD_SIZE', '300'))  # MB
+    
     @classmethod
     def get_server_url(cls):
         """Get the complete server URL"""
         return cls.SERVER_URL
     
     @classmethod
-    def get_api_url(cls, endpoint):
-        """Get the complete API URL for a specific endpoint"""
-        return f"{cls.SERVER_URL}{cls.API_ENDPOINTS[endpoint]}"
+    def get_api_url(cls, endpoint, **kwargs):
+        """Get the complete API URL for a specific endpoint with parameter substitution"""
+        endpoint_template = cls.API_ENDPOINTS[endpoint]
+        endpoint_path = endpoint_template.format(**kwargs)
+        return f"{cls.SERVER_URL}{endpoint_path}"
     
     @classmethod
     def get_paraview_server_info(cls):

@@ -157,6 +157,54 @@ class SimulationCard(QFrame):
             """)
             self.status_label.setText("Locked")
             self.status_label.setStyleSheet("color: #107c10; font-size: 10pt; font-weight: bold;")
+            
+        elif self.state == ComponentState.PROCESSING:
+            self.setStyleSheet("""
+                QFrame {
+                    background-color: #fff8dc;
+                    border: 2px solid #ffa500;
+                    border-radius: 8px;
+                    margin: 2px;
+                }
+                QFrame:hover {
+                    border-color: #ff8c00;
+                    background-color: #ffefd5;
+                }
+            """)
+            self.status_label.setText("Processing...")
+            self.status_label.setStyleSheet("color: #ff8c00; font-size: 10pt; font-weight: bold;")
+            
+        elif self.state == ComponentState.COMPLETE:
+            self.setStyleSheet("""
+                QFrame {
+                    background-color: #e8f5e8;
+                    border: 2px solid #28a745;
+                    border-radius: 8px;
+                    margin: 2px;
+                }
+                QFrame:hover {
+                    border-color: #1e7e34;
+                    background-color: #d4edda;
+                }
+            """)
+            self.status_label.setText("Complete")
+            self.status_label.setStyleSheet("color: #28a745; font-size: 10pt; font-weight: bold;")
+            
+        elif self.state == ComponentState.ERROR:
+            self.setStyleSheet("""
+                QFrame {
+                    background-color: #ffe6e6;
+                    border: 2px solid #ff4444;
+                    border-radius: 8px;
+                    margin: 2px;
+                }
+                QFrame:hover {
+                    border-color: #cc0000;
+                    background-color: #ffcccc;
+                }
+            """)
+            self.status_label.setText("Error")
+            self.status_label.setStyleSheet("color: #cc0000; font-size: 10pt; font-weight: bold;")
     
     def set_state(self, state: ComponentState):
         """Set the current state"""

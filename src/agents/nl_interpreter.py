@@ -983,6 +983,8 @@ Return valid JSON that matches the schema exactly.
                 parsed_params["reynolds_number"] = reynolds_number
         
         # Set default fluid properties if not specified
+        # Pass the original prompt to detect Mars simulation
+        parsed_params["original_prompt"] = state["user_prompt"]
         parsed_params = set_default_fluid_properties(parsed_params)
         
         # Detect multiphase flow indicators
@@ -1123,14 +1125,40 @@ def get_characteristic_length(geometry_info: Dict[str, Any]) -> Optional[float]:
         return 0.1  # Default characteristic length
 
 
+def detect_mars_simulation(prompt: str) -> bool:
+    """Detect if the user is requesting a Mars simulation."""
+    mars_keywords = [
+        "mars", "martian", "red planet", "on mars", "mars atmosphere",
+        "mars surface", "mars conditions", "mars environment"
+    ]
+    
+    prompt_lower = prompt.lower()
+    return any(keyword in prompt_lower for keyword in mars_keywords)
+
+
 def set_default_fluid_properties(params: Dict[str, Any]) -> Dict[str, Any]:
     """Set default fluid properties if not specified."""
-    defaults = {
-        "density": 1.225,  # Air at sea level (kg/m³)
-        "viscosity": 1.81e-5,  # Air at 20°C (Pa·s)
-        "temperature": 293.15,  # 20°C in Kelvin
-        "pressure": 101325,  # Atmospheric pressure (Pa)
-    }
+    # Check if this is a Mars simulation
+    original_prompt = params.get("original_prompt", "")
+    is_mars_simulation = detect_mars_simulation(original_prompt)
+    
+    if is_mars_simulation:
+        # Mars atmospheric conditions
+        defaults = {
+            "density": 0.02,  # Mars atmosphere density (kg/m³)
+            "viscosity": 1.0e-5,  # Mars atmosphere viscosity (Pa·s) 
+            "temperature": 210.0,  # Mars surface temperature (K) - approximately -63°C
+            "pressure": 610.0,  # Mars atmospheric pressure (Pa) - about 0.6% of Earth's
+        }
+        logger.info("Using Mars atmospheric conditions for simulation")
+    else:
+        # Earth atmospheric conditions (default)
+        defaults = {
+            "density": 1.225,  # Air at sea level (kg/m³)
+            "viscosity": 1.81e-5,  # Air at 20°C (Pa·s)
+            "temperature": 293.15,  # 20°C in Kelvin
+            "pressure": 101325,  # Atmospheric pressure (Pa)
+        }
     
     for key, value in defaults.items():
         if key not in params or params[key] is None:

@@ -436,12 +436,14 @@ INTELLIGENT_DEFAULTS = {
     "temperature": {
         "ambient": 293.15,  # 20°C
         "cold": 273.15,     # 0°C
-        "hot": 373.15       # 100°C
+        "hot": 373.15,      # 100°C
+        "mars": 210.0       # Mars surface temperature (-63°C)
     },
     "pressure": {
         "atmospheric": 101325.0,
         "low": 50000.0,
-        "high": 200000.0
+        "high": 200000.0,
+        "mars": 610.0       # Mars atmospheric pressure (0.6% of Earth's)
     }
 }
 
@@ -1125,12 +1127,27 @@ def validate_solver_parameters(solver_type: SolverType, params: Dict[str, Any],
     return missing_params, suggested_defaults
 
 
+def detect_mars_simulation(prompt: str) -> bool:
+    """Detect if the user is requesting a Mars simulation."""
+    mars_keywords = [
+        "mars", "martian", "red planet", "on mars", "mars atmosphere",
+        "mars surface", "mars conditions", "mars environment"
+    ]
+    
+    prompt_lower = prompt.lower()
+    return any(keyword in prompt_lower for keyword in mars_keywords)
+
+
 def get_intelligent_default(param: str, solver_type: SolverType, params: Dict[str, Any], 
                           geometry_info: Dict[str, Any]) -> Any:
     """
     Generate intelligent default values for missing parameters.
     """
     geometry_type = geometry_info.get("type", GeometryType.CYLINDER)
+    
+    # Check if this is a Mars simulation
+    original_prompt = params.get("original_prompt", "")
+    is_mars_simulation = detect_mars_simulation(original_prompt)
     
     if param == "reynolds_number":
         # Base Reynolds number on geometry type and flow regime
@@ -1160,14 +1177,20 @@ def get_intelligent_default(param: str, solver_type: SolverType, params: Dict[st
     elif param == "temperature":
         # Base temperature on solver type and application
         if solver_type in [SolverType.RHO_PIMPLE_FOAM, SolverType.CHT_MULTI_REGION_FOAM, SolverType.REACTING_FOAM]:
-            return INTELLIGENT_DEFAULTS["temperature"]["ambient"]
+            if is_mars_simulation:
+                return INTELLIGENT_DEFAULTS["temperature"]["mars"]
+            else:
+                return INTELLIGENT_DEFAULTS["temperature"]["ambient"]
         else:
             return None  # Not required for incompressible solvers
     
     elif param == "pressure":
         # Base pressure on solver type
         if solver_type == SolverType.RHO_PIMPLE_FOAM:
-            return INTELLIGENT_DEFAULTS["pressure"]["atmospheric"]
+            if is_mars_simulation:
+                return INTELLIGENT_DEFAULTS["pressure"]["mars"]
+            else:
+                return INTELLIGENT_DEFAULTS["pressure"]["atmospheric"]
         else:
             return None  # Usually relative pressure for incompressible
     
@@ -2554,9 +2577,17 @@ def generate_transport_properties(solver_settings: Dict[str, Any], parsed_params
 
 def generate_thermophysical_properties(solver_settings: Dict[str, Any], parsed_params: Dict[str, Any]) -> Dict[str, Any]:
     """Generate thermophysicalProperties file for compressible solvers."""
+    # Check if this is a Mars simulation
+    original_prompt = parsed_params.get("original_prompt", "")
+    is_mars_simulation = detect_mars_simulation(original_prompt)
+    
     # Default temperature and pressure if not specified
-    temperature = parsed_params.get("temperature", 293.15)  # 20°C in Kelvin
-    pressure = parsed_params.get("pressure", 101325)  # 1 atm in Pa
+    if is_mars_simulation:
+        temperature = parsed_params.get("temperature", 210.0)  # Mars surface temperature
+        pressure = parsed_params.get("pressure", 610.0)  # Mars atmospheric pressure
+    else:
+        temperature = parsed_params.get("temperature", 293.15)  # 20°C in Kelvin
+        pressure = parsed_params.get("pressure", 101325)  # 1 atm in Pa
     
     # Gas properties (default to air)
     cp = parsed_params.get("specific_heat", 1005)  # J/(kg·K) for air
@@ -2596,9 +2627,17 @@ def generate_thermophysical_properties(solver_settings: Dict[str, Any], parsed_p
 
 def generate_reactive_thermophysical_properties(solver_settings: Dict[str, Any], parsed_params: Dict[str, Any]) -> Dict[str, Any]:
     """Generate thermophysicalProperties file for reactive flow solvers."""
+    # Check if this is a Mars simulation
+    original_prompt = parsed_params.get("original_prompt", "")
+    is_mars_simulation = detect_mars_simulation(original_prompt)
+    
     # Default temperature and pressure if not specified
-    temperature = parsed_params.get("temperature", 300)  # 300K for combustion
-    pressure = parsed_params.get("pressure", 101325)  # 1 atm in Pa
+    if is_mars_simulation:
+        temperature = parsed_params.get("temperature", 210.0)  # Mars surface temperature
+        pressure = parsed_params.get("pressure", 610.0)  # Mars atmospheric pressure
+    else:
+        temperature = parsed_params.get("temperature", 300)  # 300K for combustion
+        pressure = parsed_params.get("pressure", 101325)  # 1 atm in Pa
     
     # Get species list
     species = solver_settings.get("species", ["CH4", "O2", "CO2", "H2O", "N2"])

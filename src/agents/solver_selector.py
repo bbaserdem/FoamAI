@@ -10,121 +10,279 @@ from .state import CFDState, CFDStep, GeometryType, FlowType, AnalysisType, Solv
 # Enhanced keyword detection with context analysis and weighting
 KEYWORD_WEIGHTS = {
     "compressible": {
+        # Core compressible flow keywords
         "shock": 3.0,
         "supersonic": 2.5,
         "transonic": 2.0,
+        "hypersonic": 2.5,
         "mach": 2.0,
         "compressible": 2.0,
         "gas dynamics": 1.5,
         "high-speed": 1.5,
         "high speed": 1.5,
-        "nozzle": 1.0,
-        "jet": 1.0,
-        "blast": 1.5,
         "sonic boom": 2.0,
-        "rocket": 1.0,
+        # Applications and phenomena
+        "nozzle": 1.5,
+        "jet": 1.5,
+        "rocket": 1.5,
+        "blast": 2.0,
+        "explosion": 2.0,
+        "expansion": 1.0,
+        "compression": 1.0,
+        "rarefaction": 2.0,
+        "oblique shock": 2.5,
+        "normal shock": 2.5,
+        "prandtl-meyer": 2.0,
+        "fanno": 1.5,
+        "rayleigh": 1.5,
+        # Aerospace applications
+        "aircraft": 1.0,
+        "airfoil supersonic": 2.0,
+        "wind tunnel": 1.0,
+        "ballistics": 2.0,
+        "projectile": 1.5,
         # Negative weights for conflicting contexts
         "wave": -1.0,  # "shock wave" vs "water wave"
         "water": -2.0,  # Compressible flows rarely involve water
         "liquid": -2.0,
         "free surface": -1.5,
         "dam break": -2.0,
-        "sloshing": -2.0
+        "sloshing": -2.0,
+        "marine": -2.0,
+        "naval": -2.0
     },
     "multiphase": {
+        # Fluid types
         "water": 2.0,
         "liquid": 1.5,
         "gas": 1.0,
+        "oil": 2.0,
+        "steam": 1.5,
+        "vapor": 1.5,
+        "mist": 2.0,
+        "fog": 1.5,
+        "spray": 2.0,
+        # Interface phenomena
         "interface": 2.0,
         "free surface": 2.5,
+        "meniscus": 2.0,
+        "contact line": 2.0,
+        "wetting": 1.5,
+        "dewetting": 1.5,
+        "surface tension": 2.5,
+        "capillary": 2.0,
+        # Methods and models
         "vof": 3.0,
         "volume of fluid": 3.0,
+        "level set": 2.5,
         "multiphase": 3.0,
+        "two-phase": 2.5,
+        "three-phase": 2.5,
+        "eulerian": 1.5,
+        "lagrangian": 1.5,
+        # Phenomena and applications
         "dam break": 2.5,
         "wave": 1.5,  # Water waves, not shock waves
+        "tsunami": 2.5,
+        "breaking wave": 2.5,
         "droplet": 2.0,
         "bubble": 2.0,
+        "cavitation": 2.5,
+        "boiling": 2.0,
+        "condensation": 2.0,
+        "evaporation": 2.0,
         "splash": 2.0,
+        "impact": 1.5,
         "filling": 1.5,
         "draining": 1.5,
         "sloshing": 2.0,
+        "coating": 1.5,
+        "inkjet": 2.0,
+        "atomization": 2.0,
+        # Applications
         "marine": 1.5,
         "naval": 1.5,
+        "offshore": 1.5,
+        "ship": 1.0,
+        "hull": 1.0,
+        "tank": 1.0,
+        "reservoir": 1.0,
+        "pipeline": 1.0,
+        "microfluidics": 2.0,
         "air": 0.5,  # Only when combined with other fluids
         # Negative weights for conflicting contexts
         "shock": -2.0,  # Shock waves are compressible phenomena
         "supersonic": -2.0,
+        "hypersonic": -2.0,
         "mach": -2.0,
         "compressible": -2.0,
-        "gas dynamics": -1.5
+        "gas dynamics": -1.5,
+        "ballistics": -2.0
     },
     "heat_transfer": {
+        # Core thermal keywords
         "heat": 2.0,
         "thermal": 2.0,
         "temperature": 1.5,
         "cooling": 1.5,
         "heating": 1.5,
+        "hot": 1.0,
+        "cold": 1.0,
+        "warm": 1.0,
+        # Heat transfer mechanisms
         "heat transfer": 3.0,
-        "conjugate": 2.5,
         "conduction": 2.0,
         "convection": 2.0,
         "radiation": 1.5,
-        "heat flux": 2.0,
-        "thermal boundary": 2.0,
-        "heat exchanger": 2.5,
-        "insulation": 1.5,
-        "heat sink": 2.0,
-        "thermal management": 2.0,
+        "natural convection": 2.5,
+        "forced convection": 2.5,
+        "mixed convection": 2.5,
+        "free convection": 2.5,
+        # Multi-physics coupling
+        "conjugate": 2.5,
+        "conjugate heat transfer": 3.0,
+        "cht": 3.0,
         "cfd-cht": 3.0,
-        "multi-region": 2.5,
-        "multi region": 2.5,
+        "fluid-solid": 2.5,
         "solid-fluid": 2.0,
         "solid fluid": 2.0,
+        "coupling": 1.5,
+        "thermal coupling": 2.5,
+        "multi-region": 2.5,
+        "multi region": 2.5,
+        "multiregion": 2.5,
+        # Boundaries and conditions
+        "heat flux": 2.0,
+        "thermal boundary": 2.0,
         "wall temperature": 1.5,
         "wall conduction": 2.0,
         "solid wall": 1.5,
-        "cht": 3.0,
-        "coupling": 1.5
+        "thermal contact": 2.0,
+        "interface temperature": 2.0,
+        # Applications and equipment
+        "heat exchanger": 2.5,
+        "radiator": 2.0,
+        "heat sink": 2.0,
+        "cooling system": 2.0,
+        "thermal management": 2.0,
+        "hvac": 2.0,
+        "boiler": 2.0,
+        "furnace": 2.0,
+        "oven": 1.5,
+        "chimney": 1.5,
+        "stack": 1.0,
+        "insulation": 1.5,
+        "thermal insulation": 2.0,
+        # Phase change
+        "melting": 2.0,
+        "solidification": 2.0,
+        "freezing": 2.0,
+        "phase change": 2.5,
+        "latent heat": 2.0,
+        # Electronics cooling
+        "electronics": 1.5,
+        "cpu": 1.5,
+        "chip": 1.5,
+        "pcb": 1.5,
+        "thermal interface": 2.0
     },
     "reactive": {
+        # Core combustion keywords
         "combustion": 3.0,
         "burning": 2.5,
         "flame": 2.5,
+        "fire": 2.0,
         "ignition": 2.0,
+        "autoignition": 2.5,
+        "quenching": 2.0,
+        "extinction": 2.0,
+        "flashback": 2.5,
+        "blowoff": 2.5,
+        # Chemical processes
         "reaction": 2.0,
         "chemical": 2.0,
+        "chemistry": 2.0,
+        "kinetics": 2.0,
+        "mechanism": 1.5,
         "species": 2.0,
+        "concentration": 1.5,
+        "mass fraction": 2.0,
+        "mole fraction": 2.0,
+        "mixture fraction": 2.0,
+        "progress variable": 2.0,
+        # Fuel types
         "fuel": 2.0,
         "oxidizer": 2.0,
-        "premixed": 2.5,
-        "non-premixed": 2.5,
-        "diffusion flame": 2.5,
-        "detonation": 2.5,
-        "deflagration": 2.5,
-        "burner": 2.0,
-        "combustor": 2.0,
-        "engine": 1.5,
-        "propulsion": 1.5,
-        "fire": 2.0,
-        "reacting": 3.0,
-        "reactive": 3.0,
-        "chemistry": 2.0,
-        "mixture fraction": 2.0,
         "methane": 2.0,
         "propane": 2.0,
         "hydrogen": 2.0,
         "ethane": 2.0,
-        "gasoline": 2.0
+        "gasoline": 2.0,
+        "diesel": 2.0,
+        "kerosene": 2.0,
+        "natural gas": 2.0,
+        "biogas": 2.0,
+        "syngas": 2.0,
+        "ammonia": 2.0,
+        # Combustion modes
+        "premixed": 2.5,
+        "non-premixed": 2.5,
+        "partially premixed": 2.5,
+        "diffusion flame": 2.5,
+        "laminar flame": 2.5,
+        "turbulent flame": 2.5,
+        "stratified": 2.0,
+        # Combustion phenomena
+        "detonation": 2.5,
+        "deflagration": 2.5,
+        "knock": 2.0,
+        "auto-ignition": 2.5,
+        "flame speed": 2.0,
+        "flame front": 2.0,
+        "flame propagation": 2.0,
+        "flame stabilization": 2.0,
+        # Applications
+        "burner": 2.0,
+        "combustor": 2.0,
+        "engine": 1.5,
+        "turbine": 1.5,
+        "furnace": 2.0,
+        "boiler": 1.5,
+        "incinerator": 2.0,
+        "flare": 2.0,
+        "torch": 1.5,
+        "propulsion": 1.5,
+        "rocket": 1.5,
+        "jet engine": 2.0,
+        "gas turbine": 2.0,
+        "internal combustion": 2.5,
+        # Modeling approaches
+        "reacting": 3.0,
+        "reactive": 3.0,
+        "eddy dissipation": 2.0,
+        "flamelet": 2.5,
+        "pdf": 1.5,
+        "les combustion": 2.5,
+        "rans combustion": 2.5
     },
     "steady": {
         "steady": 2.0,
         "steady-state": 2.5,
+        "steady state": 2.5,
         "equilibrium": 2.0,
         "final": 1.5,
         "converged": 2.0,
+        "time-independent": 2.0,
+        "stationary": 2.0,
+        "constant": 1.0,
+        # Performance metrics (often steady-state)
         "pressure drop": 2.0,
         "drag coefficient": 1.5,
         "lift coefficient": 1.5,
+        "efficiency": 1.0,
+        "performance": 1.0,
+        "design point": 1.5,
+        "operating point": 1.5,
         # Negative weights for conflicting contexts
         "transient": -2.0,
         "time": -1.0,
@@ -135,27 +293,65 @@ KEYWORD_WEIGHTS = {
         "frequency": -2.0,
         "startup": -2.0,
         "development": -1.5,
-        "periodic": -2.0
+        "periodic": -2.0,
+        "pulsating": -2.0,
+        "fluctuating": -2.0
     },
     "transient": {
         "transient": 2.5,
-        "time": 1.5,
         "unsteady": 2.5,
+        "time": 1.5,
+        "time-dependent": 2.5,
+        "time dependent": 2.5,
+        "temporal": 2.0,
+        "dynamic": 1.5,
+        "evolution": 1.5,
+        # Vortex phenomena
         "vortex": 2.0,
         "shedding": 2.5,
+        "vortex shedding": 3.0,
+        "karman": 2.5,
+        "von karman": 2.5,
+        "wake": 1.5,
+        "instability": 2.0,
+        # Oscillatory phenomena
         "oscillat": 2.0,
+        "oscillating": 2.0,
+        "oscillation": 2.0,
         "frequency": 2.0,
-        "startup": 2.0,
-        "development": 1.5,
         "periodic": 2.0,
-        "time-dependent": 2.5,
+        "pulsating": 2.0,
+        "pulsation": 2.0,
+        "fluctuating": 2.0,
+        "fluctuation": 2.0,
+        "vibration": 1.5,
+        "resonance": 2.0,
+        # Flow development
+        "startup": 2.0,
+        "start-up": 2.0,
+        "development": 1.5,
+        "developing": 1.5,
+        "transient response": 2.5,
+        "impulse": 2.0,
+        "step response": 2.0,
+        # Turbulence
+        "turbulent": 1.0,
+        "turbulence": 1.0,
+        "eddy": 1.0,
+        "les": 1.5,  # Large Eddy Simulation
+        "dns": 2.0,  # Direct Numerical Simulation
+        # Dimensionless numbers
         "strouhal": 2.0,
+        "strouhal number": 2.5,
+        "reduced frequency": 2.0,
         # Negative weights for conflicting contexts
         "steady": -2.0,
         "steady-state": -2.5,
+        "steady state": -2.5,
         "equilibrium": -2.0,
         "final": -1.5,
-        "converged": -2.0
+        "converged": -2.0,
+        "stationary": -2.0
     }
 }
 
@@ -493,8 +689,8 @@ def solver_selector_agent(state: CFDState) -> CFDState:
         # Extract problem features for AI decision
         problem_features = extract_problem_features(state)
         
-        # Get AI recommendation for solver
-        solver_recommendation = get_ai_solver_recommendation(
+        # Get AI recommendation for solver with confidence scoring
+        solver_recommendation, confidence_score, alternatives = get_ai_solver_recommendation(
             problem_features, 
             SOLVER_REGISTRY
         )
@@ -525,30 +721,67 @@ def solver_selector_agent(state: CFDState) -> CFDState:
         solver_settings = build_solver_settings(
             solver_recommendation,
             enhanced_params,
-            geometry_info
+            geometry_info,
+            confidence_score,
+            alternatives
         )
+        
+        # Validate the generated configuration
+        validation_result = validate_solver_config(solver_settings, enhanced_params)
+        
+        # Log validation results
+        if not validation_result["valid"]:
+            logger.error("Solver configuration validation failed:")
+            for error in validation_result["errors"]:
+                logger.error(f"  ERROR: {error}")
+        
+        if validation_result["warnings"]:
+            logger.warning("Solver configuration warnings:")
+            for warning in validation_result["warnings"]:
+                logger.warning(f"  WARNING: {warning}")
+        
+        if validation_result["suggestions"] and state.get("verbose", False):
+            logger.info("Solver configuration suggestions:")
+            for suggestion in validation_result["suggestions"]:
+                logger.info(f"  SUGGESTION: {suggestion}")
+        
+        # Add validation results to metadata
+        solver_settings["metadata"]["validation"] = validation_result
         
         # Generate solver configuration files
         solver_config = generate_solver_config(solver_settings, parsed_params, geometry_info, state)
         
         # Validate solver configuration
         validation_result = validate_solver_config(solver_config, parsed_params)
-        if not validation_result["valid"]:
-            logger.warning(f"Solver validation issues: {validation_result['warnings']}")
+        
+        # Only return early if there are critical errors that prevent solver execution
+        critical_errors = [error for error in validation_result["errors"] 
+                          if "Missing required file" not in error]  # Allow missing files for now
+        
+        if critical_errors:
+            logger.error(f"Critical solver validation errors: {critical_errors}")
             return {
                 **state,
-                "errors": state["errors"] + validation_result["errors"],
+                "errors": state["errors"] + critical_errors,
                 "warnings": state["warnings"] + validation_result["warnings"]
             }
         
         if state["verbose"]:
             logger.info(f"Solver Selector: Selected {solver_settings['solver']} solver")
             logger.info(f"Solver Selector: Analysis type: {solver_settings['analysis_type']}")
+            logger.info(f"Solver Selector: Selection confidence: {confidence_score:.2f}")
+            
+            # Log alternatives if confidence is low
+            if confidence_score < 0.7 and alternatives:
+                logger.info("Solver Selector: Alternative suggestions:")
+                for alt_solver, alt_confidence, alt_reason in alternatives:
+                    logger.info(f"  - {alt_solver.value}: {alt_confidence:.2f} ({alt_reason})")
         
         return {
             **state,
             "solver_settings": solver_config,
-            "errors": []
+            "errors": state["errors"] + validation_result.get("errors", []),
+            "warnings": state["warnings"] + validation_result.get("warnings", [])
         }
         
     except Exception as e:
@@ -978,10 +1211,17 @@ def infer_time_scale_interest(params: Dict[str, Any], keywords: List[str]) -> st
 def get_ai_solver_recommendation(
     features: Dict[str, Any], 
     solver_registry: Dict[SolverType, Dict]
-) -> SolverType:
+) -> Tuple[SolverType, float, List[Tuple[SolverType, float, str]]]:
     """
     AI agent logic to select best solver based on problem features.
-    This is where the intelligence lives.
+    Returns (selected_solver, confidence_score, alternative_suggestions).
+    
+    Confidence scoring:
+    - 1.0: Perfect match, unambiguous selection
+    - 0.8-0.9: High confidence, clear physics indicators
+    - 0.6-0.7: Medium confidence, some ambiguity
+    - 0.4-0.5: Low confidence, multiple viable options
+    - 0.0-0.3: Very uncertain, needs user clarification
     """
     
     # Log the decision process
@@ -999,79 +1239,120 @@ def get_ai_solver_recommendation(
     logger.info(f"  Time Scale Interest: {features['time_scale_interest']}")
     logger.info(f"  Keywords: {features['user_keywords']}")
     
-    # Decision logic with physics-based priority hierarchy
+    # Enhanced decision logic with confidence scoring and alternatives
+    solver_scores = {}
+    alternatives = []
     
-    # Priority 1: Most restrictive physics first - Reactive flows
+    # Calculate confidence scores for each solver based on physics indicators
+    
+    # Priority 1: Reactive flows - Very high confidence if detected
     if features['has_reactive_flow']:
-        logger.info("AI Decision: Reactive flow/combustion detected → reactingFoam")
-        return SolverType.REACTING_FOAM
+        solver_scores[SolverType.REACTING_FOAM] = 0.95
+        logger.info("AI Decision: Reactive flow/combustion detected → reactingFoam (confidence: 0.95)")
+        return SolverType.REACTING_FOAM, 0.95, [(SolverType.RHO_PIMPLE_FOAM, 0.3, "Alternative for high-speed combustion")]
     
-    # Priority 2: Multi-region heat transfer
+    # Priority 2: Multi-region heat transfer - High confidence
     if features['is_multi_region'] and features['has_heat_transfer']:
-        logger.info("AI Decision: Multi-region heat transfer detected → chtMultiRegionFoam")
-        return SolverType.CHT_MULTI_REGION_FOAM
+        solver_scores[SolverType.CHT_MULTI_REGION_FOAM] = 0.9
+        alternatives = [(SolverType.PIMPLE_FOAM, 0.4, "Single-region alternative if multi-region not needed")]
+        logger.info("AI Decision: Multi-region heat transfer detected → chtMultiRegionFoam (confidence: 0.9)")
+        return SolverType.CHT_MULTI_REGION_FOAM, 0.9, alternatives
     
-    # Priority 3: Multiphase
+    # Priority 3: Multiphase flows - High confidence for clear cases
     if features['is_multiphase'] or features['free_surface']:
-        # Check for incompatible requests
+        confidence = 0.85
+        alternatives = []
+        
+        # Check for incompatible requests (reduces confidence)
         if features['is_compressible'] and features.get('mach_number', 0) > 0.3:
+            confidence = 0.6  # Lower confidence due to physics conflict
+            alternatives.append((SolverType.RHO_PIMPLE_FOAM, 0.4, "For compressible flow, but no multiphase"))
             logger.warning("Compressible multiphase requested - this requires specialized solvers not currently supported")
-            logger.info("AI Decision: Defaulting to interFoam for multiphase flow")
+            logger.info(f"AI Decision: Defaulting to interFoam for multiphase flow (confidence: {confidence})")
         else:
-            logger.info("AI Decision: Multiphase flow detected → interFoam")
-        return SolverType.INTER_FOAM
+            alternatives.append((SolverType.PIMPLE_FOAM, 0.3, "Single-phase alternative"))
+            logger.info(f"AI Decision: Multiphase flow detected → interFoam (confidence: {confidence})")
+        
+        return SolverType.INTER_FOAM, confidence, alternatives
     
-    # Priority 4: Compressible flow
+    # Priority 4: Compressible flow - High confidence for clear Mach numbers
     if features['is_compressible'] or (features.get('mach_number', 0) > 0.3):
-        logger.info(f"AI Decision: Compressible flow (Mach={features.get('mach_number', 0):.2f}) → rhoPimpleFoam")
-        return SolverType.RHO_PIMPLE_FOAM
+        mach = features.get('mach_number', 0)
+        confidence = 0.9 if mach > 0.5 else 0.75  # Higher confidence for clearly compressible flows
+        alternatives = [(SolverType.PIMPLE_FOAM, 0.4, "Incompressible alternative if Mach < 0.3")]
+        logger.info(f"AI Decision: Compressible flow (Mach={mach:.2f}) → rhoPimpleFoam (confidence: {confidence})")
+        return SolverType.RHO_PIMPLE_FOAM, confidence, alternatives
     
-    # Priority 3: Explicit steady-state request
-    if features['analysis_type'] == AnalysisType.STEADY or features['time_scale_interest'] == "steady":
-        # Validate that steady state is appropriate
-        if features['expects_vortex_shedding']:
-            logger.warning("Steady-state requested but vortex shedding expected - consider transient analysis")
-        logger.info("AI Decision: Explicit steady-state request → simpleFoam")
-        return SolverType.SIMPLE_FOAM
-    
-    # Priority 4: Low Reynolds number without vortex shedding
+    # Now handle incompressible flows with confidence scoring
     reynolds_number = features.get('reynolds_number', 0)
-    if not features['expects_vortex_shedding'] and reynolds_number is not None and reynolds_number < 100:
-        logger.info(f"AI Decision: Low Re={reynolds_number} without vortex shedding → simpleFoam")
-        return SolverType.SIMPLE_FOAM
     
-    # Priority 5: Keywords strongly suggesting steady state
+    # Priority 5: Explicit steady-state request
+    if features['analysis_type'] == AnalysisType.STEADY or features['time_scale_interest'] == "steady":
+        confidence = 0.8
+        alternatives = []
+        
+        # Validate that steady state is appropriate (reduces confidence if conflicts)
+        if features['expects_vortex_shedding']:
+            confidence = 0.5  # Reduced confidence due to physics conflict
+            alternatives.append((SolverType.PIMPLE_FOAM, 0.7, "Recommended for vortex shedding"))
+            logger.warning("Steady-state requested but vortex shedding expected - consider transient analysis")
+        else:
+            alternatives.append((SolverType.PIMPLE_FOAM, 0.3, "Transient alternative"))
+        
+        logger.info(f"AI Decision: Explicit steady-state request → simpleFoam (confidence: {confidence})")
+        return SolverType.SIMPLE_FOAM, confidence, alternatives
+    
+    # Priority 6: Low Reynolds number without vortex shedding - Medium-high confidence
+    if not features['expects_vortex_shedding'] and reynolds_number is not None and reynolds_number < 100:
+        confidence = 0.75
+        alternatives = [(SolverType.PIMPLE_FOAM, 0.4, "Transient alternative for detailed flow features")]
+        logger.info(f"AI Decision: Low Re={reynolds_number} without vortex shedding → simpleFoam (confidence: {confidence})")
+        return SolverType.SIMPLE_FOAM, confidence, alternatives
+    
+    # Priority 7: Keywords strongly suggesting steady state
     steady_keywords = ["pressure drop", "drag coefficient", "lift coefficient", "steady", "equilibrium"]
     if any(f"steady:{kw}" in features['user_keywords'] for kw in steady_keywords):
         if not features['expects_vortex_shedding']:
-            logger.info("AI Decision: Steady-state keywords detected → simpleFoam")
-            return SolverType.SIMPLE_FOAM
+            confidence = 0.7
+            alternatives = [(SolverType.PIMPLE_FOAM, 0.4, "Transient alternative")]
+            logger.info(f"AI Decision: Steady-state keywords detected → simpleFoam (confidence: {confidence})")
+            return SolverType.SIMPLE_FOAM, confidence, alternatives
     
-    # Priority 6: Vortex shedding or explicit transient request
+    # Priority 8: Vortex shedding or explicit transient request - High confidence
     if features['expects_vortex_shedding'] or features['analysis_type'] == AnalysisType.UNSTEADY:
-        logger.info("AI Decision: Vortex shedding expected or transient requested → pimpleFoam")
-        return SolverType.PIMPLE_FOAM
+        confidence = 0.85 if features['expects_vortex_shedding'] else 0.75
+        alternatives = [(SolverType.SIMPLE_FOAM, 0.3, "Steady-state alternative if only final result needed")]
+        logger.info(f"AI Decision: Vortex shedding expected or transient requested → pimpleFoam (confidence: {confidence})")
+        return SolverType.PIMPLE_FOAM, confidence, alternatives
     
-    # Priority 7: Transient keywords
+    # Priority 9: Transient keywords - Medium confidence
     transient_keywords = ["vortex", "shedding", "frequency", "oscillat", "time", "transient"]
     if any(f"transient:{kw}" in features['user_keywords'] for kw in transient_keywords):
-        logger.info("AI Decision: Transient keywords detected → pimpleFoam")
-        return SolverType.PIMPLE_FOAM
+        confidence = 0.7
+        alternatives = [(SolverType.SIMPLE_FOAM, 0.4, "Steady-state alternative")]
+        logger.info(f"AI Decision: Transient keywords detected → pimpleFoam (confidence: {confidence})")
+        return SolverType.PIMPLE_FOAM, confidence, alternatives
     
-    # Default: For ambiguous cases, prefer efficiency
+    # Default cases: Lower confidence due to ambiguity
     if features['time_scale_interest'] == "unknown":
-        logger.info("AI Decision: Ambiguous case, defaulting to efficient steady solver → simpleFoam")
-        return SolverType.SIMPLE_FOAM
+        confidence = 0.5  # Medium confidence for ambiguous cases
+        alternatives = [(SolverType.PIMPLE_FOAM, 0.6, "Transient alternative for better accuracy")]
+        logger.info(f"AI Decision: Ambiguous case, defaulting to efficient steady solver → simpleFoam (confidence: {confidence})")
+        return SolverType.SIMPLE_FOAM, confidence, alternatives
     
-    # Final fallback
-    logger.info("AI Decision: Default fallback → pimpleFoam")
-    return SolverType.PIMPLE_FOAM
+    # Final fallback - Low confidence
+    confidence = 0.4
+    alternatives = [(SolverType.SIMPLE_FOAM, 0.5, "Steady-state alternative for efficiency")]
+    logger.info(f"AI Decision: Default fallback → pimpleFoam (confidence: {confidence})")
+    return SolverType.PIMPLE_FOAM, confidence, alternatives
 
 
 def build_solver_settings(
     solver_type: SolverType,
     parsed_params: Dict[str, Any],
-    geometry_info: Dict[str, Any]
+    geometry_info: Dict[str, Any],
+    confidence_score: float = 1.0,
+    alternatives: List[Tuple[SolverType, float, str]] = None
 ) -> Dict[str, Any]:
     """
     Build complete solver settings based on selected solver type.
@@ -1131,8 +1412,9 @@ def build_solver_settings(
         "metadata": {
             "solver_capabilities": solver_info["capabilities"],
             "recommended_for": solver_info.get("recommended_for", []),
-            "selection_confidence": 1.0,  # Can be enhanced with confidence scoring
-            "parameter_defaults_applied": []
+            "selection_confidence": confidence_score,
+            "parameter_defaults_applied": [],
+            "alternatives": alternatives or []
         }
     }
     
@@ -1212,6 +1494,25 @@ def build_solver_settings(
         
         # Standard heat transfer fields
         solver_settings["fields"]["T"] = solver_settings["temperature"] or INTELLIGENT_DEFAULTS["temperature"]["ambient"]
+        
+        # Ensure we have proper region setup
+        regions = solver_settings["properties"]["regions"]
+        if len(regions) < 2:
+            # Add default regions if not enough provided
+            if "fluid" not in regions:
+                regions.append("fluid")
+            if "solid" not in regions:
+                regions.append("solid")
+        
+        # Add region properties
+        solver_settings["properties"]["fluidRegions"] = [r for r in regions if "fluid" in r.lower()]
+        solver_settings["properties"]["solidRegions"] = [r for r in regions if "solid" in r.lower()]
+        
+        # Ensure we have at least one of each type
+        if not solver_settings["properties"]["fluidRegions"]:
+            solver_settings["properties"]["fluidRegions"] = ["fluid"]
+        if not solver_settings["properties"]["solidRegions"]:
+            solver_settings["properties"]["solidRegions"] = ["solid"]
     
     # Add settings for reactingFoam (standardized)
     if solver_type == SolverType.REACTING_FOAM:
@@ -1219,12 +1520,26 @@ def build_solver_settings(
         solver_settings["properties"]["chemistry"] = True
         solver_settings["properties"]["combustion_model"] = parsed_params.get("combustion_model", "PaSR")
         solver_settings["properties"]["chemistry_solver"] = parsed_params.get("chemistry_solver", "ode")
-        solver_settings["properties"]["species"] = parsed_params.get("chemical_species", ["CH4", "O2", "CO2", "H2O", "N2"])
+        
+        # Handle species parameter variations
+        species_list = (parsed_params.get("chemical_species") or 
+                       parsed_params.get("species") or 
+                       ["CH4", "O2", "CO2", "H2O", "N2"])
+        solver_settings["properties"]["species"] = species_list
         solver_settings["properties"]["reaction_mechanism"] = parsed_params.get("reaction_mechanism", "GRI-Mech3.0")
         
         # Standard reactive fields
         solver_settings["fields"]["T"] = solver_settings["temperature"] or INTELLIGENT_DEFAULTS["temperature"]["ambient"]
         solver_settings["fields"]["p"] = solver_settings["pressure"] or INTELLIGENT_DEFAULTS["pressure"]["atmospheric"]
+        
+        # Add species fields for each species
+        for species in species_list:
+            solver_settings["fields"][species] = 0.0  # Initialize species mass fractions to 0
+        
+        # Set fuel species to initial value (if specified)
+        fuel_species = parsed_params.get("fuel", "CH4")
+        if fuel_species in species_list:
+            solver_settings["fields"][fuel_species] = 0.1  # Initial fuel mass fraction
     
     return solver_settings
 
@@ -1292,7 +1607,10 @@ def generate_solver_config(solver_settings: Dict[str, Any], parsed_params: Dict[
         "turbulenceProperties": generate_turbulence_properties(solver_settings, parsed_params),
         "transportProperties": generate_transport_properties(solver_settings, parsed_params),
         "analysis_type": solver_settings["analysis_type"],
-        "flow_type": solver_settings["flow_type"]
+        "flow_type": solver_settings["flow_type"],
+        "solver_type": solver_settings.get("solver_type"),
+        "properties": solver_settings.get("properties", {}),
+        "fields": solver_settings.get("fields", {})
     }
     
     # Add solver-specific configuration files
@@ -1371,9 +1689,9 @@ def generate_solver_config(solver_settings: Dict[str, Any], parsed_params: Dict[
     
     if solver_settings.get("solver_type") == SolverType.CHT_MULTI_REGION_FOAM:
         # Add multi-region heat transfer properties
-        regions = solver_settings.get("regions", ["fluid", "solid"])
-        fluid_regions = [r for r in regions if "fluid" in r.lower()]
-        solid_regions = [r for r in regions if "solid" in r.lower()]
+        regions = solver_settings.get("properties", {}).get("regions", ["fluid", "solid"])
+        fluid_regions = solver_settings.get("properties", {}).get("fluidRegions", [])
+        solid_regions = solver_settings.get("properties", {}).get("solidRegions", [])
         
         # Ensure we have at least one fluid and one solid region
         if not fluid_regions:
@@ -1401,6 +1719,14 @@ def generate_solver_config(solver_settings: Dict[str, Any], parsed_params: Dict[
                 }
             }
         }
+        
+        # Add temperature field if defined
+        if "T" in solver_settings.get("fields", {}):
+            solver_config["T"] = {
+                "dimensions": "[0 0 0 1 0 0 0]",  # Temperature in Kelvin
+                "internalField": f"uniform {solver_settings['fields']['T']}",
+                "boundaryField": {}
+            }
     
     if solver_settings.get("solver_type") == SolverType.REACTING_FOAM:
         # Add reactive flow properties
@@ -1408,19 +1734,43 @@ def generate_solver_config(solver_settings: Dict[str, Any], parsed_params: Dict[
         solver_config["chemistryProperties"] = {
             "chemistry": "on",
             "chemistryType": {
-                "chemistrySolver": solver_settings.get("chemistry_solver", "ode"),
+                "chemistrySolver": solver_settings.get("properties", {}).get("chemistry_solver", "ode"),
                 "chemistryThermo": "psi"
             },
             "chemistryReader": "foamChemistryReader",
-            "foamChemistryFile": f"constant/{solver_settings.get('reaction_mechanism', 'reactions')}"
+            "foamChemistryFile": f"constant/{solver_settings.get('properties', {}).get('reaction_mechanism', 'reactions')}"
         }
         solver_config["combustionProperties"] = {
-            "combustionModel": solver_settings.get("combustion_model", "PaSR"),
-            f"{solver_settings.get('combustion_model', 'PaSR')}Coeffs": {
+            "combustionModel": solver_settings.get("properties", {}).get("combustion_model", "PaSR"),
+            f"{solver_settings.get('properties', {}).get('combustion_model', 'PaSR')}Coeffs": {
                 "Cmix": 0.1,
                 "turbulentReaction": "on"
             }
         }
+        
+        # Add temperature and pressure fields if defined
+        if "T" in solver_settings.get("fields", {}):
+            solver_config["T"] = {
+                "dimensions": "[0 0 0 1 0 0 0]",  # Temperature in Kelvin
+                "internalField": f"uniform {solver_settings['fields']['T']}",
+                "boundaryField": {}
+            }
+        if "p" in solver_settings.get("fields", {}):
+            solver_config["p"] = {
+                "dimensions": "[1 -1 -2 0 0 0 0]",  # Pressure in Pa
+                "internalField": f"uniform {solver_settings['fields']['p']}",
+                "boundaryField": {}
+            }
+        
+        # Add species fields
+        species_list = solver_settings.get("properties", {}).get("species", [])
+        for species in species_list:
+            if species in solver_settings.get("fields", {}):
+                solver_config[species] = {
+                    "dimensions": "[0 0 0 0 0 0 0]",  # Dimensionless mass fraction
+                    "internalField": f"uniform {solver_settings['fields'][species]}",
+                    "boundaryField": {}
+                }
     
     return solver_config
 
@@ -2278,9 +2628,13 @@ def generate_reactive_thermophysical_properties(solver_settings: Dict[str, Any],
 
 
 def validate_solver_config(solver_config: Dict[str, Any], parsed_params: Dict[str, Any]) -> Dict[str, Any]:
-    """Validate solver configuration."""
+    """
+    Enhanced solver configuration validation with comprehensive checks.
+    Validates configuration completeness, parameter compatibility, and physics consistency.
+    """
     errors = []
     warnings = []
+    suggestions = []
     
     # Check required files
     required_files = ["controlDict", "fvSchemes", "fvSolution", "turbulenceProperties", "transportProperties"]
@@ -2292,79 +2646,295 @@ def validate_solver_config(solver_config: Dict[str, Any], parsed_params: Dict[st
     solver = solver_config.get("solver")
     if not solver:
         errors.append("No solver specified")
-    elif solver not in ["simpleFoam", "pimpleFoam", "rhoSimpleFoam", "rhoPimpleFoam", "interFoam", 
-                        "chtMultiRegionFoam", "reactingFoam"]:
-        warnings.append(f"Unknown solver: {solver}")
+        return {"valid": False, "errors": errors, "warnings": warnings, "suggestions": suggestions}
     
-    # Solver-specific validation
+    # Validate solver name
+    valid_solvers = ["simpleFoam", "pimpleFoam", "rhoSimpleFoam", "rhoPimpleFoam", "interFoam", 
+                    "chtMultiRegionFoam", "reactingFoam"]
+    if solver not in valid_solvers:
+        warnings.append(f"Unknown solver: {solver}. Valid solvers: {', '.join(valid_solvers)}")
+    
+    # Get configuration structure for validation
+    fields = solver_config.get("fields", {})
+    properties = solver_config.get("properties", {})
+    metadata = solver_config.get("metadata", {})
+    
+    # Validate standardized configuration structure
+    if not isinstance(fields, dict):
+        errors.append("Configuration 'fields' must be a dictionary")
+    if not isinstance(properties, dict):
+        errors.append("Configuration 'properties' must be a dictionary")
+    if not isinstance(metadata, dict):
+        warnings.append("Configuration 'metadata' should be a dictionary")
+    
+    # Solver-specific validation with enhanced checks
     if solver == "interFoam":
-        # Check for required multiphase properties
-        if "g" not in solver_config:
-            warnings.append("Gravity vector 'g' not specified for interFoam")
-        if "sigma" not in solver_config:
-            warnings.append("Surface tension 'sigma' not specified for interFoam")
-        if "phases" not in solver_config or len(solver_config.get("phases", [])) < 2:
-            errors.append("interFoam requires at least 2 phases")
-        # interFoam cannot be steady state
-        if solver_config.get("analysis_type") == AnalysisType.STEADY:
-            errors.append("interFoam does not support steady-state analysis")
-    
+        _validate_interfoam_config(solver_config, fields, properties, errors, warnings, suggestions)
     elif solver == "rhoPimpleFoam":
-        # Check for required compressible properties
-        if "thermophysicalProperties" not in solver_config:
-            errors.append("Missing thermophysicalProperties for compressible solver")
-        if "T" not in solver_config:
-            warnings.append("Temperature field 'T' not initialized for rhoPimpleFoam")
-        # Check Mach number
-        mach_number = parsed_params.get("mach_number", 0)
-        if mach_number is not None and isinstance(mach_number, (int, float)) and mach_number < 0.3:
-            warnings.append(f"Low Mach number ({mach_number:.2f}) - consider using incompressible solver")
-    
+        _validate_rhopimplefoam_config(solver_config, fields, properties, parsed_params, errors, warnings, suggestions)
     elif solver == "chtMultiRegionFoam":
-        # Check for required multi-region properties
-        if "regionProperties" not in solver_config:
-            errors.append("Missing regionProperties for chtMultiRegionFoam")
-        else:
-            regions = solver_config.get("regionProperties", {}).get("regions", [])
-            if len(regions) < 2:
-                errors.append("chtMultiRegionFoam requires at least 2 regions (fluid and solid)")
-        if "thermophysicalProperties" not in solver_config:
-            errors.append("Missing thermophysicalProperties for chtMultiRegionFoam")
-    
+        _validate_chtmultiregion_config(solver_config, fields, properties, errors, warnings, suggestions)
     elif solver == "reactingFoam":
-        # Check for required reactive flow properties
-        if "thermophysicalProperties" not in solver_config:
-            errors.append("Missing thermophysicalProperties for reactingFoam")
-        if "chemistryProperties" not in solver_config:
-            errors.append("Missing chemistryProperties for reactingFoam")
-        if "combustionProperties" not in solver_config:
-            warnings.append("Missing combustionProperties for reactingFoam - will use default combustion model")
-        # reactingFoam is always transient
-        if solver_config.get("analysis_type") == AnalysisType.STEADY:
-            errors.append("reactingFoam does not support steady-state analysis")
+        _validate_reactingfoam_config(solver_config, fields, properties, errors, warnings, suggestions)
+    elif solver in ["simpleFoam", "pimpleFoam"]:
+        _validate_incompressible_config(solver_config, fields, properties, parsed_params, errors, warnings, suggestions)
     
-    # Check time step for transient simulations
-    if solver and ("pimple" in solver.lower() or solver in ["interFoam", "chtMultiRegionFoam", "reactingFoam"]):
-        control_dict = solver_config.get("controlDict", {})
-        delta_t = control_dict.get("deltaT", 0)
-        if delta_t is not None and delta_t <= 0:
-            errors.append("Invalid time step for transient simulation")
+    # Cross-validation checks
+    _validate_physics_consistency(solver_config, parsed_params, errors, warnings, suggestions)
+    _validate_numerical_settings(solver_config, parsed_params, errors, warnings, suggestions)
+    _validate_boundary_conditions(solver_config, parsed_params, errors, warnings, suggestions)
+    
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "suggestions": suggestions
+    }
+
+
+def _validate_interfoam_config(solver_config: Dict[str, Any], fields: Dict[str, Any], 
+                              properties: Dict[str, Any], errors: List[str], 
+                              warnings: List[str], suggestions: List[str]) -> None:
+    """Validate interFoam-specific configuration."""
+    # Check for required multiphase properties
+    if "g" not in fields and "g" not in solver_config:
+        errors.append("Gravity vector 'g' not specified for interFoam")
+    
+    if "sigma" not in fields and "sigma" not in solver_config:
+        errors.append("Surface tension 'sigma' not specified for interFoam")
+        suggestions.append("Add surface tension value (typical: 0.07 N/m for water-air)")
+    
+    # Check phases
+    phases = properties.get("phases", solver_config.get("phases", []))
+    if not phases or len(phases) < 2:
+        errors.append("interFoam requires at least 2 phases")
+        suggestions.append("Specify phases like ['water', 'air']")
+    
+    # Check phase properties
+    phase_props = properties.get("phase_properties", {})
+    for phase in phases:
+        if phase not in phase_props:
+            warnings.append(f"Missing properties for phase '{phase}'")
+            suggestions.append(f"Add density and viscosity for phase '{phase}'")
+    
+    # interFoam cannot be steady state
+    if solver_config.get("analysis_type") == AnalysisType.STEADY:
+        errors.append("interFoam does not support steady-state analysis")
+        suggestions.append("Use transient analysis for multiphase flows")
+
+
+def _validate_rhopimplefoam_config(solver_config: Dict[str, Any], fields: Dict[str, Any], 
+                                  properties: Dict[str, Any], parsed_params: Dict[str, Any],
+                                  errors: List[str], warnings: List[str], suggestions: List[str]) -> None:
+    """Validate rhoPimpleFoam-specific configuration."""
+    # Check for required compressible properties
+    if "thermophysicalProperties" not in solver_config:
+        errors.append("Missing thermophysicalProperties for compressible solver")
+        suggestions.append("Add thermophysical model (e.g., perfectGas)")
+    
+    # Check required fields
+    if "T" not in fields and "T" not in solver_config:
+        errors.append("Temperature field 'T' required for rhoPimpleFoam")
+        suggestions.append("Initialize temperature field (typical: 293.15 K)")
+    
+    if "p" not in fields and "p" not in solver_config:
+        warnings.append("Pressure field 'p' not initialized for rhoPimpleFoam")
+        suggestions.append("Initialize pressure field (typical: 101325 Pa)")
+    
+    # Check Mach number consistency
+    mach_number = parsed_params.get("mach_number", 0)
+    if mach_number is not None and isinstance(mach_number, (int, float)):
+        if mach_number < 0.3:
+            warnings.append(f"Low Mach number ({mach_number:.2f}) - consider using incompressible solver")
+            suggestions.append("Use pimpleFoam or simpleFoam for Mach < 0.3")
+        elif mach_number > 5.0:
+            warnings.append(f"Very high Mach number ({mach_number:.2f}) - ensure proper shock capturing")
+            suggestions.append("Consider specialized high-Mach solvers or adjust numerical schemes")
+    
+    # Check thermophysical model consistency
+    thermo_model = properties.get("thermophysical_model")
+    if thermo_model and thermo_model not in ["perfectGas", "incompressiblePerfectGas", "rhoConst"]:
+        warnings.append(f"Unusual thermophysical model: {thermo_model}")
+
+
+def _validate_chtmultiregion_config(solver_config: Dict[str, Any], fields: Dict[str, Any], 
+                                   properties: Dict[str, Any], errors: List[str], 
+                                   warnings: List[str], suggestions: List[str]) -> None:
+    """Validate chtMultiRegionFoam-specific configuration."""
+    # Check for required multi-region properties
+    if not properties.get("multi_region", False):
+        errors.append("Multi-region flag not set for chtMultiRegionFoam")
+    
+    regions = properties.get("regions", [])
+    if len(regions) < 2:
+        errors.append("chtMultiRegionFoam requires at least 2 regions (fluid and solid)")
+        suggestions.append("Define regions like ['fluid', 'solid']")
+    
+    # Check for typical region types
+    fluid_regions = properties.get("fluidRegions", [])
+    solid_regions = properties.get("solidRegions", [])
+    
+    if not fluid_regions:
+        warnings.append("No fluid regions detected - ensure proper region naming")
+    if not solid_regions:
+        warnings.append("No solid regions detected - ensure proper region naming")
+    
+    # Check thermal coupling
+    if not properties.get("thermal_coupling", False):
+        warnings.append("Thermal coupling not enabled - check if intended")
+        suggestions.append("Enable thermal coupling for conjugate heat transfer")
+    
+    # Check temperature field
+    if "T" not in fields and "T" not in solver_config:
+        errors.append("Temperature field 'T' required for chtMultiRegionFoam")
+        suggestions.append("Initialize temperature field for all regions")
+
+
+def _validate_reactingfoam_config(solver_config: Dict[str, Any], fields: Dict[str, Any], 
+                                 properties: Dict[str, Any], errors: List[str], 
+                                 warnings: List[str], suggestions: List[str]) -> None:
+    """Validate reactingFoam-specific configuration."""
+    # Check for required reactive flow properties
+    if not properties.get("chemistry", False):
+        errors.append("Chemistry not enabled for reactingFoam")
+        suggestions.append("Enable chemistry for reactive flows")
+    
+    species = properties.get("species", [])
+    if not species or len(species) < 2:
+        errors.append("reactingFoam requires chemical species")
+        suggestions.append("Define species list (e.g., ['CH4', 'O2', 'CO2', 'H2O', 'N2'])")
+    
+    # Check combustion model
+    combustion_model = properties.get("combustion_model")
+    if not combustion_model:
+        warnings.append("No combustion model specified - will use default")
+        suggestions.append("Specify combustion model (e.g., 'PaSR', 'EDC', 'laminar')")
+    
+    # Check required fields
+    if "T" not in fields and "T" not in solver_config:
+        errors.append("Temperature field 'T' required for reactingFoam")
+    
+    # Check species fields - they should now be in the fields dict
+    for species_name in species:
+        if species_name not in fields:
+            warnings.append(f"Species field '{species_name}' not initialized")
+            suggestions.append(f"Initialize species field '{species_name}' with appropriate mass fraction")
+    
+    # reactingFoam is always transient
+    if solver_config.get("analysis_type") == AnalysisType.STEADY:
+        errors.append("reactingFoam does not support steady-state analysis")
+        suggestions.append("Use transient analysis for reactive flows")
+
+
+def _validate_incompressible_config(solver_config: Dict[str, Any], fields: Dict[str, Any], 
+                                   properties: Dict[str, Any], parsed_params: Dict[str, Any],
+                                   errors: List[str], warnings: List[str], suggestions: List[str]) -> None:
+    """Validate incompressible solver configuration."""
+    solver = solver_config.get("solver")
+    
+    # Check for compressible properties in incompressible solver
+    if "thermophysicalProperties" in solver_config:
+        warnings.append(f"Thermophysical properties specified for incompressible solver {solver}")
+        suggestions.append("Remove thermophysical properties or use compressible solver")
+    
+    # Check Reynolds number vs solver choice
+    reynolds_number = parsed_params.get("reynolds_number", 0)
+    if reynolds_number and reynolds_number > 100000:
+        if solver == "simpleFoam":
+            warnings.append("Very high Reynolds number with steady solver - consider transient")
+            suggestions.append("Use pimpleFoam for high Re flows to capture unsteady effects")
+
+
+def _validate_physics_consistency(solver_config: Dict[str, Any], parsed_params: Dict[str, Any], 
+                                 errors: List[str], warnings: List[str], suggestions: List[str]) -> None:
+    """Validate physics consistency across configuration."""
+    solver = solver_config.get("solver")
     
     # Check Reynolds number vs turbulence model
     reynolds_number = parsed_params.get("reynolds_number", 0)
     turbulence_props = solver_config.get("turbulenceProperties", {})
     simulation_type = turbulence_props.get("simulationType", "")
     
-    if reynolds_number is not None and reynolds_number > 2300 and simulation_type == "laminar":
-        warnings.append("High Reynolds number with laminar simulation")
-    elif reynolds_number is not None and reynolds_number < 2300 and simulation_type == "RAS":
-        warnings.append("Low Reynolds number with turbulent simulation")
+    if reynolds_number is not None and reynolds_number > 0:
+        if reynolds_number > 2300 and simulation_type == "laminar":
+            warnings.append(f"High Reynolds number ({reynolds_number}) with laminar simulation")
+            suggestions.append("Consider turbulent simulation for Re > 2300")
+        elif reynolds_number < 1000 and simulation_type == "RAS":
+            warnings.append(f"Low Reynolds number ({reynolds_number}) with turbulent simulation")
+            suggestions.append("Consider laminar simulation for Re < 1000")
     
-    return {
-        "valid": len(errors) == 0,
-        "errors": errors,
-        "warnings": warnings
-    }
+    # Check Mach number vs solver
+    mach_number = parsed_params.get("mach_number", 0)
+    if mach_number and mach_number > 0.3:
+        if solver in ["simpleFoam", "pimpleFoam"]:
+            warnings.append(f"High Mach number ({mach_number:.2f}) with incompressible solver")
+            suggestions.append("Use rhoPimpleFoam for Mach > 0.3")
+
+
+def _validate_numerical_settings(solver_config: Dict[str, Any], parsed_params: Dict[str, Any], 
+                                errors: List[str], warnings: List[str], suggestions: List[str]) -> None:
+    """Validate numerical settings and schemes."""
+    # Check time step for transient simulations
+    solver = solver_config.get("solver")
+    if solver and ("pimple" in solver.lower() or solver in ["interFoam", "chtMultiRegionFoam", "reactingFoam"]):
+        control_dict = solver_config.get("controlDict", {})
+        delta_t = control_dict.get("deltaT", 0)
+        
+        if delta_t is not None and delta_t <= 0:
+            errors.append("Invalid time step for transient simulation")
+            suggestions.append("Set positive time step (e.g., 0.001 s)")
+        elif delta_t is not None and delta_t > 0.1:
+            warnings.append(f"Large time step ({delta_t} s) may cause instability")
+            suggestions.append("Consider smaller time step for stability")
+    
+    # Check fvSolution settings
+    fv_solution = solver_config.get("fvSolution", {})
+    if fv_solution:
+        # Check SIMPLE/PIMPLE settings
+        if solver == "simpleFoam" and "SIMPLE" not in fv_solution:
+            warnings.append("Missing SIMPLE algorithm settings for simpleFoam")
+        elif "pimple" in solver.lower() and "PIMPLE" not in fv_solution:
+            warnings.append(f"Missing PIMPLE algorithm settings for {solver}")
+
+
+def _validate_boundary_conditions(solver_config: Dict[str, Any], parsed_params: Dict[str, Any], 
+                                 errors: List[str], warnings: List[str], suggestions: List[str]) -> None:
+    """Validate boundary condition consistency."""
+    # This is a placeholder for boundary condition validation
+    # In a full implementation, this would check boundary condition files
+    # and ensure they match the solver requirements
+    
+    solver = solver_config.get("solver")
+    
+    # Check if boundary conditions are specified in state
+    # (This would typically come from the boundary condition agent)
+    if "boundary_conditions" not in solver_config:
+        warnings.append("No boundary conditions specified in configuration")
+        suggestions.append("Ensure boundary conditions are properly defined")
+    
+    # Solver-specific boundary condition checks
+    if solver == "interFoam":
+        # interFoam needs alpha fields for each phase
+        phases = solver_config.get("phases", [])
+        for phase in phases:
+            if phase == "water":  # Primary phase typically needs alpha.water
+                warnings.append("Ensure alpha.water boundary conditions are defined")
+    
+    elif solver == "rhoPimpleFoam":
+        # Compressible solvers need temperature and pressure BCs
+        suggestions.append("Ensure temperature and pressure boundary conditions are defined")
+    
+    elif solver == "chtMultiRegionFoam":
+        # Multi-region solvers need BCs for all regions
+        regions = solver_config.get("properties", {}).get("regions", [])
+        if len(regions) > 1:
+            suggestions.append("Ensure boundary conditions are defined for all regions")
+    
+    elif solver == "reactingFoam":
+        # Reactive solvers need species BCs
+        species = solver_config.get("properties", {}).get("species", [])
+        if species:
+            suggestions.append("Ensure species boundary conditions are defined")
 
 
 def get_solver_recommendations(solver_settings: Dict[str, Any], parsed_params: Dict[str, Any]) -> list:

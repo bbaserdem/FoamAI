@@ -17,7 +17,7 @@ class FlowContext(BaseModel):
     """Context of the flow problem."""
     is_external_flow: bool = Field(description="True if flow around object (external), False if flow through object (internal)")
     domain_type: str = Field(description="Type of domain: 'unbounded' for external flow, 'channel' for bounded flow")
-    domain_size_multiplier: float = Field(description="Multiplier for domain size relative to object size (e.g., 20 for 20x object diameter)")
+    domain_size_multiplier: Optional[float] = Field(None, description="Multiplier for domain size relative to object size (e.g., 20 for 20x object diameter)")
 
 
 class CFDParameters(BaseModel):
@@ -110,6 +110,39 @@ def extract_dimensions_from_text(text: str, geometry_type: GeometryType) -> Dict
         'height': [
             r'(\d+\.?\d*)\s*(?:m|meter|metre)?\s*(?:high|tall)',
             r'height\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre)?'
+        ],
+        # Nozzle-specific patterns
+        'throat_diameter': [
+            r'(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?\s*throat\s*diameter',
+            r'throat\s*diameter\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?',
+            r'throat\s*(?:size|width)\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?'
+        ],
+        'inlet_diameter': [
+            r'(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?\s*inlet\s*diameter',
+            r'inlet\s*diameter\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?',
+            r'inlet\s*(?:size|width)\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?'
+        ],
+        'outlet_diameter': [
+            r'(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?\s*outlet\s*diameter',
+            r'outlet\s*diameter\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?',
+            r'outlet\s*(?:size|width)\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?',
+            r'exit\s*diameter\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?'
+        ],
+        'expansion_ratio': [
+            r'expansion\s*ratio\s*(?:of|:)?\s*(\d+\.?\d*)',
+            r'area\s*ratio\s*(?:of|:)?\s*(\d+\.?\d*)',
+            r'(\d+\.?\d*)\s*(?::|to|-)?\s*1\s*expansion',
+            r'(\d+\.?\d*)\s*(?::|to|-)?\s*1\s*area\s*ratio'
+        ],
+        'convergence_angle': [
+            r'convergence\s*angle\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:deg|degree|degrees)?',
+            r'(\d+\.?\d*)\s*(?:deg|degree|degrees)?\s*convergence',
+            r'converging\s*(?:at|angle)\s*(\d+\.?\d*)\s*(?:deg|degree|degrees)?'
+        ],
+        'divergence_angle': [
+            r'divergence\s*angle\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:deg|degree|degrees)?',
+            r'(\d+\.?\d*)\s*(?:deg|degree|degrees)?\s*divergence',
+            r'diverging\s*(?:at|angle)\s*(\d+\.?\d*)\s*(?:deg|degree|degrees)?'
         ],
         # Angle of attack
         'angle_of_attack': [
@@ -518,16 +551,16 @@ def infer_flow_context(text: str, geometry_type: GeometryType, user_domain_multi
     
     # Determine if it's external or internal flow
     if any(keyword in text_lower for keyword in ["around", "over", "past", "external", "cylinder", "sphere", "airfoil", "cube"]):
-        if not any(keyword in text_lower for keyword in ["through", "in", "inside", "internal", "pipe", "channel", "duct"]):
+        if not any(keyword in text_lower for keyword in ["through", "in", "inside", "internal", "pipe", "channel", "duct", "nozzle"]):
             is_external = True
-    elif any(keyword in text_lower for keyword in ["through", "in", "inside", "internal", "pipe", "channel", "duct"]):
+    elif any(keyword in text_lower for keyword in ["through", "in", "inside", "internal", "pipe", "channel", "duct", "nozzle"]):
         is_external = False
     else:
         # Default based on geometry type
         if geometry_type in [GeometryType.CYLINDER, GeometryType.SPHERE, GeometryType.AIRFOIL, GeometryType.CUBE]:
             is_external = True
         else:
-            is_external = False  # Default to internal flow for pipes/channels
+            is_external = False  # Default to internal flow for pipes/channels/nozzles
     
     # Determine domain type and size
     if is_external:
@@ -545,6 +578,8 @@ def infer_flow_context(text: str, geometry_type: GeometryType, user_domain_multi
                 domain_size_multiplier = 20.0  # 20x diameter for sphere
             elif geometry_type == GeometryType.CUBE:
                 domain_size_multiplier = 20.0  # 20x side length for cube
+            elif geometry_type == GeometryType.NOZZLE:
+                domain_size_multiplier = 3.0   # 3x length for nozzle (smaller domain for internal flow)
             else:
                 domain_size_multiplier = 10.0  # Default
     else:
@@ -624,6 +659,51 @@ def apply_intelligent_defaults(geometry_type: GeometryType, dimensions: Dict[str
                 dimensions['side_length'] = 1.0   # Large cube for high Re
             else:
                 dimensions['side_length'] = 0.1   # Default 10cm cube
+    
+    elif geometry_type == GeometryType.NOZZLE:
+        # Nozzle geometry: converging-diverging nozzle with throat
+        if 'throat_diameter' not in dimensions or dimensions.get('throat_diameter') is None:
+            dimensions['throat_diameter'] = 0.05  # Default 5cm throat
+        
+        # If inlet diameter not specified, use 1.5x throat diameter (typical convergent ratio)
+        if 'inlet_diameter' not in dimensions or dimensions.get('inlet_diameter') is None:
+            dimensions['inlet_diameter'] = dimensions.get('throat_diameter', 0.05) * 1.5
+        
+        # If outlet diameter not specified, use 2x throat diameter (typical expansion ratio)
+        if 'outlet_diameter' not in dimensions or dimensions.get('outlet_diameter') is None:
+            dimensions['outlet_diameter'] = dimensions.get('throat_diameter', 0.05) * 2.0
+        
+        # Calculate expansion ratio if not provided
+        if 'expansion_ratio' not in dimensions or dimensions.get('expansion_ratio') is None:
+            throat_area = 3.14159 * (dimensions.get('throat_diameter', 0.05) / 2) ** 2
+            outlet_area = 3.14159 * (dimensions.get('outlet_diameter', 0.1) / 2) ** 2
+            dimensions['expansion_ratio'] = outlet_area / throat_area
+        
+        # Default convergence/divergence angles
+        if 'convergence_angle' not in dimensions or dimensions.get('convergence_angle') is None:
+            dimensions['convergence_angle'] = 15.0  # 15 degrees typical
+        
+        if 'divergence_angle' not in dimensions or dimensions.get('divergence_angle') is None:
+            dimensions['divergence_angle'] = 7.0   # 7 degrees typical (smaller than convergence)
+        
+        # Calculate nozzle length if not provided
+        if 'length' not in dimensions or dimensions.get('length') is None:
+            # Total length based on diameters and angles
+            inlet_radius = dimensions.get('inlet_diameter', 0.075) / 2
+            throat_radius = dimensions.get('throat_diameter', 0.05) / 2
+            outlet_radius = dimensions.get('outlet_diameter', 0.1) / 2
+            
+            # Convergent section length
+            conv_angle_rad = dimensions.get('convergence_angle', 15.0) * 3.14159 / 180
+            conv_length = (inlet_radius - throat_radius) / max(0.001, (conv_angle_rad / 2))
+            
+            # Divergent section length  
+            div_angle_rad = dimensions.get('divergence_angle', 7.0) * 3.14159 / 180
+            div_length = (outlet_radius - throat_radius) / max(0.001, (div_angle_rad / 2))
+            
+            dimensions['length'] = conv_length + div_length
+            dimensions['convergent_length'] = conv_length
+            dimensions['divergent_length'] = div_length
     
     return dimensions
 
@@ -829,7 +909,26 @@ def nl_interpreter_agent(state: CFDState) -> CFDState:
         # Modify prompt template to handle STL files
         stl_instruction = ""
         if state.get("stl_file"):
-            stl_instruction = f"""
+            # Check if this is a nozzle STL file
+            stl_filename = state.get("stl_file", "").lower()
+            user_prompt_lower = state["user_prompt"].lower()
+            
+            is_nozzle_stl = any(keyword in stl_filename for keyword in ["nozzle", "jet", "rocket", "throat"]) or \
+                           any(keyword in user_prompt_lower for keyword in ["nozzle", "jet nozzle", "rocket nozzle", "throat"])
+            
+            if is_nozzle_stl:
+                stl_instruction = f"""
+IMPORTANT: The user is providing a nozzle STL file for custom geometry: {state['stl_file']}
+- Set geometry_type to "nozzle" (this is a nozzle STL file)
+- Set is_custom_geometry to true
+- Set is_external_flow to false (nozzles are internal flow through the geometry)
+- Set domain_type to "channel"
+- Set domain_size_multiplier to 3.0 (smaller domain for internal nozzle flow)
+- The STL file defines the nozzle geometry (converging-diverging profile)
+- Focus on extracting flow parameters, boundary conditions, and simulation settings from the prompt
+"""
+            else:
+                stl_instruction = f"""
 IMPORTANT: The user is providing an STL file for custom geometry: {state['stl_file']}
 - Set geometry_type to "custom" 
 - Set is_custom_geometry to true
@@ -859,10 +958,10 @@ Extract all relevant information including:
 
 IMPORTANT RULES:
 1. For "flow around" objects (cylinder, sphere, airfoil), set is_external_flow=true and domain_type="unbounded"
-2. For "flow through" or "flow in" objects (pipe, channel), set is_external_flow=false and domain_type="channel"
+2. For "flow through" or "flow in" objects (pipe, channel, nozzle), set is_external_flow=false and domain_type="channel"
 3. If neither is specified, use these defaults:
    - Cylinder, Sphere, Airfoil → external flow (around object)
-   - Pipe, Channel → internal flow (through object)
+   - Pipe, Channel, Nozzle → internal flow (through object)
 4. Extract ALL numerical dimensions mentioned (with unit conversion to meters)
 5. For external flow, set domain_size_multiplier appropriately (typically 20-30x object size)
 6. DEFAULT TO UNSTEADY (TRANSIENT) ANALYSIS unless the user explicitly mentions "steady", "steady-state", or "stationary"
@@ -873,8 +972,11 @@ Problem Description: {user_prompt}
 Examples of dimension extraction:
 - "10mm diameter cylinder" → diameter: 0.01 (converted to meters)
 - "5 inch pipe" → diameter: 0.127 (converted to meters)
+- "nozzle with 50mm throat diameter" → throat_diameter: 0.05 (converted to meters)
+- "expansion ratio 2.5" → expansion_ratio: 2.5
 - "flow around a cylinder" → is_external_flow: true, domain_type: "unbounded"
 - "flow through a pipe" → is_external_flow: false, domain_type: "channel"
+- "flow in a nozzle" → is_external_flow: false, domain_type: "channel"
 
 Examples of analysis type extraction:
 - "flow around a cylinder" → analysis_type: UNSTEADY (default)
@@ -923,20 +1025,43 @@ Return valid JSON that matches the schema exactly.
         
         # Handle STL file-specific logic
         if state.get("stl_file"):
-            # Force custom geometry settings for STL files
-            parsed_params["geometry_type"] = GeometryType.CUSTOM
-            parsed_params["is_custom_geometry"] = True
-            parsed_params["geometry_dimensions"] = {"is_3d": True}  # Mark as 3D
+            # Check if this is a nozzle STL file
+            stl_filename = state.get("stl_file", "").lower()
+            user_prompt_lower = state["user_prompt"].lower()
             
-            # Set appropriate flow context for STL files (typically external flow)
-            parsed_params["flow_context"] = {
-                "is_external_flow": True,
-                "domain_type": "unbounded",
-                "domain_size_multiplier": 20.0
-            }
+            is_nozzle_stl = any(keyword in stl_filename for keyword in ["nozzle", "jet", "rocket", "throat"]) or \
+                           any(keyword in user_prompt_lower for keyword in ["nozzle", "jet nozzle", "rocket nozzle", "throat"])
             
-            if state["verbose"]:
-                logger.info("NL Interpreter: STL file detected, configured for custom 3D geometry")
+            if is_nozzle_stl:
+                # Force nozzle geometry settings for nozzle STL files
+                parsed_params["geometry_type"] = GeometryType.NOZZLE
+                parsed_params["is_custom_geometry"] = True
+                parsed_params["geometry_dimensions"] = {"is_3d": True}  # Mark as 3D
+                
+                # Set appropriate flow context for nozzle STL files (internal flow)
+                parsed_params["flow_context"] = {
+                    "is_external_flow": False,
+                    "domain_type": "channel",
+                    "domain_size_multiplier": 3.0
+                }
+                
+                if state["verbose"]:
+                    logger.info("NL Interpreter: Nozzle STL file detected, configured for internal flow geometry")
+            else:
+                # Force custom geometry settings for non-nozzle STL files
+                parsed_params["geometry_type"] = GeometryType.CUSTOM
+                parsed_params["is_custom_geometry"] = True
+                parsed_params["geometry_dimensions"] = {"is_3d": True}  # Mark as 3D
+                
+                # Set appropriate flow context for STL files (typically external flow)
+                parsed_params["flow_context"] = {
+                    "is_external_flow": True,
+                    "domain_type": "unbounded",
+                    "domain_size_multiplier": 20.0
+                }
+                
+                if state["verbose"]:
+                    logger.info("NL Interpreter: STL file detected, configured for custom 3D geometry")
         else:
             # Extract dimensions from text (as backup/enhancement) for non-STL cases
             text_dimensions = extract_dimensions_from_text(state["user_prompt"], parsed_params["geometry_type"])
@@ -1134,6 +1259,9 @@ def get_characteristic_length(geometry_info: Dict[str, Any]) -> Optional[float]:
         return dimensions.get("side_length", 0.1)  # Default 0.1m side length
     elif geometry_type == GeometryType.CHANNEL:
         return dimensions.get("height", 0.1)  # Default 0.1m height
+    elif geometry_type == GeometryType.NOZZLE:
+        # For nozzles, characteristic length is the throat diameter
+        return dimensions.get('throat_diameter', dimensions.get('length', 0.1))
     else:
         return 0.1  # Default characteristic length
 

@@ -522,6 +522,8 @@ def generate_blockmesh_dict(mesh_config: Dict[str, Any], state: CFDState) -> Dic
                 return {"circumferential": count, "radial": count//2, "meridional": count//2}
             elif geom_type == "cube":
                 return {"x": count, "y": count, "z": count}
+            elif geom_type == "nozzle":
+                return {"x": count, "y": count, "z": count}
             else:
                 return {"x": count, "y": count, "z": count}
         
@@ -539,6 +541,8 @@ def generate_blockmesh_dict(mesh_config: Dict[str, Any], state: CFDState) -> Dic
         return generate_sphere_blockmesh_dict(dimensions, resolution)
     elif geometry_type == "cube":
         return generate_cube_blockmesh_dict(dimensions, resolution)
+    elif geometry_type == "nozzle":
+        return generate_nozzle_blockmesh_dict(dimensions, resolution)
     else:
         raise ValueError(f"Unsupported geometry type for blockMesh: {geometry_type}")
 
@@ -2209,3 +2213,69 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
         }
     
     return snappy_dict
+
+
+def generate_nozzle_blockmesh_dict(dimensions: Dict[str, float], resolution: Dict[str, int]) -> Dict[str, Any]:
+    """Generate blockMeshDict for nozzle geometry."""
+    # Extract nozzle dimensions
+    length = dimensions.get("length", 0.3)
+    max_diameter = dimensions.get("max_diameter", 0.1)
+    
+    # For nozzle, create a rectangular domain that encompasses the nozzle
+    # The actual nozzle profile will be handled by boundary conditions
+    domain_length = length
+    domain_height = max_diameter * 2.0  # 2x max diameter
+    domain_width = max_diameter * 2.0   # 2x max diameter
+    
+    # Cell counts
+    nx = resolution.get("x", 60)
+    ny = resolution.get("y", 30)
+    nz = resolution.get("z", 30)
+    
+    # Check if this is 2D or 3D
+    is_2d = nz == 1
+    
+    return {
+        "convertToMeters": 1.0,
+        "vertices": [
+            "(0 0 0)",
+            f"({domain_length} 0 0)",
+            f"({domain_length} {domain_height} 0)",
+            f"(0 {domain_height} 0)",
+            f"(0 0 {domain_width})",
+            f"({domain_length} 0 {domain_width})",
+            f"({domain_length} {domain_height} {domain_width})",
+            f"(0 {domain_height} {domain_width})"
+        ],
+        "blocks": [
+            f"hex (0 1 2 3 4 5 6 7) ({nx} {ny} {nz}) simpleGrading (1 1 1)"
+        ],
+        "edges": [],
+        "boundary": {
+            "inlet": {
+                "type": "patch",
+                "faces": ["(0 4 7 3)"]
+            },
+            "outlet": {
+                "type": "patch",
+                "faces": ["(1 2 6 5)"]
+            },
+            "top": {
+                "type": "slip",
+                "faces": ["(3 7 6 2)"]
+            },
+            "bottom": {
+                "type": "slip",
+                "faces": ["(0 1 5 4)"]
+            },
+            "front": {
+                "type": "slip",
+                "faces": ["(0 3 2 1)"]
+            },
+            "back": {
+                "type": "slip",
+                "faces": ["(4 5 6 7)"]
+            }
+        },
+        "mergePatchPairs": []
+    }

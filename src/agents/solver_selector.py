@@ -1468,6 +1468,8 @@ def extract_problem_features(state: CFDState) -> Dict[str, Any]:
             char_length = geometry.get("diameter", 0.1)
         elif geometry_type == GeometryType.CHANNEL:
             char_length = geometry.get("height", 0.1)
+        elif geometry_type == GeometryType.NOZZLE:
+            char_length = geometry.get("throat_diameter", geometry.get("length", 0.1))
         else:
             char_length = 0.1  # Default
         
@@ -2863,6 +2865,8 @@ def generate_control_dict(solver: str, analysis_type: AnalysisType, parsed_param
                 char_length = geometry_info.get("diameter", 0.1)
             elif geometry_info["type"] == GeometryType.CHANNEL:
                 char_length = geometry_info.get("height", 0.1)
+            elif geometry_info["type"] == GeometryType.NOZZLE:
+                char_length = geometry_info.get("throat_diameter", geometry_info.get("length", 0.1))
             else:
                 char_length = 0.1  # Default
             

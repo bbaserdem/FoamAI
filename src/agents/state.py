@@ -30,6 +30,7 @@ class GeometryType(str, Enum):
     CHANNEL = "channel"
     SPHERE = "sphere"
     CUBE = "cube"
+    NOZZLE = "nozzle"
     CUSTOM = "custom"
 
 

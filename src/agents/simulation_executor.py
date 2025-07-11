@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 from loguru import logger
 
-from .state import CFDState, CFDStep, GeometryType
+from .state import CFDState, CFDStep, GeometryType, SolverType
 
 
 def simulation_executor_agent(state: CFDState) -> CFDState:
@@ -999,6 +999,8 @@ def get_characteristic_length_from_geometry(geometry_info: Dict[str, Any]) -> fl
         return dimensions.get("diameter", 0.05)
     elif geometry_type == GeometryType.CHANNEL:
         return dimensions.get("height", 0.02)
+    elif geometry_type == GeometryType.NOZZLE:
+        return dimensions.get("throat_diameter", dimensions.get("length", 0.1))
     else:
         # Try to find any dimension
         for key in ["diameter", "length", "width", "height", "chord"]:
@@ -1181,9 +1183,53 @@ def remap_boundary_conditions_after_mesh(case_directory: Path, state: CFDState) 
             boundary_conditions, actual_patches, geometry_type, case_directory
         )
         
-        # For complex solvers, enhance with AI boundary conditions
+        # Get solver information for compressible flow correction
         solver_settings = state.get("solver_settings", {})
         solver_type = solver_settings.get("solver_type")
+        
+        # CRITICAL FIX: Correct pressure values for compressible solvers
+        # This runs after solver selection, so we know the solver type
+        if solver_type in [SolverType.RHO_PIMPLE_FOAM, SolverType.SONIC_FOAM, SolverType.CHT_MULTI_REGION_FOAM, SolverType.REACTING_FOAM]:
+            logger.info(f"Simulation Executor: Correcting pressure values for compressible solver {solver_type}")
+            
+            # Fix pressure field for compressible flows
+            if "p" in mapped_conditions:
+                p_field = mapped_conditions["p"]
+                parsed_params = state.get("parsed_parameters", {})
+                
+                # Check if we have gauge pressure (0 Pa) and need absolute pressure
+                internal_field = p_field.get("internalField", "uniform 0")
+                
+                # Extract pressure value from internal field
+                import re
+                pressure_match = re.search(r'uniform\s+([\d.-]+)', internal_field)
+                if pressure_match:
+                    current_pressure = float(pressure_match.group(1))
+                    
+                    # If pressure is 0 (gauge pressure), convert to absolute pressure
+                    if abs(current_pressure) < 1.0:  # Very close to zero (gauge pressure)
+                        absolute_pressure = parsed_params.get("pressure", 101325.0)
+                        if absolute_pressure < 50000:  # If parsed pressure is also low, default to atmospheric
+                            absolute_pressure = 101325.0
+                        
+                        logger.info(f"Correcting pressure from {current_pressure} Pa (gauge) to {absolute_pressure} Pa (absolute) for {solver_type}")
+                        
+                        # Update internal field
+                        p_field["internalField"] = f"uniform {absolute_pressure}"
+                        
+                        # Update dimensions for compressible solver (absolute pressure)
+                        p_field["dimensions"] = "[1 -1 -2 0 0 0 0]"
+                        
+                        # Update boundary field outlet values
+                        if "boundaryField" in p_field:
+                            for patch_name, patch_bc in p_field["boundaryField"].items():
+                                if patch_bc.get("type") == "fixedValue":
+                                    patch_bc["value"] = f"uniform {absolute_pressure}"
+                        
+                        # Mark that we updated the pressure field
+                        result["fields_updated"].append("p_corrected_for_compressible")
+        
+        # For complex solvers, enhance with AI boundary conditions
         
         if solver_type and hasattr(solver_type, 'value'):
             solver_name = solver_type.value

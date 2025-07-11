@@ -23,10 +23,14 @@ FoamAI is an intelligent CFD (Computational Fluid Dynamics) application that con
 - **Multiple OpenFOAM Solvers**:
   - `simpleFoam`: Steady-state incompressible flows
   - `pimpleFoam`: Transient incompressible flows with vortex shedding
+  - `pisoFoam`: Transient incompressible flows using PISO algorithm
   - `interFoam`: Multiphase flows (VOF method)
   - `rhoPimpleFoam`: Compressible transient flows
+  - `sonicFoam`: Transient compressible flows for trans-sonic/supersonic
   - `chtMultiRegionFoam`: Conjugate heat transfer
   - `reactingFoam`: Combustion and chemical reactions
+  - `buoyantSimpleFoam`: Heat transfer with buoyancy
+  - `MRFSimpleFoam`: Steady incompressible flows with rotating machinery
 - **Intelligent Solver Selection**: AI-powered solver recommendation based on problem features
 - **Adaptive Time Stepping**: Automatic time step calculation based on velocity and geometry
 - **Turbulence Models**: Laminar, RANS (k-epsilon, k-omega), and LES support

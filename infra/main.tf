@@ -179,14 +179,13 @@ resource "aws_instance" "foamai_instance" {
   vpc_security_group_ids = [aws_security_group.foamai_sg.id]
   subnet_id              = aws_subnet.foamai_public_subnet.id
   
-  # User data script with template variables for robust EBS volume mounting
-  user_data = templatefile("${path.module}/user_data.sh.tpl", {
-    data_volume_size_gb = var.data_volume_size
-    filesystem_type     = var.data_volume_filesystem
-    mount_point        = var.data_volume_mount_point
-    wait_timeout       = var.ebs_wait_timeout
-    deployment_profile = var.deployment_profile
-  })
+  # User data script - modular, self-contained deployment script
+  user_data = base64encode(templatefile("${path.module}/user_data.sh", {
+    DATA_VOLUME_SIZE_GB = var.data_volume_size
+    FILESYSTEM_TYPE     = var.data_volume_filesystem
+    MOUNT_POINT         = var.data_volume_mount_point
+    EBS_WAIT_TIMEOUT    = var.ebs_wait_timeout
+  }))
 
   # Storage configuration
   root_block_device {

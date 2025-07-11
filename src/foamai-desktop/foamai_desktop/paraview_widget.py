@@ -10,6 +10,18 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap, QImage
 
+# Import remote ParaView server management
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent.parent / "foamai-core"))
+
+try:
+    from foamai_core.orchestrator import start_remote_paraview_server, stop_remote_paraview_server, get_remote_project_info
+    REMOTE_PARAVIEW_AVAILABLE = True
+except ImportError as e:
+    REMOTE_PARAVIEW_AVAILABLE = False
+    print(f"Remote ParaView management not available: {e}")
+
 try:
     import paraview.simple as pv
     from paraview.simple import Connect, Disconnect, GetActiveSource, GetActiveView
@@ -321,6 +333,7 @@ class ParaViewWidget(QWidget):
     # Signals
     visualization_loaded = Signal(str)  # Emitted when visualization is loaded
     visualization_error = Signal(str)   # Emitted when visualization fails
+    connection_status_changed = Signal(bool)  # Emitted when connection status changes
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -334,8 +347,16 @@ class ParaViewWidget(QWidget):
         self.available_fields = []
         self.current_field = None  # Track currently selected field
         
+        # Initialize global data ranges for consistent color scaling
+        self.global_field_ranges = {}  # Store global min/max for each field across all time steps
+        
         # Connection state
         self.connected = False
+        
+        # Remote server configuration
+        self.server_url = None
+        self.project_name = None
+        self.remote_paraview_info = None
         
         # Initialize UI
         self.setup_ui()
@@ -346,6 +367,678 @@ class ParaViewWidget(QWidget):
         
         # Note: VTK initialization is deferred until UI setup
         # Auto-connect logic will be handled after UI setup
+    
+    def set_remote_server(self, server_url: str, project_name: str):
+        """Set remote server configuration for ParaView."""
+        self.server_url = server_url
+        self.project_name = project_name
+        
+        if REMOTE_PARAVIEW_AVAILABLE:
+            self.connection_label.setText(f"Remote server configured: {server_url}")
+            self.connection_label.setStyleSheet("color: blue; font-weight: bold;")
+            
+            # Update connect button to use remote server
+            if hasattr(self, 'connect_btn'):
+                self.connect_btn.setText("Connect to Remote ParaView Server")
+                self.connect_btn.setEnabled(True)
+            
+            logger.info(f"ParaView widget configured for remote server: {server_url}, project: {project_name}")
+        else:
+            logger.warning("Remote ParaView management not available")
+    
+    def connect_to_remote_server(self):
+        """Connect to or start remote ParaView server with improved connection logic."""
+        if not REMOTE_PARAVIEW_AVAILABLE:
+            QMessageBox.warning(self, "Error", "Remote ParaView management not available")
+            return
+        
+        if not self.server_url or not self.project_name:
+            QMessageBox.warning(self, "Error", "Remote server not configured")
+            return
+        
+        try:
+            # Step 1: Check current server status
+            self.connection_label.setText("Checking remote ParaView server status...")
+            self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
+            
+            project_info = get_remote_project_info(self.server_url, self.project_name)
+            
+            if "error" in project_info:
+                QMessageBox.warning(self, "Error", f"Failed to get project info: {project_info['error']}")
+                return
+            
+            # Step 2: Create .foam file on server (regardless of ParaView server status)
+            try:
+                self.connection_label.setText("Creating .foam file on remote server...")
+                from foamai_core.remote_executor import RemoteExecutor
+                
+                with RemoteExecutor(self.server_url, self.project_name) as remote:
+                    # Create the .foam file in the active_run directory
+                    foam_filename = f"{self.project_name}.foam"
+                    foam_content = ""  # .foam files are typically empty
+                    
+                    remote.upload_text_file(foam_content, foam_filename)
+                    logger.info(f"Created .foam file on remote server: {foam_filename}")
+                    
+            except Exception as foam_error:
+                logger.warning(f"Failed to create .foam file: {foam_error}")
+                # Continue anyway - the case might still be loadable
+            
+            # Step 3: Check if ParaView server is already running
+            pvserver_info = project_info.get("pvserver_info", {})
+            server_running = False
+            connection_string = None
+            
+            if pvserver_info.get("status") == "running" and pvserver_info.get("port"):
+                # Server already running - construct proper connection string for remote access
+                port = pvserver_info.get("port")
+                remote_host = self._get_remote_host()
+                connection_string = f"{remote_host}:{port}"
+                logger.info(f"ParaView server already running at {connection_string} (remote access)")
+                
+                server_running = True  # Server is running according to API
+                
+                if PARAVIEW_AVAILABLE:
+                    # Try to connect (but server is running regardless of success)
+                    connection_successful = self._try_paraview_connection(connection_string)
+                    if not connection_successful:
+                        logger.warning("Server is running but connection failed (likely version mismatch)")
+                else:
+                    logger.info("Server is running but no ParaView client available")
+            
+            # Step 4: If no server running or connection failed, start new server
+            if not server_running:
+                self.connection_label.setText("Starting remote ParaView server...")
+                self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
+                
+                result = start_remote_paraview_server(self.server_url, self.project_name)
+                
+                if "error" in result:
+                    QMessageBox.warning(self, "Error", f"Failed to start ParaView server: {result['error']}")
+                    self.connection_label.setText("Failed to start remote ParaView server")
+                    self.connection_label.setStyleSheet("color: red; font-weight: bold;")
+                    return
+                
+                # Get connection info from the start result
+                port = result.get("port", 11111)
+                remote_host = self._get_remote_host()
+                connection_string = f"{remote_host}:{port}"
+                self.remote_paraview_info = result
+                
+                if PARAVIEW_AVAILABLE:
+                    server_running = self._try_paraview_connection(connection_string)
+                else:
+                    server_running = True  # Server started, but no client
+                
+                # If connection still failed, check actual server status
+                if not server_running and PARAVIEW_AVAILABLE:
+                    logger.warning("Connection failed after starting server - checking actual server status")
+                    self.connection_label.setText("Checking actual server status...")
+                    
+                    # Wait a moment for server to fully start
+                    import time
+                    time.sleep(2)
+                    
+                    # Re-check server status to get actual port
+                    updated_info = get_remote_project_info(self.server_url, self.project_name)
+                    updated_pvserver = updated_info.get("pvserver_info", {})
+                    
+                    if updated_pvserver.get("status") == "running":
+                        actual_port = updated_pvserver.get("port")
+                        if actual_port and actual_port != port:
+                            logger.info(f"Server started at different port: {actual_port}")
+                            actual_connection = f"{remote_host}:{actual_port}"
+                            server_running = self._try_paraview_connection(actual_connection)
+                            if server_running:
+                                connection_string = actual_connection
+            
+            # Step 5: Update UI and handle connection results
+            if self.connected and PARAVIEW_AVAILABLE:
+                self.connection_label.setText(f"Connected to remote ParaView server at {connection_string}")
+                self.connection_label.setStyleSheet("color: green; font-weight: bold;")
+                self.connect_btn.setText("Disconnect from Remote Server")
+                self.connect_btn.setEnabled(False)
+                self.disconnect_btn.setEnabled(True)
+                self.enable_controls()
+                
+                # Emit connection status signal
+                self.connection_status_changed.emit(True)
+                
+                # Auto-load the simulation data
+                self._auto_load_remote_data()
+                
+                logger.info("Remote ParaView server connected successfully")
+                
+            elif server_running:
+                # Server is running but connection failed
+                self.connection_label.setText(f"Server running at {connection_string} - Connection failed (version mismatch)")
+                self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
+                
+                if PARAVIEW_AVAILABLE:
+                    # Show detailed error message
+                    QMessageBox.warning(
+                        self, 
+                        "Connection Failed", 
+                        f"ParaView server is running at {connection_string}\n\n"
+                        f"However, connection failed due to version mismatch:\n"
+                        f"• Client version: ParaView 6.0.0\n"
+                        f"• Server version: Different (likely newer)\n\n"
+                        f"To visualize data, you need:\n"
+                        f"1. Upgrade local ParaView to match server version, OR\n"
+                        f"2. Use ParaView directly at {connection_string}"
+                    )
+                else:
+                    QMessageBox.information(self, "Info", f"Remote ParaView server started at {connection_string}\nParaView client not available for connection")
+            
+        except Exception as e:
+            error_msg = f"Error with remote ParaView server: {str(e)}"
+            logger.error(error_msg)
+            QMessageBox.critical(self, "Error", error_msg)
+            self.connection_label.setText("Remote ParaView server error")
+            self.connection_label.setStyleSheet("color: red; font-weight: bold;")
+    
+    def _get_remote_host(self):
+        """Extract the remote host from the server URL."""
+        if not self.server_url:
+            return "localhost"
+        
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(self.server_url)
+            # Return the hostname/IP from the server URL
+            remote_host = parsed.hostname or parsed.netloc.split(':')[0] or "localhost"
+            if remote_host != "localhost":
+                logger.info(f"Using remote host {remote_host} extracted from server URL {self.server_url}")
+            return remote_host
+        except Exception as e:
+            logger.warning(f"Could not parse server URL {self.server_url}: {e}")
+            return "localhost"
+    
+    def _try_paraview_connection(self, connection_string):
+        """Try to establish ParaView connection with error handling."""
+        try:
+            logger.info(f"Attempting ParaView connection to: {connection_string}")
+            
+            # Try to connect to ParaView server
+            pv.Connect(connection_string)
+            self.connected = True
+            logger.info("ParaView connection successful")
+            return True
+                
+        except Exception as e:
+            error_msg = str(e)
+            logger.warning(f"ParaView connection failed: {error_msg}")
+            
+            # Check for specific error types
+            if "version hash mismatch" in error_msg.lower():
+                logger.warning("Version mismatch detected - client and server ParaView versions differ")
+                logger.warning("Unable to establish ParaView connection due to version incompatibility")
+                logger.warning("Server is running but client cannot connect")
+                return False
+                    
+            elif "handshake" in error_msg.lower():
+                logger.warning("Handshake failure - connection compatibility issue")
+                return False
+                
+            elif "refused" in error_msg.lower():
+                logger.warning("Connection refused - server may not be ready or port blocked")
+                
+            return False
+    
+    def _auto_load_remote_data(self):
+        """Auto-load simulation data from remote server after successful connection."""
+        if not self.connected or not self.server_url or not self.project_name:
+            return
+        
+        try:
+            # Verify ParaView connection is fully ready
+            if not self._verify_paraview_connection():
+                logger.warning("ParaView connection not ready for data loading")
+                return
+            
+            # For remote ParaView server connection, we need to use server-local paths
+            # The ParaView server runs on the remote machine and accesses local files there
+            
+            # Get the case path from project info  
+            project_info = get_remote_project_info(self.server_url, self.project_name)
+            pvserver_info = project_info.get("pvserver_info", {})
+            case_path = pvserver_info.get("case_path")
+            
+            if not case_path:
+                logger.warning("Could not determine case path for auto-loading")
+                return
+            
+            # Use the server-local case path (ParaView server will access this locally)
+            foam_file_path = f"{case_path}/{self.project_name}.foam"
+            
+            logger.info(f"Auto-loading OpenFOAM case from server path: {foam_file_path}")
+            
+            # Use ParaView to load the case with version compatibility
+            from paraview.simple import OpenFOAMReader
+            
+            # ParaView 6.0.0 compatible connection verification
+            try:
+                import paraview.servermanager as sm
+                if hasattr(sm, 'ActiveConnection') and sm.ActiveConnection:
+                    logger.info(f"ParaView connection verified (6.0.0 compatible): {sm.ActiveConnection}")
+                else:
+                    logger.warning("No active ParaView connection found")
+                    return
+            except Exception as conn_error:
+                logger.warning(f"Could not verify ParaView connection: {conn_error}")
+                # Continue anyway - connection might work
+            
+            # Clear any existing sources
+            if hasattr(self, 'current_source') and self.current_source:
+                from paraview.simple import Delete
+                try:
+                    Delete(self.current_source)
+                    logger.info("Cleared existing ParaView source")
+                except Exception as cleanup_error:
+                    logger.warning(f"Could not cleanup existing source: {cleanup_error}")
+            
+            # Create OpenFOAM reader with server-local case path
+            # The ParaView server will load this from its local filesystem
+            logger.info("Creating OpenFOAM reader...")
+            reader = OpenFOAMReader(FileName=foam_file_path)
+            
+            if not reader:
+                logger.error("Failed to create OpenFOAM reader - returned None")
+                return
+            
+            logger.info(f"OpenFOAM reader created successfully: {reader}")
+            self.current_source = reader
+            
+            # Configure reader for better data loading (ParaView 6.0.0 compatible)
+            try:
+                logger.info("Configuring OpenFOAM reader options...")
+                
+                # CRITICAL: Enable mesh regions first - this is what loads the geometry
+                if hasattr(reader, 'MeshRegions'):
+                    try:
+                        # Get available mesh regions
+                        available_regions = reader.MeshRegions.Available
+                        logger.info(f"Available mesh regions: {available_regions}")
+                        
+                        # Enable all available regions (typically includes internalMesh and patches)
+                        reader.MeshRegions = available_regions
+                        logger.info(f"Enabled mesh regions: {available_regions}")
+                    except Exception as mesh_error:
+                        logger.warning(f"Could not configure mesh regions: {mesh_error}")
+                        # Fallback: try to enable internalMesh manually
+                        try:
+                            reader.MeshRegions = ['internalMesh']
+                            logger.info("Fallback: Enabled internalMesh region")
+                        except:
+                            logger.warning("Could not enable internalMesh region")
+                
+                # Enable field arrays - get all available arrays and enable them
+                if hasattr(reader, 'CellArrays'):
+                    try:
+                        available_cell_arrays = reader.CellArrays.Available
+                        logger.info(f"Available cell arrays: {available_cell_arrays}")
+                        
+                        # Enable all available cell arrays
+                        reader.CellArrays = available_cell_arrays
+                        logger.info(f"Enabled cell arrays: {available_cell_arrays}")
+                    except Exception as cell_error:
+                        logger.warning(f"Could not configure cell arrays: {cell_error}")
+                        # Fallback: try common OpenFOAM fields
+                        try:
+                            reader.CellArrays = ['p', 'U', 'phi']
+                            logger.info("Fallback: Enabled common cell arrays [p, U, phi]")
+                        except:
+                            logger.warning("Could not enable common cell arrays")
+                
+                if hasattr(reader, 'PointArrays'):
+                    try:
+                        available_point_arrays = reader.PointArrays.Available
+                        logger.info(f"Available point arrays: {available_point_arrays}")
+                        
+                        # Enable all available point arrays
+                        reader.PointArrays = available_point_arrays
+                        logger.info(f"Enabled point arrays: {available_point_arrays}")
+                    except Exception as point_error:
+                        logger.warning(f"Could not configure point arrays: {point_error}")
+                        # Fallback: try common OpenFOAM fields
+                        try:
+                            reader.PointArrays = ['p', 'U']
+                            logger.info("Fallback: Enabled common point arrays [p, U]")
+                        except:
+                            logger.warning("Could not enable common point arrays")
+                
+                # Check available properties before setting them
+                if hasattr(reader, 'CreateCellToPoint'):
+                    reader.CreateCellToPoint = 1
+                    logger.info("Enabled CreateCellToPoint")
+                elif hasattr(reader, 'CreateCellToPointOn'):
+                    reader.CreateCellToPointOn()
+                    logger.info("Enabled CreateCellToPointOn")
+                    
+                if hasattr(reader, 'ReadZones'):
+                    reader.ReadZones = 1
+                    logger.info("Enabled ReadZones")
+                elif hasattr(reader, 'ReadZonesOn'):
+                    reader.ReadZonesOn()
+                    logger.info("Enabled ReadZonesOn")
+                    
+                if hasattr(reader, 'CacheMesh'):
+                    reader.CacheMesh = 1
+                    logger.info("Enabled CacheMesh")
+                elif hasattr(reader, 'CacheMeshOn'):
+                    reader.CacheMeshOn()
+                    logger.info("Enabled CacheMeshOn")
+                    
+                # Skip DecomposePolyhedra as it's been removed in newer ParaView versions
+                if hasattr(reader, 'DecomposePolyhedra'):
+                    try:
+                        reader.DecomposePolyhedra = 1
+                        logger.info("Enabled DecomposePolyhedra")
+                    except:
+                        logger.info("DecomposePolyhedra property not available (newer ParaView)")
+                elif hasattr(reader, 'DecomposePolyhedraOn'):
+                    try:
+                        reader.DecomposePolyhedraOn()
+                        logger.info("Enabled DecomposePolyhedraOn")
+                    except:
+                        logger.info("DecomposePolyhedraOn method not available (newer ParaView)")
+                    
+                # Try to enable time information
+                if hasattr(reader, 'RefreshTimes'):
+                    reader.RefreshTimes()
+                    logger.info("Refreshed time step information")
+                    
+            except Exception as config_error:
+                logger.warning(f"Could not configure reader options: {config_error}")
+            
+            # Update the pipeline to load data
+            logger.info("Updating ParaView pipeline...")
+            try:
+                # CRITICAL: Force reader to apply all configuration changes
+                if hasattr(reader, 'UpdateVTKObjects'):
+                    reader.UpdateVTKObjects()
+                    logger.info("UpdateVTKObjects completed")
+                
+                # Force the reader to re-read with new configuration
+                if hasattr(reader, 'Modified'):
+                    reader.Modified()
+                    logger.info("Reader marked as modified")
+                    
+                # Update the pipeline multiple times to ensure data is loaded
+                for attempt in range(3):
+                    try:
+                        if hasattr(reader, 'UpdatePipeline'):
+                            reader.UpdatePipeline()
+                            logger.info(f"UpdatePipeline completed (attempt {attempt + 1})")
+                        elif hasattr(reader, 'Update'):
+                            reader.Update()
+                            logger.info(f"Update completed (attempt {attempt + 1})")
+                        
+                        # Check if we now have data
+                        if hasattr(reader, 'GetClientSideObject'):
+                            client_obj = reader.GetClientSideObject()
+                            if client_obj:
+                                test_data = client_obj.GetOutput()
+                                if test_data and hasattr(test_data, 'GetNumberOfPoints'):
+                                    num_points = test_data.GetNumberOfPoints()
+                                    if num_points > 0:
+                                        logger.info(f"Pipeline update successful - {num_points} points loaded")
+                                        break
+                                    else:
+                                        logger.info(f"Pipeline update {attempt + 1}: No points yet")
+                                else:
+                                    logger.info(f"Pipeline update {attempt + 1}: No VTK data yet")
+                            else:
+                                logger.info(f"Pipeline update {attempt + 1}: No client-side object yet")
+                        
+                    except Exception as update_error:
+                        logger.warning(f"Pipeline update attempt {attempt + 1} failed: {update_error}")
+                        if attempt == 2:  # Last attempt
+                            logger.warning("All pipeline update attempts failed")
+                    
+            except Exception as pipeline_error:
+                logger.error(f"Pipeline update failed: {pipeline_error}")
+                return
+            
+            logger.info("Successfully auto-loaded remote OpenFOAM case")
+            
+            # Update connection status
+            self.connection_label.setText(f"Connected - Data loaded from {self.project_name}")
+            self.connection_label.setStyleSheet("color: green; font-weight: bold;")
+            
+            # Setup time steps and fields (works regardless of embedded rendering availability)
+            self.setup_time_steps()
+            self.create_field_buttons()
+            
+            # Calculate global field ranges across all time steps for consistent color scaling
+            self.calculate_global_field_ranges()
+            
+            # Try to display the data using embedded VTK
+            try:
+                # Get VTK data from the reader (ParaView 6.0.0 compatible)
+                logger.info("Getting VTK data from reader...")
+                vtk_data = None
+                
+                # CRITICAL FIX: Use servermanager.Fetch() to bring server data to client
+                logger.info("Attempting to fetch server data to client for embedded rendering...")
+                try:
+                    import paraview.servermanager as sm
+                    
+                    # Force data transfer from server to client
+                    vtk_data = sm.Fetch(reader)
+                    if vtk_data:
+                        logger.info(f"✅ Successfully fetched data from server: {vtk_data.GetClassName()} with {vtk_data.GetNumberOfPoints() if hasattr(vtk_data, 'GetNumberOfPoints') else 'N/A'} points")
+                        print(f"🎯 BREAKTHROUGH: Data fetched from server to client!")
+                        print(f"   Data type: {vtk_data.GetClassName()}")
+                        if hasattr(vtk_data, 'GetNumberOfPoints'):
+                            print(f"   Points: {vtk_data.GetNumberOfPoints()}")
+                        if hasattr(vtk_data, 'GetNumberOfCells'):
+                            print(f"   Cells: {vtk_data.GetNumberOfCells()}")
+                    else:
+                        logger.warning("servermanager.Fetch() returned None")
+                        
+                except Exception as fetch_error:
+                    logger.warning(f"servermanager.Fetch() failed: {fetch_error}")
+                    print(f"⚠️ Fetch failed: {fetch_error}")
+                
+                # FALLBACK: Try the original methods if Fetch() failed
+                if not vtk_data:
+                    logger.info("Fetch failed, trying original methods...")
+                    
+                    # Method 1: Try GetClientSideObject (preferred for embedded rendering)
+                    if hasattr(reader, 'GetClientSideObject'):
+                        try:
+                            client_side_obj = reader.GetClientSideObject()
+                            if client_side_obj:
+                                vtk_data = client_side_obj.GetOutput()
+                                logger.info("Got VTK data via GetClientSideObject")
+                            else:
+                                logger.warning("GetClientSideObject returned None - reader may not have loaded data yet")
+                        except Exception as client_error:
+                            logger.warning(f"GetClientSideObject failed: {client_error}")
+                    
+                    # Method 2: Try GetOutputData if GetClientSideObject failed
+                    if not vtk_data and hasattr(reader, 'GetOutputData'):
+                        try:
+                            vtk_data = reader.GetOutputData(0)
+                            logger.info("Got VTK data via GetOutputData")
+                        except Exception as output_data_error:
+                            logger.warning(f"GetOutputData failed: {output_data_error}")
+                            
+                    # Method 3: Fall back to older API
+                    if not vtk_data and hasattr(reader, 'GetOutput'):
+                        try:
+                            vtk_data = reader.GetOutput()
+                            logger.info("Got VTK data via GetOutput")
+                        except Exception as output_error:
+                            logger.warning(f"GetOutput failed: {output_error}")
+                    
+                    # Method 4: If all direct methods fail, try using ParaView's standard pipeline
+                    if not vtk_data:
+                        logger.info("Direct VTK data access failed - trying ParaView visualization pipeline")
+                        try:
+                            # Use ParaView's standard visualization approach
+                            from paraview.simple import Show, GetActiveView, CreateRenderView
+                            
+                            # Get or create a view
+                            view = GetActiveView()
+                            if not view:
+                                view = CreateRenderView()
+                            
+                            # Show the data in the view (this forces data loading)
+                            display = Show(reader, view)
+                            
+                            # Try to fetch after showing
+                            try:
+                                vtk_data = sm.Fetch(reader)
+                                if vtk_data:
+                                    logger.info("Got VTK data via ParaView pipeline + Fetch")
+                                    print("🎯 SUCCESS: Pipeline + Fetch worked!")
+                                else:
+                                    logger.warning("Pipeline + Fetch still returned None")
+                            except Exception as pipeline_fetch_error:
+                                logger.warning(f"Pipeline + Fetch failed: {pipeline_fetch_error}")
+                            
+                            # Final fallback - try GetClientSideObject again after showing
+                            if not vtk_data and hasattr(reader, 'GetClientSideObject'):
+                                client_side_obj = reader.GetClientSideObject()
+                                if client_side_obj:
+                                    vtk_data = client_side_obj.GetOutput()
+                                    logger.info("Got VTK data via ParaView pipeline + GetClientSideObject")
+                            
+                            # If we still don't have VTK data, we can at least confirm the reader is working
+                            if not vtk_data:
+                                logger.info("All methods failed - data stays on server")
+                                logger.info("Data should be visible in remote ParaView server")
+                                
+                                # Update the embedded widget area to show status
+                                if hasattr(self, 'visualization_area'):
+                                    self.visualization_area.setText(
+                                        "Remote ParaView server connected successfully!\n\n"
+                                        "Visualization is available in separate ParaView window.\n\n"
+                                        "Features available:\n"
+                                        "• Time step navigation with Time Controls\n"
+                                        "• Field visualization with Field buttons\n"
+                                        "• Full ParaView functionality in separate window\n\n"
+                                        "Note: Embedded visualization not available due to\n"
+                                        "client-server data transfer limitations.\n"
+                                        "This is normal for remote ParaView connections."
+                                    )
+                                
+                        except Exception as pipeline_error:
+                            logger.warning(f"ParaView visualization pipeline failed: {pipeline_error}")
+                
+                # Verify and display the data if we got it
+                if vtk_data and hasattr(vtk_data, 'GetNumberOfPoints'):
+                    num_points = vtk_data.GetNumberOfPoints()
+                    num_cells = vtk_data.GetNumberOfCells() if hasattr(vtk_data, 'GetNumberOfCells') else 0
+                    
+                    logger.info(f"Successfully loaded VTK data: {num_points} points, {num_cells} cells")
+                    
+                    if num_points > 0 or num_cells > 0:
+                        self._display_vtk_data(vtk_data)
+                        logger.info("Mesh visualization loaded successfully")
+                    else:
+                        logger.info("VTK data object exists but contains no geometry")
+                else:
+                    logger.warning("No VTK data available for embedded rendering")
+                    logger.info("Reader configured successfully - data should be visible via remote ParaView connection")
+                    
+            except Exception as display_error:
+                logger.warning(f"Auto-display failed: {display_error}")
+                logger.info("Reader created successfully. Use field buttons to visualize data when available.")
+                
+                # Ensure field buttons are available even if embedded rendering failed
+                if not hasattr(self, 'available_fields') or not self.available_fields:
+                    print("🔄 Creating field buttons from reader properties after display failure")
+                    self.create_field_buttons()
+            
+            self.visualization_loaded.emit(foam_file_path)
+            
+        except Exception as e:
+            logger.error(f"Auto-load failed with error: {str(e)}")
+            import traceback
+            logger.error(f"Auto-load traceback: {traceback.format_exc()}")
+            logger.info("Case structure created. Use field buttons when simulation data is available.")
+    
+    def _verify_paraview_connection(self):
+        """Verify that ParaView connection is ready for data operations (6.0.0 compatible)."""
+        try:
+            # Try newer API first
+            try:
+                from paraview.simple import GetActiveConnection
+                active_connection = GetActiveConnection()
+                if active_connection:
+                    if hasattr(active_connection, 'Session') and active_connection.Session:
+                        logger.info("ParaView connection and session verified (new API)")
+                        return True
+                    else:
+                        logger.warning("ParaView connection exists but session is not ready (new API)")
+                        return False
+                else:
+                    logger.warning("No active ParaView connection (new API)")
+                    return False
+            except ImportError:
+                # Fall back to ParaView 6.0.0 compatible API
+                logger.info("Using ParaView 6.0.0 compatible connection verification")
+                import paraview.servermanager as sm
+                
+                if hasattr(sm, 'ActiveConnection') and sm.ActiveConnection:
+                    logger.info("ParaView connection verified (6.0.0 compatible)")
+                    return True
+                else:
+                    logger.warning("No active ParaView connection (6.0.0 compatible)")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"ParaView connection verification failed: {e}")
+            return False
+    
+    def disconnect_from_remote_server(self):
+        """Disconnect from remote ParaView server."""
+        try:
+            if PARAVIEW_AVAILABLE and self.connected:
+                pv.Disconnect()
+                self.connected = False
+                logger.info("Disconnected from remote ParaView server")
+            
+            # Optionally stop the remote server
+            if REMOTE_PARAVIEW_AVAILABLE and self.server_url and self.project_name:
+                reply = QMessageBox.question(
+                    self, 
+                    "Stop Server?", 
+                    "Do you want to stop the remote ParaView server for other users too?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
+                
+                if reply == QMessageBox.StandardButton.Yes:
+                    result = stop_remote_paraview_server(self.server_url, self.project_name)
+                    if "error" in result:
+                        QMessageBox.warning(self, "Warning", f"Failed to stop remote server: {result['error']}")
+                    else:
+                        logger.info("Remote ParaView server stopped")
+            
+            self.connection_label.setText("Disconnected from remote ParaView server")
+            self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
+            
+            if hasattr(self, 'connect_btn'):
+                self.connect_btn.setText("Connect to Remote ParaView Server")
+                self.connect_btn.setEnabled(True)
+            
+            if hasattr(self, 'disconnect_btn'):
+                self.disconnect_btn.setEnabled(False)
+            
+            # Emit connection status signal
+            self.connection_status_changed.emit(False)
+            
+            self.disable_controls()
+            self.remote_paraview_info = None
+            
+        except Exception as e:
+            error_msg = f"Error disconnecting from remote server: {str(e)}"
+            logger.error(error_msg)
+            QMessageBox.warning(self, "Warning", error_msg)
     
     def setup_ui(self):
         """Setup the user interface"""
@@ -641,15 +1334,22 @@ class ParaViewWidget(QWidget):
         conn_group = QGroupBox("Connection Controls")
         conn_layout = QHBoxLayout(conn_group)
         
-        if VTK_QT_AVAILABLE:
+        # Determine initial button text based on configuration
+        if hasattr(self, 'server_url') and self.server_url and hasattr(self, 'project_name') and self.project_name:
+            button_text = "Connect to Remote ParaView Server"
+        elif VTK_QT_AVAILABLE:
             if PARAVIEW_AVAILABLE:
-                self.connect_btn = QPushButton("Connect to ParaView Server")
+                button_text = "Connect to ParaView Server"
             else:
-                self.connect_btn = QPushButton("Initialize Visualization")
+                button_text = "Initialize Visualization"
         elif PARAVIEW_AVAILABLE:
-            self.connect_btn = QPushButton("Connect to ParaView Server")
+            button_text = "Connect to ParaView Server"
         else:
-            self.connect_btn = QPushButton("Visualization Unavailable")
+            button_text = "Visualization Unavailable"
+            
+        self.connect_btn = QPushButton(button_text)
+        
+        if not (VTK_QT_AVAILABLE or PARAVIEW_AVAILABLE):
             self.connect_btn.setEnabled(False)
             
         self.connect_btn.clicked.connect(self.connect_to_server)
@@ -663,11 +1363,19 @@ class ParaViewWidget(QWidget):
         layout.addWidget(conn_group)
     
     def connect_to_server(self):
-        """Connect to visualization (embedded VTK or ParaView server)"""
+        """Connect to visualization (remote server, embedded VTK, or ParaView server)"""
+        # Priority 1: Check if remote server is configured
+        if self.server_url and self.project_name and REMOTE_PARAVIEW_AVAILABLE:
+            logger.info(f"Remote server configured - connecting to {self.server_url}")
+            self.connect_to_remote_server()
+            return
+        
+        # Priority 2: Check if no visualization system available
         if not PARAVIEW_AVAILABLE and not VTK_QT_AVAILABLE:
             self.show_error("No visualization system available")
             return
         
+        # Priority 3: Use embedded VTK or local ParaView
         try:
             if self.use_embedded_vtk and self.vtk_widget:
                 # Use embedded VTK rendering
@@ -685,7 +1393,7 @@ class ParaViewWidget(QWidget):
                 host = server_info['host']
                 port = server_info['port']
                 
-                logger.info(f"Connecting to ParaView server at {host}:{port}")
+                logger.info(f"Connecting to local ParaView server at {host}:{port}")
                 
                 # Connect to pvserver using lower-level API to avoid automatic view creation
                 try:
@@ -694,24 +1402,24 @@ class ParaViewWidget(QWidget):
                     # Connect without creating default views
                     if not sm.ActiveConnection:
                         connection = sm.Connect(host, port)
-                        logger.info("Connected to ParaView server using servermanager")
+                        logger.info("Connected to local ParaView server using servermanager")
                     else:
-                        logger.info("Using existing ParaView server connection")
+                        logger.info("Using existing local ParaView server connection")
                     
                     # Only create render view as fallback if embedded VTK is not available
                     if not self.use_embedded_vtk:
                         # For fallback only - when no embedded VTK is available
                         from paraview.simple import CreateRenderView
                         self.current_view = CreateRenderView()
-                        logger.info("Created fallback render view for ParaView server")
+                        logger.info("Created fallback render view for local ParaView server")
                     else:
-                        logger.info("Using embedded VTK widget for ParaView server data - no render view needed")
+                        logger.info("Using embedded VTK widget for local ParaView server data - no render view needed")
                     
                     self.connected = True
-                    self.connection_label.setText(f"Connected to ParaView server ({host}:{port})")
+                    self.connection_label.setText(f"Connected to local ParaView server ({host}:{port})")
                     self.connection_label.setStyleSheet("color: green; font-weight: bold;")
                     
-                    logger.info("Successfully connected to ParaView server")
+                    logger.info("Successfully connected to local ParaView server")
                     
                 except Exception as e:
                     logger.error(f"Failed to connect with servermanager: {str(e)}")
@@ -721,19 +1429,23 @@ class ParaViewWidget(QWidget):
                         logger.info("Connected using paraview.simple fallback")
                         
                         self.connected = True
-                        self.connection_label.setText(f"Connected to ParaView server ({host}:{port})")
+                        self.connection_label.setText(f"Connected to local ParaView server ({host}:{port})")
                         self.connection_label.setStyleSheet("color: green; font-weight: bold;")
                         
                     except Exception as e2:
-                        logger.error(f"Both connection methods failed: {str(e2)}")
+                        logger.error(f"Both local connection methods failed: {str(e2)}")
                         raise e2
                 
             else:
                 self.show_error("No visualization system available")
                 return
             
+            # Update button states for successful connection
             self.connect_btn.setEnabled(False)
             self.disconnect_btn.setEnabled(True)
+            
+            # Emit connection status signal
+            self.connection_status_changed.emit(True)
             
         except Exception as e:
             logger.error(f"Failed to initialize visualization: {str(e)}")
@@ -741,7 +1453,14 @@ class ParaViewWidget(QWidget):
             self.connected = False
     
     def disconnect_from_server(self):
-        """Disconnect from visualization"""
+        """Disconnect from visualization (remote server, embedded VTK, or local ParaView)"""
+        # Priority 1: Check if using remote server
+        if self.server_url and self.project_name and REMOTE_PARAVIEW_AVAILABLE:
+            logger.info("Disconnecting from remote server")
+            self.disconnect_from_remote_server()
+            return
+        
+        # Priority 2: Handle local/embedded disconnection
         try:
             if self.use_embedded_vtk and hasattr(self, 'renderer') and self.renderer:
                 # Clear embedded VTK renderer
@@ -751,7 +1470,7 @@ class ParaViewWidget(QWidget):
                 logger.info("Cleared embedded VTK rendering")
                 
             elif PARAVIEW_AVAILABLE:
-                # Disconnect from ParaView server
+                # Disconnect from local ParaView server
                 try:
                     import paraview.servermanager as sm
                     
@@ -761,14 +1480,14 @@ class ParaViewWidget(QWidget):
                         from paraview.simple import Delete
                         Delete(self.current_view)
                         self.current_view = None
-                        logger.info("Cleaned up ParaView render view")
+                        logger.info("Cleaned up local ParaView render view")
                     
                     # Disconnect from server
                     if sm.ActiveConnection:
                         sm.Disconnect()
-                        logger.info("Disconnected from ParaView server using servermanager")
+                        logger.info("Disconnected from local ParaView server using servermanager")
                     else:
-                        logger.info("No active ParaView connection to disconnect")
+                        logger.info("No active local ParaView connection to disconnect")
                         
                 except Exception as e:
                     logger.error(f"Error disconnecting via servermanager: {str(e)}")
@@ -779,7 +1498,7 @@ class ParaViewWidget(QWidget):
                     except Exception as e2:
                         logger.error(f"Both disconnect methods failed: {str(e2)}")
                 
-                logger.info("Disconnected from ParaView server")
+                logger.info("Disconnected from local ParaView server")
             
             # Clean up any remaining temporary case directories if they exist
             if hasattr(self, '_temp_case_dirs') and self._temp_case_dirs:
@@ -802,6 +1521,7 @@ class ParaViewWidget(QWidget):
             if hasattr(self, 'is_playing') and self.is_playing:
                 self.pause_playback()
             
+            # Update connection status based on available systems
             if VTK_QT_AVAILABLE:
                 self.connection_label.setText("Embedded VTK rendering ready")
             elif PARAVIEW_AVAILABLE:
@@ -811,8 +1531,12 @@ class ParaViewWidget(QWidget):
                 
             self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
             
+            # Update button states
             self.connect_btn.setEnabled(True)
             self.disconnect_btn.setEnabled(False)
+            
+            # Emit connection status signal
+            self.connection_status_changed.emit(False)
             
             # Disable all visualization controls
             self.disable_controls()
@@ -1472,8 +2196,8 @@ class ParaViewWidget(QWidget):
     
     def show_field(self, field_name: str):
         """Show a specific field in the visualization"""
-        if not self.current_source or not hasattr(self, 'renderer'):
-            print("⚠️ No data source or renderer available")
+        if not self.current_source:
+            print("⚠️ No data source available")
             return
         
         try:
@@ -1494,12 +2218,14 @@ class ParaViewWidget(QWidget):
             self.current_field = field_name
             print(f"🎯 Current field set to: {field_name}")
             
-            # Clear current visualization
+            # Try embedded rendering first
             if hasattr(self, 'renderer') and self.renderer:
+                print("🎯 Attempting embedded VTK rendering...")
+                
+                # Clear current visualization
                 self.renderer.RemoveAllViewProps()
-            
-            # Save current camera position
-            if hasattr(self, 'renderer') and self.renderer:
+                
+                # Save current camera position
                 try:
                     camera = self.renderer.GetActiveCamera()
                     self._saved_camera_position = camera.GetPosition()
@@ -1508,29 +2234,112 @@ class ParaViewWidget(QWidget):
                 except Exception as cam_error:
                     print(f"⚠️ Could not save camera position: {cam_error}")
                     self._saved_camera_position = None
+                
+                # Get VTK data - try Fetch() first for server data
+                vtk_data = None
+                
+                # CRITICAL: Use Fetch() to get server data for embedded rendering
+                try:
+                    import paraview.servermanager as sm
+                    self.current_source.UpdatePipeline()
+                    vtk_data = sm.Fetch(self.current_source)
+                    if vtk_data:
+                        print(f"✅ Fetched VTK data for field rendering: {vtk_data.GetClassName()}")
+                        if hasattr(vtk_data, 'GetNumberOfPoints'):
+                            print(f"   Points: {vtk_data.GetNumberOfPoints()}")
+                    else:
+                        print("⚠️ Fetch() returned None for field rendering")
+                except Exception as fetch_error:
+                    print(f"⚠️ Fetch() failed for field rendering: {fetch_error}")
+                
+                # FALLBACK: Try original methods if Fetch() failed
+                if not vtk_data:
+                    if hasattr(self.current_source, 'GetClientSideObject'):
+                        # ParaView server source
+                        try:
+                            self.current_source.UpdatePipeline()
+                            client_side_obj = self.current_source.GetClientSideObject()
+                            if client_side_obj:
+                                vtk_data = client_side_obj.GetOutput()
+                                print("✅ Got VTK data via GetClientSideObject for embedded rendering")
+                        except Exception as e:
+                            print(f"⚠️ GetClientSideObject failed: {e}")
+                    elif hasattr(self.current_source, 'GetOutput'):
+                        # Direct VTK source
+                        try:
+                            self.current_source.Update()
+                            vtk_data = self.current_source.GetOutput()
+                            print("✅ Got VTK data via GetOutput for embedded rendering")
+                        except Exception as e:
+                            print(f"⚠️ GetOutput failed: {e}")
+                
+                if vtk_data:
+                    # Display with specific field in embedded widget
+                    self._display_vtk_data_with_field(vtk_data, field_info)
+                    print(f"✅ Successfully displayed field in embedded widget: {field_info['display_name']}")
+                    return
+                else:
+                    print("⚠️ No VTK data available for embedded rendering, falling back to ParaView server visualization")
             
-            # Get VTK data
-            vtk_data = None
-            if hasattr(self.current_source, 'GetClientSideObject'):
-                # ParaView server source
-                self.current_source.UpdatePipeline()
-                vtk_data = self.current_source.GetClientSideObject().GetOutput()
-            elif hasattr(self.current_source, 'GetOutput'):
-                # Direct VTK source
-                self.current_source.Update()
-                vtk_data = self.current_source.GetOutput()
-            
-            if not vtk_data:
-                print("⚠️ No VTK data available for field visualization")
-                return
-            
-            # Display with specific field
-            self._display_vtk_data_with_field(vtk_data, field_info)
-            
-            print(f"✅ Successfully displayed field: {field_info['display_name']}")
+            # FALLBACK: Use ParaView server-side visualization
+            print("🔄 Using ParaView server-side field visualization...")
+            self._show_field_server_side(field_name, field_info)
             
         except Exception as e:
             print(f"❌ Error showing field {field_name}: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _show_field_server_side(self, field_name: str, field_info):
+        """Show field using ParaView server-side visualization (for remote connections)"""
+        try:
+            from paraview.simple import Show, Hide, ColorBy, GetActiveView, CreateRenderView, GetDisplayProperties, GetScalarBar, Render
+            
+            # Get or create a ParaView view
+            view = GetActiveView()
+            if not view:
+                print("🔧 Creating ParaView render view for server-side visualization")
+                view = CreateRenderView()
+            
+            # Show the data in the view
+            display = Show(self.current_source, view)
+            
+            # Set up field coloring
+            if field_info['type'] == 'cell':
+                print(f"🎨 Setting cell field coloring: {field_name}")
+                ColorBy(display, ('CELLS', field_name))
+            elif field_info['type'] == 'point':
+                print(f"🎨 Setting point field coloring: {field_name}")
+                ColorBy(display, ('POINTS', field_name))
+            
+            # Try to get and show color bar
+            try:
+                scalar_bar = GetScalarBar(field_name, view)
+                if scalar_bar:
+                    scalar_bar.Title = field_info['display_name']
+                    scalar_bar.Visibility = 1
+                    print(f"🎨 Color bar configured for {field_info['display_name']}")
+            except Exception as bar_error:
+                print(f"⚠️ Could not configure color bar: {bar_error}")
+            
+            # Render the view
+            Render(view)
+            
+            print(f"✅ Server-side visualization updated with field: {field_info['display_name']}")
+            
+            # Update the embedded widget area to show information
+            if hasattr(self, 'visualization_area'):
+                self.visualization_area.setText(
+                    f"Field visualization: {field_info['display_name']}\n\n"
+                    f"Visualization is shown in separate ParaView window.\n\n"
+                    f"Field: {field_name} ({field_info['type']} data)\n"
+                    f"To enable embedded visualization:\n"
+                    f"• Ensure stable network connection\n"
+                    f"• Check server OpenGL configuration"
+                )
+            
+        except Exception as e:
+            print(f"❌ Server-side field visualization failed: {e}")
             import traceback
             traceback.print_exc()
     
@@ -1590,9 +2399,18 @@ class ParaViewWidget(QWidget):
                 print(f"⚠️ Field array '{field_info['name']}' not found")
                 return
             
-            # Get data range
-            data_range = field_array.GetRange()
-            print(f"📊 Field '{field_info['name']}' range: {data_range}")
+            # Get data range - use global range for consistent coloring across time steps
+            local_range = field_array.GetRange()
+            field_name = field_info['name']
+            
+            # Use global range if available, otherwise fall back to local range
+            if hasattr(self, 'global_field_ranges') and field_name in self.global_field_ranges:
+                global_range = self.global_field_ranges[field_name]
+                data_range = (global_range['min'], global_range['max'])
+                print(f"📊 Field '{field_name}' using global range: {data_range} (local was: {local_range})")
+            else:
+                data_range = local_range
+                print(f"📊 Field '{field_name}' using local range: {data_range} (no global range available)")
             
             # Create custom lookup table based on field type
             lut = self._create_field_lookup_table(field_info, data_range)
@@ -1606,7 +2424,20 @@ class ParaViewWidget(QWidget):
             actor.SetMapper(mapper)
             actor.GetProperty().SetOpacity(0.8)
             
-            # Create color bar
+            # Remove any existing scalar bars to prevent duplicates
+            actors_to_remove = []
+            actor_collection = self.renderer.GetActors2D()
+            actor_collection.InitTraversal()
+            for i in range(actor_collection.GetNumberOfItems()):
+                actor = actor_collection.GetNextItem()
+                if actor and actor.GetClassName() == 'vtkScalarBarActor':
+                    actors_to_remove.append(actor)
+            
+            for old_scalar_bar in actors_to_remove:
+                self.renderer.RemoveActor2D(old_scalar_bar)
+                print("🗑️ Removed existing scalar bar to prevent duplicates")
+            
+            # Create new color bar
             scalar_bar = vtk_local.vtkScalarBarActor()
             scalar_bar.SetLookupTable(lut)
             scalar_bar.SetTitle(field_info['display_name'])
@@ -1828,90 +2659,94 @@ class ParaViewWidget(QWidget):
             lut.SetTableValue(i, r + m, g + m, b + m, 1.0)
     
     def setup_time_steps(self):
-        """Setup time step controls by scanning available time directories"""
+        """Setup time step controls using ParaView reader's time information for remote connections"""
         if not self.current_source:
             return
         
         try:
-            # Get the base directory path from the OpenFOAM file
-            foam_file_path = None
+            # For remote ParaView connections, use the reader's built-in time information
+            # instead of trying to scan local filesystem paths
             
-            # Try different ways to get the file path
-            if hasattr(self.current_source, 'FileName'):
-                # VTK sources have FileName attribute
-                foam_file_path = self.current_source.FileName
-            elif hasattr(self.current_source, 'GetFileName'):
-                # Some VTK sources have GetFileName method
-                try:
-                    foam_file_path = self.current_source.GetFileName()
-                except:
-                    pass
+            print("🔍 Setting up time steps from ParaView reader...")
             
-            # Fallback to widget-stored path
-            if not foam_file_path:
-                foam_file_path = getattr(self, '_foam_file_path', None)
-            
-            if not foam_file_path:
-                logger.info("No file path available for time step detection")
-                print("⚠️ No file path found for time step detection")
+            # Get time steps directly from the ParaView reader
+            time_values = []
+            if hasattr(self.current_source, 'TimestepValues'):
+                time_values = list(self.current_source.TimestepValues)
+                print(f"📊 Reader provides time values: {time_values}")
+            else:
+                print("⚠️ Reader does not provide time step values")
                 return
-                
-            # Get the directory containing the .foam file
-            from pathlib import Path
-            base_dir = Path(foam_file_path).parent
             
-            # Scan for time directories (numeric folder names)
-            time_dirs = []
-            for item in base_dir.iterdir():
-                if item.is_dir():
+            if time_values:
+                # Sort time values
+                time_values.sort()
+                
+                self.time_steps = time_values
+                # Store the original file path for reloading if available
+                foam_file_path = None
+                if hasattr(self.current_source, 'FileName'):
+                    foam_file_path = self.current_source.FileName
+                elif hasattr(self.current_source, 'GetFileName'):
                     try:
-                        # Try to convert directory name to float (time value)
-                        time_value = float(item.name)
-                        time_dirs.append((time_value, item))
-                    except ValueError:
-                        # Skip non-numeric directories (like 'constant', 'system', etc.)
-                        continue
-            
-            # Sort by time value
-            time_dirs.sort(key=lambda x: x[0])
-            
-            if time_dirs:
-                self.time_steps = [time_val for time_val, _ in time_dirs]
-                self.time_directories = [str(path) for _, path in time_dirs]
+                        foam_file_path = self.current_source.GetFileName()
+                    except:
+                        pass
                 
-                # Store the original file path for reloading
-                self._foam_file_path = foam_file_path
+                if not foam_file_path:
+                    foam_file_path = getattr(self, '_foam_file_path', None)
                 
-                # CRITICAL FIX: Filter time steps to match what the reader actually has
-                if hasattr(self.current_source, 'TimestepValues'):
-                    reader_time_values = list(self.current_source.TimestepValues)
-                    print(f"🔍 DEBUG: Reader has time values: {reader_time_values}")
-                    print(f"🔍 DEBUG: UI detected time steps: {self.time_steps}")
-                    
-                    # Only keep time steps that the reader actually has
-                    filtered_time_steps = [t for t in self.time_steps if t in reader_time_values]
-                    if filtered_time_steps != self.time_steps:
-                        print(f"⚠️ Time step mismatch detected - filtering to match reader")
-                        print(f"🔧 Filtered time steps: {filtered_time_steps}")
-                        self.time_steps = filtered_time_steps
+                if foam_file_path:
+                    self._foam_file_path = foam_file_path
                 
                 # Enable time controls
                 self.time_slider.setRange(0, len(self.time_steps) - 1)
                 self.time_slider.setValue(0)
                 self.time_slider.setEnabled(True)
+                self.first_frame_btn.setEnabled(True)
                 self.prev_time_btn.setEnabled(True)
+                self.play_pause_btn.setEnabled(True)
                 self.next_time_btn.setEnabled(True)
+                self.last_frame_btn.setEnabled(True)
                 self.update_time_label()
                 
-                logger.info(f"Found {len(self.time_steps)} time steps: {self.time_steps}")
+                logger.info(f"Found {len(self.time_steps)} time steps from ParaView reader: {self.time_steps}")
                 print(f"🕐 Time steps available: {self.time_steps}")
             else:
-                logger.info("No time directories found")
-                print("⚠️ No time directories found in the data")
+                logger.info("No time steps found in ParaView reader")
+                print("⚠️ No time steps found in ParaView reader")
+                
+                # Disable time controls if no time steps
+                if hasattr(self, 'time_slider'):
+                    self.time_slider.setEnabled(False)
+                if hasattr(self, 'first_frame_btn'):
+                    self.first_frame_btn.setEnabled(False)
+                if hasattr(self, 'prev_time_btn'):
+                    self.prev_time_btn.setEnabled(False)
+                if hasattr(self, 'play_pause_btn'):
+                    self.play_pause_btn.setEnabled(False)
+                if hasattr(self, 'next_time_btn'):
+                    self.next_time_btn.setEnabled(False)
+                if hasattr(self, 'last_frame_btn'):
+                    self.last_frame_btn.setEnabled(False)
                         
         except Exception as e:
             logger.error(f"Failed to setup time steps: {str(e)}")
             print(f"⚠️ Time step setup failed: {e}")
+            
+            # Disable time controls on error
+            if hasattr(self, 'time_slider'):
+                self.time_slider.setEnabled(False)
+            if hasattr(self, 'first_frame_btn'):
+                self.first_frame_btn.setEnabled(False)
+            if hasattr(self, 'prev_time_btn'):
+                self.prev_time_btn.setEnabled(False)
+            if hasattr(self, 'play_pause_btn'):
+                self.play_pause_btn.setEnabled(False)
+            if hasattr(self, 'next_time_btn'):
+                self.next_time_btn.setEnabled(False)
+            if hasattr(self, 'last_frame_btn'):
+                self.last_frame_btn.setEnabled(False)
     
     def set_time_step(self, step: int):
         """Set the current time step using proper ParaView client-server time navigation"""
@@ -1955,7 +2790,7 @@ class ParaViewWidget(QWidget):
             
             # Method 1: Set time using animation scene and force server update
             try:
-                from paraview.simple import GetAnimationScene, GetTimeKeeper, UpdatePipeline
+                from paraview.simple import GetAnimationScene, GetTimeKeeper, UpdatePipeline, Render, GetActiveView
                 
                 # Set the animation time
                 scene = GetAnimationScene()
@@ -1978,76 +2813,110 @@ class ParaViewWidget(QWidget):
                     self.current_source.UpdatePipeline()
                     print("🔄 Used standard pipeline update")
                 
-                # Get the updated data from server
-                vtk_data = self.current_source.GetClientSideObject().GetOutput()
-                
-                if vtk_data and vtk_data.GetNumberOfPoints() > 0:
-                    print(f"📊 Received data with {vtk_data.GetNumberOfPoints()} points")
+                # Try embedded rendering first
+                if hasattr(self, 'renderer') and self.renderer:
+                    print("🎯 Attempting embedded rendering for time step")
                     
-                    # Verify we got the correct time step data
+                    # Try to get the updated data from server using Fetch()
+                    vtk_data = None
                     try:
-                        if vtk_data.GetClassName() == 'vtkMultiBlockDataSet' and vtk_data.GetNumberOfBlocks() > 0:
-                            block = vtk_data.GetBlock(0)
-                            if block and hasattr(block, 'GetCellData'):
-                                cell_data = block.GetCellData()
-                                if cell_data.GetArray('p'):
-                                    pressure_array = cell_data.GetArray('p')
-                                    data_range = pressure_array.GetRange()
-                                    if pressure_array.GetNumberOfTuples() > 10:
-                                        sample_values = [pressure_array.GetValue(i) for i in [0, 100, 1000, 5000]]
-                                        print(f"🔍 Pressure range for t={time_value}: {data_range}")
-                                        print(f"🔍 Sample pressure values: {sample_values}")
-                    except Exception as verify_error:
-                        print(f"⚠️ Could not verify data: {verify_error}")
-                    
-                    # Clear current visualization
-                    if hasattr(self, 'renderer') and self.renderer:
-                        self.renderer.RemoveAllViewProps()
-                    
-                    # Display the updated data with current field selection
-                    if hasattr(self, 'current_field') and self.current_field:
-                        # Find the field info for the current field
-                        field_info = None
-                        for field in self.available_fields:
-                            if field['name'] == self.current_field:
-                                field_info = field
-                                break
-                        
-                        if field_info:
-                            print(f"🎯 Preserving current field: {self.current_field}")
-                            self._display_vtk_data_with_field(vtk_data, field_info)
+                        import paraview.servermanager as sm
+                        vtk_data = sm.Fetch(self.current_source)
+                        if vtk_data:
+                            print(f"📊 Fetched VTK data for time step: {vtk_data.GetClassName()}")
+                            if hasattr(vtk_data, 'GetNumberOfPoints'):
+                                print(f"   Points: {vtk_data.GetNumberOfPoints()}")
                         else:
-                            print(f"⚠️ Current field {self.current_field} not found, using default display")
-                            self._display_vtk_data(vtk_data)
-                    else:
-                        print("🔄 No current field set, using default display")
-                        self._display_vtk_data(vtk_data)
-                    
-                    # Restore camera position
-                    if hasattr(self, '_saved_camera_position') and self._saved_camera_position:
+                            print("⚠️ Fetch() returned None for time step")
+                    except Exception as fetch_error:
+                        print(f"⚠️ Fetch() failed for time step: {fetch_error}")
+                        
+                        # Fallback to GetClientSideObject
                         try:
-                            camera = self.renderer.GetActiveCamera()
-                            camera.SetPosition(self._saved_camera_position)
-                            camera.SetFocalPoint(self._saved_camera_focal_point)
-                            camera.SetViewUp(self._saved_camera_view_up)
-                            print("📷 Restored camera position")
-                        except Exception as restore_error:
-                            print(f"⚠️ Could not restore camera position: {restore_error}")
+                            client_side_obj = self.current_source.GetClientSideObject()
+                            if client_side_obj:
+                                vtk_data = client_side_obj.GetOutput()
+                                print(f"📊 Fallback: Got VTK data via GetClientSideObject")
+                                if vtk_data and hasattr(vtk_data, 'GetNumberOfPoints'):
+                                    print(f"   Points: {vtk_data.GetNumberOfPoints()}")
+                        except Exception as data_error:
+                            print(f"⚠️ Fallback GetClientSideObject also failed: {data_error}")
+                    
+                    if vtk_data and vtk_data.GetNumberOfPoints() > 0:
+                        # Clear current visualization
+                        self.renderer.RemoveAllViewProps()
+                        
+                        # Display the updated data with current field selection
+                        if hasattr(self, 'current_field') and self.current_field:
+                            # Find the field info for the current field
+                            field_info = None
+                            for field in self.available_fields:
+                                if field['name'] == self.current_field:
+                                    field_info = field
+                                    break
+                            
+                            if field_info:
+                                print(f"🎯 Preserving current field: {self.current_field}")
+                                self._display_vtk_data_with_field(vtk_data, field_info)
+                            else:
+                                print(f"⚠️ Current field {self.current_field} not found, using default display")
+                                self._display_vtk_data(vtk_data)
+                        else:
+                            print("🔄 No current field set, using default display")
+                            self._display_vtk_data(vtk_data)
+                        
+                        # Restore camera position
+                        if hasattr(self, '_saved_camera_position') and self._saved_camera_position:
+                            try:
+                                camera = self.renderer.GetActiveCamera()
+                                camera.SetPosition(self._saved_camera_position)
+                                camera.SetFocalPoint(self._saved_camera_focal_point)
+                                camera.SetViewUp(self._saved_camera_view_up)
+                                print("📷 Restored camera position")
+                            except Exception as restore_error:
+                                print(f"⚠️ Could not restore camera position: {restore_error}")
+                                self.renderer.ResetCamera()
+                        else:
                             self.renderer.ResetCamera()
+                        
+                        # Render the updated visualization
+                        if hasattr(self, 'vtk_widget') and self.vtk_widget:
+                            self.vtk_widget.GetRenderWindow().Render()
+                        
+                        print(f"✅ Successfully updated embedded visualization for t={time_value}")
+                        self.update_time_label()
+                        return
                     else:
-                        self.renderer.ResetCamera()
+                        print("⚠️ No VTK data available for embedded rendering")
+                
+                # FALLBACK: Use server-side rendering (separate window)
+                print("🔄 Using server-side rendering for time step update")
+                
+                # Update server-side visualization by rendering the view
+                view = GetActiveView()
+                if view:
+                    Render(view)
+                    print(f"✅ Server-side visualization updated for t={time_value}")
                     
-                    # Render the updated visualization
-                    if hasattr(self, 'vtk_widget') and self.vtk_widget:
-                        self.vtk_widget.GetRenderWindow().Render()
-                    
-                    print(f"✅ Successfully updated visualization for t={time_value}")
-                    self.update_time_label()
-                    return
-                    
+                    # Update the embedded widget area to show current time
+                    if hasattr(self, 'visualization_area'):
+                        field_name = getattr(self, 'current_field', 'Default')
+                        self.visualization_area.setText(
+                            f"Time: {time_value:.3f}s\n"
+                            f"Field: {field_name}\n\n"
+                            f"Visualization is shown in separate ParaView window.\n\n"
+                            f"Use Time Controls to navigate through time steps.\n"
+                            f"Use Field buttons to change visualization.\n\n"
+                            f"To enable embedded visualization:\n"
+                            f"• Ensure stable network connection\n"
+                            f"• Check server OpenGL configuration"
+                        )
                 else:
-                    print("⚠️ No data received from server")
-                    
+                    print("⚠️ No active ParaView view for server-side rendering")
+                
+                self.update_time_label()
+                return
+                
             except Exception as e1:
                 print(f"⚠️ Client-server time navigation failed: {e1}")
                 import traceback
@@ -2076,13 +2945,33 @@ class ParaViewWidget(QWidget):
                             self.current_source.UpdateVTKObjects()
                             self.current_source.UpdatePipeline()
                             
-                            # Get the data
-                            vtk_data = self.current_source.GetClientSideObject().GetOutput()
+                            # Try embedded rendering if possible - use Fetch() first
+                            vtk_data = None
+                            try:
+                                import paraview.servermanager as sm
+                                vtk_data = sm.Fetch(self.current_source)
+                                if vtk_data:
+                                    print(f"📊 Fallback: Fetched VTK data for time step")
+                                    if hasattr(vtk_data, 'GetNumberOfPoints'):
+                                        print(f"   Points: {vtk_data.GetNumberOfPoints()}")
+                                else:
+                                    print("⚠️ Fallback: Fetch() returned None")
+                            except Exception as fetch_error:
+                                print(f"⚠️ Fallback: Fetch() failed: {fetch_error}")
+                                
+                                # Final fallback to GetClientSideObject
+                                try:
+                                    client_side_obj = self.current_source.GetClientSideObject()
+                                    if client_side_obj:
+                                        vtk_data = client_side_obj.GetOutput()
+                                        print(f"📊 Final fallback: Got VTK data via GetClientSideObject")
+                                        if vtk_data and hasattr(vtk_data, 'GetNumberOfPoints'):
+                                            print(f"   Points: {vtk_data.GetNumberOfPoints()}")
+                                except Exception as data_error:
+                                    print(f"⚠️ Final fallback: GetClientSideObject failed: {data_error}")
                             
                             if vtk_data and vtk_data.GetNumberOfPoints() > 0:
-                                print(f"📊 Fallback received data with {vtk_data.GetNumberOfPoints()} points")
-                                
-                                # Clear and display
+                                # Embedded rendering available
                                 if hasattr(self, 'renderer') and self.renderer:
                                     self.renderer.RemoveAllViewProps()
                                 
@@ -2121,9 +3010,34 @@ class ParaViewWidget(QWidget):
                                 if hasattr(self, 'vtk_widget') and self.vtk_widget:
                                     self.vtk_widget.GetRenderWindow().Render()
                                 
-                                print(f"✅ Fallback successfully updated visualization for t={time_value}")
-                                self.update_time_label()
-                                return
+                                print(f"✅ Fallback embedded rendering successful for t={time_value}")
+                            else:
+                                # Fall back to server-side rendering
+                                print("🔄 Fallback: Using server-side rendering")
+                                from paraview.simple import Render, GetActiveView
+                                
+                                view = GetActiveView()
+                                if view:
+                                    Render(view)
+                                    print(f"✅ Fallback server-side rendering successful for t={time_value}")
+                                    
+                                    # Update the embedded widget area
+                                    if hasattr(self, 'visualization_area'):
+                                        field_name = getattr(self, 'current_field', 'Default')
+                                        self.visualization_area.setText(
+                                            f"Time: {time_value:.3f}s\n"
+                                            f"Field: {field_name}\n\n"
+                                            f"Updated via fallback method.\n"
+                                            f"Visualization in separate ParaView window.\n\n"
+                                            f"To enable embedded visualization:\n"
+                                            f"• Check network stability\n"
+                                            f"• Verify server configuration"
+                                        )
+                                else:
+                                    print("⚠️ No active view for fallback server-side rendering")
+                            
+                            self.update_time_label()
+                            return
                         else:
                             print(f"⚠️ Time {time_value} not found in reader time values: {time_values}")
                     else:
@@ -2196,8 +3110,9 @@ class ParaViewWidget(QWidget):
                 mapper.SelectColorArray('U')
                 mapper.SetColorModeToMapScalars()
             
-            # Get the actual data range for proper color mapping
+            # Get the actual data range for proper color mapping - use global range if available
             data_range = None
+            active_field_name = None
             try:
                 # Debug: Check what arrays are available
                 cell_data = vtk_data.GetCellData()
@@ -2207,41 +3122,60 @@ class ParaViewWidget(QWidget):
                     array_name = array.GetName() if array else "Unknown"
                     print(f"   [{i}] {array_name}")
                 
-                # Try to get the pressure field array
-                pressure_array = None
-                if cell_data.GetArray('p'):
-                    pressure_array = cell_data.GetArray('p')
-                    print(f"✅ Found pressure array 'p'")
+                # Try to get the current field or default to pressure
+                target_field = getattr(self, 'current_field', 'p')
+                field_array = None
+                
+                if cell_data.GetArray(target_field):
+                    field_array = cell_data.GetArray(target_field)
+                    active_field_name = target_field
+                    print(f"✅ Found target field '{target_field}'")
+                elif cell_data.GetArray('p'):
+                    field_array = cell_data.GetArray('p')
+                    active_field_name = 'p'
+                    print(f"✅ Found pressure array 'p' as fallback")
                 elif cell_data.GetNumberOfArrays() > 0:
-                    # If 'p' not found, look for any array that might be pressure
+                    # If target field not found, look for any array that might be pressure
                     for i in range(cell_data.GetNumberOfArrays()):
                         array = cell_data.GetArray(i)
                         array_name = array.GetName() if array else ""
                         if 'p' in array_name.lower() or i == 4:  # 'p' is usually array 4 in OpenFOAM
-                            pressure_array = array
+                            field_array = array
+                            active_field_name = array_name
                             print(f"✅ Found pressure-like array: '{array_name}' at index {i}")
                             break
                 
-                if pressure_array:
-                    data_range = pressure_array.GetRange()
-                    print(f"📊 Pressure data range: {data_range}")
+                if field_array:
+                    local_range = field_array.GetRange()
+                    
+                    # Use global range if available for consistent coloring
+                    if (hasattr(self, 'global_field_ranges') and 
+                        active_field_name in self.global_field_ranges):
+                        global_range = self.global_field_ranges[active_field_name]
+                        data_range = (global_range['min'], global_range['max'])
+                        print(f"📊 Using global range for {active_field_name}: {data_range} (local was: {local_range})")
+                    else:
+                        data_range = local_range
+                        print(f"📊 Using local range for {active_field_name}: {data_range}")
                     
                     # Force the mapper to use this specific array
                     mapper.SetScalarModeToUseCellFieldData()
-                    mapper.SelectColorArray(pressure_array.GetName())
+                    mapper.SelectColorArray(field_array.GetName())
                     mapper.SetColorModeToMapScalars()
-                    print(f"🎯 Forced mapper to use array: {pressure_array.GetName()}")
+                    print(f"🎯 Forced mapper to use array: {field_array.GetName()}")
                 else:
-                    print(f"⚠️ No pressure field found, using fallback")
+                    print(f"⚠️ No field found, using fallback")
                     # Force mapper to use cell data and update
                     mapper.SetInputData(vtk_data)
                     mapper.Update()
                     data_range = mapper.GetInput().GetScalarRange()
+                    active_field_name = "Unknown"
                     print(f"📊 Fallback data range: {data_range}")
                     
             except Exception as range_error:
                 print(f"⚠️ Could not get data range: {range_error}")
                 data_range = (0.0, 1.0)  # Safe fallback
+                active_field_name = "Unknown"
 
             # Create custom blue-gray-red lookup table
             try:
@@ -2297,17 +3231,44 @@ class ParaViewWidget(QWidget):
             actor.SetMapper(mapper)
             actor.GetProperty().SetOpacity(0.8)
             
+            # Remove any existing scalar bars to prevent duplicates
+            actors_to_remove = []
+            actor_collection = self.renderer.GetActors2D()
+            actor_collection.InitTraversal()
+            for i in range(actor_collection.GetNumberOfItems()):
+                actor = actor_collection.GetNextItem()
+                if actor and actor.GetClassName() == 'vtkScalarBarActor':
+                    actors_to_remove.append(actor)
+            
+            for old_scalar_bar in actors_to_remove:
+                self.renderer.RemoveActor2D(old_scalar_bar)
+                print("🗑️ Removed existing scalar bar to prevent duplicates")
+            
             # Create color bar
             scalar_bar = None
             try:
                 scalar_bar = vtk_local.vtkScalarBarActor()
                 scalar_bar.SetLookupTable(mapper.GetLookupTable())
-                scalar_bar.SetTitle("Pressure")
-                scalar_bar.SetWidth(0.1)
+                
+                # Set title based on the active field
+                if active_field_name and active_field_name != "Unknown":
+                    display_name = self._get_field_display_name(active_field_name)
+                    scalar_bar.SetTitle(display_name)
+                else:
+                    scalar_bar.SetTitle("Pressure")  # Default fallback
+                
+                scalar_bar.SetWidth(0.12)
                 scalar_bar.SetHeight(0.8)
                 scalar_bar.SetPosition(0.85, 0.1)
                 scalar_bar.SetNumberOfLabels(7)
-                print("🎨 Added color bar legend")
+                
+                # Style the color bar
+                scalar_bar.GetTitleTextProperty().SetFontSize(12)
+                scalar_bar.GetLabelTextProperty().SetFontSize(10)
+                scalar_bar.GetTitleTextProperty().SetColor(1.0, 1.0, 1.0)
+                scalar_bar.GetLabelTextProperty().SetColor(1.0, 1.0, 1.0)
+                
+                print(f"🎨 Added color bar legend for {scalar_bar.GetTitle()}")
                 
             except Exception as bar_error:
                 print(f"⚠️ Color bar creation failed: {bar_error}")
@@ -2415,6 +3376,8 @@ class ParaViewWidget(QWidget):
         if hasattr(self, 'time_slider'):
             self.time_slider.setEnabled(False)
         
+        # Note: Load Results button is handled separately since it depends on connection state
+        
         print("⚠️ Visualization controls disabled")
     
     def show_error(self, message: str):
@@ -2474,22 +3437,109 @@ class ParaViewWidget(QWidget):
         available_fields = []
         
         try:
-            print("🔍 Detecting available fields from server data...")
+            print("🔍 Detecting available fields from ParaView reader properties...")
             
-            # Get the VTK data from the current source
+            # FIRST: Try to get fields from ParaView reader properties (works with remote servers)
+            if hasattr(self.current_source, 'CellArrays') and hasattr(self.current_source, 'PointArrays'):
+                print("🎯 Using ParaView reader array properties for field detection")
+                
+                # Get cell arrays from reader properties
+                try:
+                    if hasattr(self.current_source.CellArrays, 'Available'):
+                        cell_arrays = list(self.current_source.CellArrays.Available)
+                        print(f"📊 Found {len(cell_arrays)} cell arrays from reader: {cell_arrays}")
+                        
+                        for i, array_name in enumerate(cell_arrays):
+                            field_info = {
+                                'name': array_name,
+                                'display_name': self._get_field_display_name(array_name),
+                                'type': 'cell',
+                                'size': 'Unknown',  # Can't get size from reader properties
+                                'components': 'Unknown',  # Can't get components from reader properties  
+                                'range': (0.0, 1.0),  # Will be updated when data is accessed
+                                'array_index': i
+                            }
+                            available_fields.append(field_info)
+                            print(f"   📊 Cell field: {array_name}")
+                            
+                except Exception as cell_error:
+                    print(f"⚠️ Failed to get cell arrays from reader: {cell_error}")
+                
+                # Get point arrays from reader properties
+                try:
+                    if hasattr(self.current_source.PointArrays, 'Available'):
+                        point_arrays = list(self.current_source.PointArrays.Available)
+                        print(f"📊 Found {len(point_arrays)} point arrays from reader: {point_arrays}")
+                        
+                        for i, array_name in enumerate(point_arrays):
+                            field_info = {
+                                'name': array_name,
+                                'display_name': self._get_field_display_name(array_name),
+                                'type': 'point',
+                                'size': 'Unknown',
+                                'components': 'Unknown',
+                                'range': (0.0, 1.0),
+                                'array_index': i
+                            }
+                            available_fields.append(field_info)
+                            print(f"   📊 Point field: {array_name}")
+                            
+                except Exception as point_error:
+                    print(f"⚠️ Failed to get point arrays from reader: {point_error}")
+                
+                # If we got fields from reader properties, use them
+                if available_fields:
+                    print(f"✅ Detected {len(available_fields)} fields from ParaView reader properties")
+                    # Sort fields by importance
+                    available_fields.sort(key=lambda x: self._get_field_priority(x['name']))
+                    return available_fields
+            
+            # FALLBACK: Try to get VTK data for detailed field information using Fetch()
+            print("🔄 Fallback: Trying to get VTK data for detailed field information...")
             vtk_data = None
-            if hasattr(self.current_source, 'GetClientSideObject'):
-                # ParaView server source
-                self.current_source.UpdatePipeline()
-                vtk_data = self.current_source.GetClientSideObject().GetOutput()
-            elif hasattr(self.current_source, 'GetOutput'):
-                # Direct VTK source
-                self.current_source.Update()
-                vtk_data = self.current_source.GetOutput()
             
-            if not vtk_data:
-                print("⚠️ No VTK data available for field detection")
+            # Try Fetch() first for server data
+            try:
+                import paraview.servermanager as sm
+                self.current_source.UpdatePipeline()
+                vtk_data = sm.Fetch(self.current_source)
+                if vtk_data:
+                    print(f"✅ Fetched VTK data for field detection: {vtk_data.GetClassName()}")
+                else:
+                    print("⚠️ Fetch() returned None for field detection")
+            except Exception as fetch_error:
+                print(f"⚠️ Fetch() failed for field detection: {fetch_error}")
+                
+                # Original fallback methods
+                if hasattr(self.current_source, 'GetClientSideObject'):
+                    # ParaView server source
+                    try:
+                        self.current_source.UpdatePipeline()
+                        client_side_obj = self.current_source.GetClientSideObject()
+                        if client_side_obj:
+                            vtk_data = client_side_obj.GetOutput()
+                            print(f"✅ Got VTK data via GetClientSideObject: {vtk_data}")
+                        else:
+                            print("⚠️ GetClientSideObject returned None")
+                    except Exception as e:
+                        print(f"⚠️ GetClientSideObject failed: {e}")
+                        
+                elif hasattr(self.current_source, 'GetOutput'):
+                    # Direct VTK source
+                    try:
+                        self.current_source.Update()
+                        vtk_data = self.current_source.GetOutput()
+                        print(f"✅ Got VTK data via GetOutput: {vtk_data}")
+                    except Exception as e:
+                        print(f"⚠️ GetOutput failed: {e}")
+            
+            # If VTK data is not available but we detected fields from reader properties, that's fine
+            if not vtk_data and not available_fields:
+                print("⚠️ No VTK data available and no fields from reader properties")
                 return []
+            elif not vtk_data:
+                print("⚠️ No VTK data for detailed info, but using fields from reader properties")
+                return available_fields
             
             # Handle multi-block datasets
             if vtk_data.GetClassName() == 'vtkMultiBlockDataSet':
@@ -2598,6 +3648,111 @@ class ParaViewWidget(QWidget):
         }
         return priorities.get(field_name, 100)  # Unknown fields get low priority
     
+    def calculate_global_field_ranges(self):
+        """Calculate global min/max ranges for all fields across all time steps for consistent color scaling"""
+        if not self.current_source or not self.time_steps or not self.available_fields:
+            print("⚠️ Cannot calculate global ranges - missing source, time steps, or fields")
+            return
+        
+        print("🔄 Calculating global field ranges across all time steps...")
+        
+        try:
+            import paraview.servermanager as sm
+            from paraview.simple import GetAnimationScene, GetTimeKeeper, UpdatePipeline
+            
+            # Store current time to restore later
+            scene = GetAnimationScene()
+            original_time = scene.AnimationTime
+            
+            # Initialize global ranges
+            for field in self.available_fields:
+                field_name = field['name']
+                self.global_field_ranges[field_name] = {'min': float('inf'), 'max': float('-inf')}
+            
+            # Iterate through all time steps
+            for i, time_value in enumerate(self.time_steps):
+                if i % 2 == 0 or i == len(self.time_steps) - 1:  # Print progress every other step and the last step
+                    print(f"   📊 Processing time step {i+1}/{len(self.time_steps)}: t={time_value}")
+                
+                # Set time step
+                scene.AnimationTime = time_value
+                time_keeper = GetTimeKeeper()
+                time_keeper.Time = time_value
+                
+                try:
+                    UpdatePipeline(time=time_value, proxy=self.current_source)
+                except:
+                    self.current_source.UpdatePipeline()
+                
+                # Fetch data for this time step
+                try:
+                    vtk_data = sm.Fetch(self.current_source)
+                    if not vtk_data:
+                        continue
+                    
+                    # Handle multi-block datasets
+                    if vtk_data.GetClassName() == 'vtkMultiBlockDataSet':
+                        if vtk_data.GetNumberOfBlocks() > 0:
+                            block = vtk_data.GetBlock(0)
+                            if block:
+                                vtk_data = block
+                            else:
+                                continue
+                        else:
+                            continue
+                    
+                    # Check each field
+                    for field in self.available_fields:
+                        field_name = field['name']
+                        field_type = field['type']
+                        
+                        # Get the field array
+                        field_array = None
+                        if field_type == 'cell':
+                            cell_data = vtk_data.GetCellData()
+                            field_array = cell_data.GetArray(field_name)
+                        elif field_type == 'point':
+                            point_data = vtk_data.GetPointData()
+                            field_array = point_data.GetArray(field_name)
+                        
+                        if field_array:
+                            local_range = field_array.GetRange()
+                            # Update global range
+                            if local_range[0] < self.global_field_ranges[field_name]['min']:
+                                self.global_field_ranges[field_name]['min'] = local_range[0]
+                            if local_range[1] > self.global_field_ranges[field_name]['max']:
+                                self.global_field_ranges[field_name]['max'] = local_range[1]
+                
+                except Exception as fetch_error:
+                    if i % 5 == 0:  # Only print errors occasionally to reduce log spam
+                        print(f"   ⚠️ Failed to fetch data at time {time_value}: {fetch_error}")
+                    continue
+            
+            # Restore original time
+            scene.AnimationTime = original_time
+            time_keeper.Time = original_time
+            try:
+                UpdatePipeline(time=original_time, proxy=self.current_source)
+            except:
+                self.current_source.UpdatePipeline()
+            
+            # Print final global ranges
+            print("✅ Global field ranges calculated:")
+            for field_name, ranges in self.global_field_ranges.items():
+                if ranges['min'] != float('inf') and ranges['max'] != float('-inf'):
+                    print(f"   {field_name}: ({ranges['min']:.3f}, {ranges['max']:.3f})")
+                else:
+                    print(f"   {field_name}: No valid data found")
+                    # Set reasonable defaults
+                    self.global_field_ranges[field_name] = {'min': 0.0, 'max': 1.0}
+            
+        except Exception as e:
+            print(f"❌ Failed to calculate global field ranges: {e}")
+            # Set reasonable defaults for all fields
+            for field in self.available_fields:
+                field_name = field['name']
+                self.global_field_ranges[field_name] = {'min': 0.0, 'max': 1.0}
+
     def create_field_buttons(self):
         """Create dynamic field buttons based on detected fields"""
         if not hasattr(self, 'field_buttons_container'):
@@ -3036,3 +4191,4 @@ class ParaViewWidget(QWidget):
             interval = int(self.speed_control.value() * 1000)
             self.playback_timer.start(interval)
             print(f"🎬 Updated playback speed to {self.speed_control.value()} s/frame")
+    

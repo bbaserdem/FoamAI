@@ -6,488 +6,582 @@ import logging
 from typing import Optional, Dict, Any
 from datetime import datetime
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
-                               QLineEdit, QLabel, QFrame, QTextEdit, QMessageBox, QDialog)
+                               QLineEdit, QLabel, QFrame, QTextEdit, QMessageBox, QDialog,
+                               QProgressBar)
 from PySide6.QtCore import Qt, QTimer, Signal, QThread, QObject
 from PySide6.QtGui import QFont
 
-from api_client import APIClient
+from api_client import ProjectAPIClient
 from simulation_state import SimulationState, ComponentState, MeshData, SolverData, ParametersData
 from simulation_cards import MeshCard, SolverCard, ParametersCard
-from detail_dialogs import MeshDetailDialog, SolverDetailDialog, ParametersDetailDialog
+from langgraph_interface import LangGraphInterface
 
 logger = logging.getLogger(__name__)
 
-class AIWorker(QObject):
-    """Worker thread for AI API calls"""
-    
-    # Signals
-    response_received = Signal(dict)
-    error_occurred = Signal(str)
-    
-    def __init__(self, api_client: APIClient):
-        super().__init__()
-        self.api_client = api_client
-    
-    def process_scenario(self, scenario: str, current_state: dict):
-        """Process scenario with AI"""
-        try:
-            # For now, return dummy responses
-            # TODO: Replace with actual API calls
-            response = self.generate_dummy_response(scenario, current_state)
-            self.response_received.emit(response)
-        except Exception as e:
-            self.error_occurred.emit(str(e))
-    
-    def generate_dummy_response(self, scenario: str, current_state: dict) -> dict:
-        """Generate dummy AI response for testing"""
-        # Simulate processing time
-        import time
-        time.sleep(1)
-        
-        # Generate dummy mesh data
-        mesh_data = {
-            "description": f"Cube mesh for scenario: {scenario[:50]}...",
-            "file_path": "/tmp/dummy_mesh.foam",
-            "file_type": "foam",
-            "content": "// Dummy OpenFOAM mesh content\n// Generated for: " + scenario,
-            "generated_by_ai": True
-        }
-        
-        # Generate dummy solver data
-        solver_data = {
-            "name": "simpleFoam",
-            "description": "Steady-state solver for incompressible, turbulent flows",
-            "justification": f"Selected simpleFoam for this scenario because it handles the wind flow around objects effectively.",
-            "parameters": {"turbulence": "RAS", "scheme": "SIMPLE"},
-            "generated_by_ai": True
-        }
-        
-        # Generate dummy parameters data
-        parameters_data = {
-            "description": f"Wind simulation parameters for scenario: {scenario[:50]}...",
-            "parameters": {
-                "windSpeed": "10 m/s",
-                "density": "1.2 kg/m³",
-                "viscosity": "1.5e-5 m²/s",
-                "iterations": "1000"
-            },
-            "generated_by_ai": True
-        }
-        
-        return {
-            "status": "success",
-            "message": "Simulation components generated successfully!",
-            "mesh": mesh_data,
-            "solver": solver_data,
-            "parameters": parameters_data
-        }
 
 class SimulationSetupWidget(QWidget):
-    """Main simulation setup widget"""
+    """Main simulation setup widget with LangGraph integration."""
     
     # Signals
-    mesh_file_ready = Signal(str)
-    results_ready = Signal(str)
-    simulation_started = Signal(str)
+    workflow_started = Signal()
+    workflow_completed = Signal(dict)
+    workflow_failed = Signal(str)
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        
-        # Initialize API client
-        self.api_client = APIClient()
-        
-        # Initialize simulation state
+        self.api_client = None
+        self.current_project = None
+        self.langgraph_interface = None
         self.simulation_state = SimulationState()
         
-        # Setup worker thread
-        self.worker_thread = QThread()
-        self.worker = AIWorker(self.api_client)
-        self.worker.moveToThread(self.worker_thread)
-        self.worker_thread.start()
-        
-        # Connect worker signals
-        self.worker.response_received.connect(self.handle_ai_response)
-        self.worker.error_occurred.connect(self.handle_ai_error)
-        
-        # Setup UI
         self.setup_ui()
+        self.setup_connections()
         
-        # Connect signals
-        self.connect_signals()
-        
-        # Update UI state
-        self.update_ui_state()
+        logger.info("SimulationSetupWidget initialized")
     
     def setup_ui(self):
-        """Setup the main UI"""
+        """Set up the user interface."""
         layout = QVBoxLayout(self)
-        layout.setSpacing(15)
+        layout.setSpacing(20)
         layout.setContentsMargins(20, 20, 20, 20)
         
         # Title
-        title_label = QLabel("Simulation Setup")
-        title_label.setFont(QFont("Segoe UI", 16, QFont.Bold))
-        title_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title_label)
+        title = QLabel("CFD Simulation Setup")
+        title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
         
-        # Subtitle
-        subtitle_label = QLabel("Configure your CFD simulation components below")
-        subtitle_label.setFont(QFont("Segoe UI", 10))
-        subtitle_label.setAlignment(Qt.AlignCenter)
-        subtitle_label.setStyleSheet("color: #666; margin-bottom: 10px;")
-        layout.addWidget(subtitle_label)
+        # Input section
+        input_frame = QFrame()
+        input_frame.setFrameStyle(QFrame.Shape.Box)
+        input_frame.setStyleSheet("QFrame { border: 1px solid #ccc; border-radius: 5px; padding: 10px; }")
+        input_layout = QVBoxLayout(input_frame)
+        
+        # Prompt input
+        prompt_label = QLabel("Describe your simulation:")
+        prompt_label.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        input_layout.addWidget(prompt_label)
+        
+        self.prompt_input = QTextEdit()
+        self.prompt_input.setMaximumHeight(100)
+        self.prompt_input.setPlaceholderText("e.g., 'Flow around a cylinder at 5 m/s with a diameter of 0.1m'")
+        input_layout.addWidget(self.prompt_input)
+        
+        # Action buttons
+        button_layout = QHBoxLayout()
+        
+        self.start_button = QPushButton("Start Simulation Setup")
+        self.start_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
+        
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #da190b;
+            }
+        """)
+        self.stop_button.setEnabled(False)
+        
+        self.run_simulation_button = QPushButton("Run Simulation")
+        self.run_simulation_button.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
+        self.run_simulation_button.setEnabled(False)
+        
+        button_layout.addWidget(self.start_button)
+        button_layout.addWidget(self.stop_button)
+        button_layout.addStretch()
+        button_layout.addWidget(self.run_simulation_button)
+        
+        input_layout.addLayout(button_layout)
+        layout.addWidget(input_frame)
+        
+        # Progress section
+        progress_frame = QFrame()
+        progress_frame.setFrameStyle(QFrame.Shape.Box)
+        progress_frame.setStyleSheet("QFrame { border: 1px solid #ccc; border-radius: 5px; padding: 10px; }")
+        progress_layout = QVBoxLayout(progress_frame)
+        
+        self.progress_label = QLabel("Ready to start simulation setup")
+        progress_layout.addWidget(self.progress_label)
+        
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        progress_layout.addWidget(self.progress_bar)
+        
+        layout.addWidget(progress_frame)
+        
+        # Simulation cards
+        cards_frame = QFrame()
+        cards_layout = QVBoxLayout(cards_frame) # Changed to VBoxLayout
+        cards_layout.setSpacing(15) # Reduced spacing
         
         # Mesh card
         self.mesh_card = MeshCard()
-        layout.addWidget(self.mesh_card)
+        cards_layout.addWidget(self.mesh_card)
         
-        # Solver card
+        # Solver card  
         self.solver_card = SolverCard()
-        layout.addWidget(self.solver_card)
+        cards_layout.addWidget(self.solver_card)
         
         # Parameters card
         self.parameters_card = ParametersCard()
-        layout.addWidget(self.parameters_card)
+        cards_layout.addWidget(self.parameters_card)
         
-        # AI input area
-        ai_group = QFrame()
-        ai_group.setFrameStyle(QFrame.StyledPanel)
-        ai_group.setStyleSheet("""
-            QFrame {
-                background-color: #f8f9fa;
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
-                padding: 15px;
-            }
-        """)
-        ai_layout = QVBoxLayout(ai_group)
+        layout.addWidget(cards_frame)
         
-        ai_label = QLabel("AI Assistant")
-        ai_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        ai_layout.addWidget(ai_label)
+        # Log section
+        log_frame = QFrame()
+        log_frame.setFrameStyle(QFrame.Shape.Box)
+        log_frame.setStyleSheet("QFrame { border: 1px solid #ccc; border-radius: 5px; padding: 5px; }")
+        log_layout = QVBoxLayout(log_frame)
         
-        # AI input
-        input_layout = QHBoxLayout()
+        log_label = QLabel("Workflow Log:")
+        log_label.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        log_layout.addWidget(log_label)
         
-        self.ai_input = QLineEdit()
-        self.ai_input.setPlaceholderText("Describe your simulation scenario (e.g., '10 mph wind on a cube sitting on the ground')")
-        self.ai_input.returnPressed.connect(self.process_ai_input)
-        self.ai_input.setFont(QFont("Segoe UI", 10))
-        self.ai_input.setStyleSheet("""
-            QLineEdit {
-                border: 1px solid #ccc;
-                border-radius: 5px;
-                padding: 10px;
-                font-size: 10pt;
-            }
-        """)
-        input_layout.addWidget(self.ai_input)
+        self.log_display = QTextEdit()
+        self.log_display.setMaximumHeight(200) # Increased height
+        self.log_display.setReadOnly(True)
+        self.log_display.setStyleSheet("QTextEdit { background-color: #f5f5f5; }")
+        log_layout.addWidget(self.log_display)
         
-        self.process_button = QPushButton("Process")
-        self.process_button.clicked.connect(self.process_ai_input)
-        self.process_button.setStyleSheet("""
-            QPushButton {
-                background-color: #0078d4;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                padding: 10px 20px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #106ebe;
-            }
-            QPushButton:pressed {
-                background-color: #005a9e;
-            }
-            QPushButton:disabled {
-                background-color: #ccc;
-                color: #666;
-            }
-        """)
-        input_layout.addWidget(self.process_button)
-        
-        ai_layout.addLayout(input_layout)
-        
-        # Status label
-        self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet("color: #666; font-size: 9pt; margin-top: 5px;")
-        ai_layout.addWidget(self.status_label)
-        
-        layout.addWidget(ai_group)
-        
-        # Run simulation button
-        self.run_button = QPushButton("Run Simulation")
-        self.run_button.clicked.connect(self.run_simulation)
-        self.run_button.setEnabled(False)
-        self.run_button.setStyleSheet("""
-            QPushButton {
-                background-color: #107c10;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                padding: 15px 30px;
-                font-size: 14pt;
-                font-weight: bold;
-                margin-top: 10px;
-            }
-            QPushButton:hover {
-                background-color: #0e6e0e;
-            }
-            QPushButton:pressed {
-                background-color: #0c5d0c;
-            }
-            QPushButton:disabled {
-                background-color: #ccc;
-                color: #666;
-            }
-        """)
-        layout.addWidget(self.run_button)
-        
-        # Add stretch to push everything to the top
-        layout.addStretch()
+        layout.addWidget(log_frame)
     
-    def connect_signals(self):
-        """Connect all signals"""
-        # Card click signals
-        self.mesh_card.clicked.connect(self.show_mesh_detail)
-        self.solver_card.clicked.connect(self.show_solver_detail)
-        self.parameters_card.clicked.connect(self.show_parameters_detail)
-        
-        # Lock change signals
-        self.mesh_card.lock_changed.connect(self.on_mesh_lock_changed)
-        self.solver_card.lock_changed.connect(self.on_solver_lock_changed)
-        self.parameters_card.lock_changed.connect(self.on_parameters_lock_changed)
-        
-        # Upload signals
-        self.mesh_card.upload_clicked.connect(self.upload_mesh_file)
-        self.solver_card.upload_clicked.connect(self.show_solver_detail)
-        self.parameters_card.upload_clicked.connect(self.upload_parameters_file)
+    def setup_connections(self):
+        """Set up signal-slot connections."""
+        self.start_button.clicked.connect(self.start_workflow)
+        self.stop_button.clicked.connect(self.stop_workflow)
+        self.run_simulation_button.clicked.connect(self.run_simulation)
     
-    def update_ui_state(self):
-        """Update UI based on simulation state"""
-        # Update mesh card
-        if self.simulation_state.mesh_state != ComponentState.EMPTY:
-            self.mesh_card.set_description(self.simulation_state.mesh.description)
-        self.mesh_card.set_state(self.simulation_state.mesh_state)
-        self.mesh_card.lock_checkbox.setChecked(self.simulation_state.mesh_locked)
+    def set_api_client(self, api_client: ProjectAPIClient):
+        """Set the API client for server communication."""
+        logger.info(f"SimulationSetupWidget.set_api_client called with: {api_client}")
+        self.api_client = api_client
         
-        # Update solver card
-        if self.simulation_state.solver_state != ComponentState.EMPTY:
-            self.solver_card.set_solver_info(
-                self.simulation_state.solver.name,
-                self.simulation_state.solver.description,
-                self.simulation_state.solver.justification
-            )
-        self.solver_card.set_state(self.simulation_state.solver_state)
-        self.solver_card.lock_checkbox.setChecked(self.simulation_state.solver_locked)
-        
-        # Update parameters card
-        if self.simulation_state.parameters_state != ComponentState.EMPTY:
-            self.parameters_card.set_parameters_info(
-                self.simulation_state.parameters.description,
-                self.simulation_state.parameters.parameters
-            )
-        self.parameters_card.set_state(self.simulation_state.parameters_state)
-        self.parameters_card.lock_checkbox.setChecked(self.simulation_state.parameters_locked)
-        
-        # Update run button
-        self.run_button.setEnabled(self.simulation_state.can_run_simulation())
-        
-        # Update process button
-        self.process_button.setEnabled(not self.simulation_state.processing)
+        # Initialize LangGraph interface with server URL
+        if api_client and hasattr(api_client, 'base_url'):
+            try:
+                logger.info(f"Initializing LangGraph interface with URL: {api_client.base_url}")
+                self.langgraph_interface = LangGraphInterface(api_client.base_url, verbose=True)
+                self.setup_langgraph_connections()
+                self.add_log_message("info", "LangGraph interface initialized successfully")
+                logger.info("LangGraph interface initialized successfully")
+                
+                # If project was set before LangGraph interface was ready, configure it now
+                if self.current_project:
+                    logger.info(f"Configuring previously set project: {self.current_project}")
+                    result = self.langgraph_interface.configure_remote_execution(self.current_project, test_connection=True)
+                    if result["success"]:
+                        self.add_log_message("info", f"Configured for project: {self.current_project}")
+                    else:
+                        self.add_log_message("error", f"Failed to configure project: {result.get('error')}")
+            except Exception as e:
+                logger.error(f"Failed to initialize LangGraph interface: {str(e)}")
+                self.add_log_message("error", f"Failed to initialize LangGraph interface: {str(e)}")
+        else:
+            logger.warning("API client not available for LangGraph interface")
     
-    def process_ai_input(self):
-        """Process AI input"""
-        scenario = self.ai_input.text().strip()
-        if not scenario:
+    def setup_langgraph_connections(self):
+        """Set up connections to LangGraph interface signals."""
+        if not self.langgraph_interface:
             return
         
-        self.simulation_state.processing = True
-        self.status_label.setText("Processing scenario...")
-        self.update_ui_state()
+        # Connect workflow signals
+        self.langgraph_interface.step_changed.connect(self.on_step_changed)
+        self.langgraph_interface.progress_updated.connect(self.on_progress_updated)
+        self.langgraph_interface.log_message.connect(self.add_log_message)
+        self.langgraph_interface.workflow_completed.connect(self.on_workflow_completed)
+        self.langgraph_interface.workflow_failed.connect(self.on_workflow_failed)
         
-        # Send to AI worker
-        self.worker.process_scenario(scenario, self.simulation_state.to_dict())
-        
-        # Clear input
-        self.ai_input.clear()
+        # Connect specific simulation signals
+        self.langgraph_interface.mesh_generated.connect(self.on_mesh_generated)
+        self.langgraph_interface.simulation_started.connect(self.on_simulation_started)
+        self.langgraph_interface.simulation_progress.connect(self.on_simulation_progress)
+        self.langgraph_interface.simulation_completed.connect(self.on_simulation_completed)
+        self.langgraph_interface.user_approval_required.connect(self.on_user_approval_required)
     
-    def handle_ai_response(self, response: Dict[str, Any]):
-        """Handle AI response"""
-        try:
-            if response.get("status") == "success":
-                # Update unlocked components
-                if "mesh" in response and not self.simulation_state.mesh_locked:
-                    mesh_data = MeshData(**response["mesh"])
-                    self.simulation_state.update_mesh(mesh_data)
-                    
-                    # Emit signal for visualization
-                    if mesh_data.file_path:
-                        self.mesh_file_ready.emit(mesh_data.file_path)
-                
-                if "solver" in response and not self.simulation_state.solver_locked:
-                    solver_data = SolverData(**response["solver"])
-                    self.simulation_state.update_solver(solver_data)
-                
-                if "parameters" in response and not self.simulation_state.parameters_locked:
-                    parameters_data = ParametersData(**response["parameters"])
-                    self.simulation_state.update_parameters(parameters_data)
-                
-                self.status_label.setText("Components updated successfully!")
-                
+    def set_current_project(self, project_name: str):
+        """Set the current project for workflow execution."""
+        logger.info(f"SimulationSetupWidget.set_current_project called with: {project_name}")
+        self.current_project = project_name
+        
+        if self.langgraph_interface:
+            # Configure remote execution for this project
+            result = self.langgraph_interface.configure_remote_execution(project_name, test_connection=True)
+            if result["success"]:
+                self.add_log_message("info", f"Configured for project: {project_name}")
             else:
-                self.status_label.setText(f"Error: {response.get('message', 'Unknown error')}")
+                self.add_log_message("error", f"Failed to configure project: {result.get('error')}")
+        else:
+            logger.info(f"Project set to: {project_name} (LangGraph interface not yet available)")
+            self.add_log_message("info", f"Project set to: {project_name} (LangGraph interface not yet available)")
+    
+    def start_workflow(self):
+        """Start the LangGraph CFD workflow."""
+        logger.info(f"start_workflow called - current_project: {self.current_project}")
+        
+        if not self.langgraph_interface:
+            QMessageBox.warning(self, "Error", "LangGraph interface not available")
+            return
+        
+        if not self.current_project:
+            logger.warning(f"No project selected - current_project is: {self.current_project}")
+            QMessageBox.warning(self, "Error", "No project selected")
+            return
+        
+        user_prompt = self.prompt_input.toPlainText().strip()
+        if not user_prompt:
+            QMessageBox.warning(self, "Error", "Please enter a simulation description")
+            return
+        
+        # Reset UI state
+        self.reset_cards()
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.log_display.clear()
+        
+        # Update button states
+        self.start_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+        self.run_simulation_button.setEnabled(False)
+        
+        # Start workflow
+        try:
+            success = self.langgraph_interface.start_workflow(
+                user_prompt=user_prompt,
+                project_name=self.current_project,
+                verbose=True,
+                export_images=True
+            )
+            
+            if success:
+                self.add_log_message("info", "Workflow started successfully")
+                self.workflow_started.emit()
+            else:
+                self.add_log_message("error", "Failed to start workflow")
+                self.reset_ui_state()
                 
         except Exception as e:
-            logger.error(f"Error handling AI response: {str(e)}")
-            self.status_label.setText(f"Error processing response: {str(e)}")
+            logger.error(f"Error starting workflow: {str(e)}")
+            self.add_log_message("error", f"Error starting workflow: {str(e)}")
+            self.reset_ui_state()
+    
+    def stop_workflow(self):
+        """Stop the running workflow."""
+        if not self.langgraph_interface:
+            return
         
-        finally:
-            self.simulation_state.processing = False
-            self.update_ui_state()
-    
-    def handle_ai_error(self, error: str):
-        """Handle AI error"""
-        self.status_label.setText(f"AI Error: {error}")
-        self.simulation_state.processing = False
-        self.update_ui_state()
-    
-    def show_mesh_detail(self):
-        """Show mesh detail dialog"""
-        dialog = MeshDetailDialog(self.simulation_state.mesh, self)
-        if dialog.exec() == QDialog.Accepted:
-            updated_mesh = dialog.get_mesh_data()
-            self.simulation_state.update_mesh(updated_mesh)
-            self.update_ui_state()
-            
-            # Emit signal for visualization if file path changed
-            if updated_mesh.file_path:
-                self.mesh_file_ready.emit(updated_mesh.file_path)
-    
-    def show_solver_detail(self):
-        """Show solver detail dialog"""
-        dialog = SolverDetailDialog(self.simulation_state.solver, self)
-        if dialog.exec() == QDialog.Accepted:
-            updated_solver = dialog.get_solver_data()
-            self.simulation_state.update_solver(updated_solver)
-            self.update_ui_state()
-    
-    def show_parameters_detail(self):
-        """Show parameters detail dialog"""
-        dialog = ParametersDetailDialog(self.simulation_state.parameters, self)
-        if dialog.exec() == QDialog.Accepted:
-            updated_parameters = dialog.get_parameters_data()
-            self.simulation_state.update_parameters(updated_parameters)
-            self.update_ui_state()
-    
-    def on_mesh_lock_changed(self, locked: bool):
-        """Handle mesh lock change"""
-        self.simulation_state.set_mesh_locked(locked)
-        self.update_ui_state()
-    
-    def on_solver_lock_changed(self, locked: bool):
-        """Handle solver lock change"""
-        self.simulation_state.set_solver_locked(locked)
-        self.update_ui_state()
-    
-    def on_parameters_lock_changed(self, locked: bool):
-        """Handle parameters lock change"""
-        self.simulation_state.set_parameters_locked(locked)
-        self.update_ui_state()
-    
-    def upload_mesh_file(self):
-        """Upload mesh file"""
-        from PySide6.QtWidgets import QFileDialog
-        import os
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Mesh File",
-            "",
-            "Mesh Files (*.stl *.foam *.obj);;All Files (*)"
-        )
+        try:
+            success = self.langgraph_interface.stop_workflow()
+            if success:
+                self.add_log_message("info", "Workflow stopped")
+            else:
+                self.add_log_message("warning", "Failed to stop workflow gracefully")
+        except Exception as e:
+            logger.error(f"Error stopping workflow: {str(e)}")
+            self.add_log_message("error", f"Error stopping workflow: {str(e)}")
         
-        if file_path:
-            # Update mesh data
-            mesh_data = MeshData(
-                description=f"Uploaded mesh: {os.path.basename(file_path)}",
-                file_path=file_path,
-                file_type=os.path.splitext(file_path)[1].lower(),
-                generated_by_ai=False
-            )
-            self.simulation_state.update_mesh(mesh_data)
-            self.update_ui_state()
-            
-            # Emit signal for visualization
-            self.mesh_file_ready.emit(file_path)
-    
-    def upload_parameters_file(self):
-        """Upload parameters file"""
-        from PySide6.QtWidgets import QFileDialog
-        import os
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Parameters File",
-            "",
-            "Parameter Files (*.json *.yaml *.yml *.txt);;All Files (*)"
-        )
-        
-        if file_path:
-            # Update parameters data
-            parameters_data = ParametersData(
-                description=f"Uploaded parameters: {os.path.basename(file_path)}",
-                file_path=file_path,
-                generated_by_ai=False
-            )
-            self.simulation_state.update_parameters(parameters_data)
-            self.update_ui_state()
+        self.reset_ui_state()
     
     def run_simulation(self):
-        """Run simulation"""
-        if not self.simulation_state.can_run_simulation():
-            QMessageBox.warning(self, "Cannot Run Simulation", 
-                              "Please ensure all components (mesh, solver, parameters) are configured.")
+        """Approve configuration and run the OpenFOAM simulation."""
+        if not self.langgraph_interface:
+            QMessageBox.warning(self, "Error", "LangGraph interface not available")
             return
         
-        # Show confirmation dialog
-        reply = QMessageBox.question(self, "Run Simulation", 
-                                   "Are you sure you want to run the simulation with the current configuration?",
-                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        # Check if we're waiting for user approval (configuration review)
+        current_state = self.langgraph_interface.get_current_state()
+        if current_state and current_state.get("awaiting_user_approval", False):
+            # User ready to proceed - continue workflow with simulation
+            success = self.langgraph_interface.approve_configuration()
+            if success:
+                self.add_log_message("info", "🚀 Starting OpenFOAM simulation on remote server...")
+                self.run_simulation_button.setEnabled(False)
+                self.run_simulation_button.setText("⏳ Running Simulation...")
+                
+                # Update card states to show simulation starting
+                self.mesh_card.set_state(ComponentState.LOCKED)
+                self.solver_card.set_state(ComponentState.LOCKED) 
+                self.parameters_card.set_state(ComponentState.LOCKED)
+            else:
+                self.add_log_message("error", "Failed to start simulation")
+        else:
+            # No configuration review pending
+            QMessageBox.information(self, "Info", "No simulation configuration ready for review.\nPlease run 'Start Simulation Setup' first.")
+    
+    def reset_ui_state(self):
+        """Reset UI to initial state."""
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self.progress_bar.setVisible(False)
+        self.progress_label.setText("Ready to start simulation setup")
+    
+    def reset_cards(self):
+        """Reset all simulation cards to initial state."""
+        self.mesh_card.set_state(ComponentState.EMPTY)
+        self.solver_card.set_state(ComponentState.EMPTY)
+        self.parameters_card.set_state(ComponentState.EMPTY)
         
-        if reply == QMessageBox.Yes:
-            self.simulation_state.processing = True
-            self.status_label.setText("Starting simulation...")
-            self.update_ui_state()
-            
-            # TODO: Implement actual simulation API call
-            # For now, just show a message
-            QMessageBox.information(self, "Simulation Started", 
-                                  "Simulation has been started! (This is a placeholder - actual implementation needed)")
-            
-            # Emit signal
-            self.simulation_started.emit("dummy_simulation_id")
-            
-            self.simulation_state.processing = False
-            self.update_ui_state()
+        # Clear descriptions
+        self.mesh_card.set_description("")
+        self.solver_card.set_description("")
+        self.parameters_card.set_description("")
     
-    def test_server_connection(self):
-        """Test connection to server"""
+    def add_log_message(self, level: str, message: str):
+        """Add a message to the log display."""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        formatted_message = f"[{timestamp}] {level.upper()}: {message}"
+        
+        # Add color based on level
+        if level == "error":
+            color = "red"
+        elif level == "warning":
+            color = "orange"
+        elif level == "info":
+            color = "blue"
+        else:
+            color = "black"
+        
+        self.log_display.append(f'<span style="color: {color};">{formatted_message}</span>')
+        
+        # Auto-scroll to bottom
+        scrollbar = self.log_display.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+    
+    # LangGraph signal handlers
+    def on_step_changed(self, step_name: str, description: str):
+        """Handle workflow step changes."""
+        self.progress_label.setText(f"Current step: {description}")
+        self.add_log_message("info", f"Step: {step_name} - {description}")
+        
+        # Update card states based on step
+        if step_name == "mesh_generation":
+            self.mesh_card.set_state(ComponentState.PROCESSING)
+        elif step_name == "boundary_conditions":
+            self.mesh_card.set_state(ComponentState.COMPLETE)
+            self.solver_card.set_state(ComponentState.PROCESSING)
+        elif step_name == "solver_selection":
+            self.solver_card.set_state(ComponentState.PROCESSING)
+        elif step_name == "case_writing":
+            self.solver_card.set_state(ComponentState.COMPLETE)
+            self.parameters_card.set_state(ComponentState.PROCESSING)
+        elif step_name == "simulation":
+            self.parameters_card.set_state(ComponentState.COMPLETE)
+    
+    def on_progress_updated(self, progress: int):
+        """Handle progress updates."""
+        self.progress_bar.setValue(progress)
+    
+    def on_workflow_completed(self, final_state: Dict[str, Any]):
+        """Handle workflow completion."""
+        self.add_log_message("info", "Workflow completed successfully!")
+        self.progress_label.setText("Workflow completed - ready to run simulation")
+        self.progress_bar.setValue(100)
+        
+        # Enable run simulation button
+        self.run_simulation_button.setEnabled(True)
+        self.reset_ui_state()
+        
+        # Update all cards to complete
+        self.mesh_card.set_state(ComponentState.COMPLETE)
+        self.solver_card.set_state(ComponentState.COMPLETE)
+        self.parameters_card.set_state(ComponentState.COMPLETE)
+        
+        self.workflow_completed.emit(final_state)
+    
+    def on_workflow_failed(self, error_message: str):
+        """Handle workflow failure."""
+        self.add_log_message("error", f"Workflow failed: {error_message}")
+        self.progress_label.setText("Workflow failed")
+        
+        # Update cards to show error
+        self.mesh_card.set_state(ComponentState.ERROR)
+        self.solver_card.set_state(ComponentState.ERROR)
+        self.parameters_card.set_state(ComponentState.ERROR)
+        
+        self.reset_ui_state()
+        self.workflow_failed.emit(error_message)
+    
+    def on_mesh_generated(self, mesh_info: Dict[str, Any]):
+        """Handle mesh generation completion."""
+        self.add_log_message("info", "Mesh generation completed")
+        
+        # Update mesh card with real data
+        mesh_data = MeshData(
+            cell_count=mesh_info.get("total_cells", 0),
+            mesh_type=mesh_info.get("type", "blockMesh"),
+            quality_score=mesh_info.get("quality_score", 0.0)
+        )
+        # Update mesh card with mesh info
+        mesh_info_text = f"Cells: {mesh_data.cell_count}\nType: {mesh_data.mesh_type}"
+        if mesh_data.quality_score > 0:
+            mesh_info_text += f"\nQuality: {mesh_data.quality_score:.2f}"
+        self.mesh_card.set_description(mesh_info_text)
+        self.mesh_card.set_state(ComponentState.COMPLETE)
+    
+    def on_simulation_started(self):
+        """Handle simulation start."""
+        self.add_log_message("info", "OpenFOAM simulation started")
+    
+    def on_simulation_progress(self, progress_info: Dict[str, Any]):
+        """Handle simulation progress updates."""
+        # Extract useful progress information
+        steps = progress_info.get("steps", {})
+        if "solver" in steps:
+            solver_info = steps["solver"]
+            if solver_info.get("success"):
+                self.add_log_message("info", "Solver execution progressing...")
+    
+    def on_simulation_completed(self, results: Dict[str, Any]):
+        """Handle simulation completion."""
+        self.add_log_message("info", "OpenFOAM simulation completed")
+        
+        # Update solver card with results
+        solver_name = results.get("solver", "Unknown")
+        convergence = results.get("success", False)
+        iterations = results.get("iterations", 0)
+        
+        solver_info_text = f"Solver: {solver_name}"
+        if iterations > 0:
+            solver_info_text += f"\nIterations: {iterations}"
+        solver_info_text += f"\nConverged: {'Yes' if convergence else 'No'}"
+        
+        self.solver_card.set_solver_info(solver_name, solver_info_text)
+    
+    def on_user_approval_required(self, config_summary: Dict[str, Any]):
+        """Handle configuration ready for review - update cards and enable Run Simulation button."""
+        self.add_log_message("info", "✅ Configuration generated and ready for review")
+        self.progress_label.setText("Review simulation setup below, then click 'Run Simulation' when ready")
+        
         try:
-            return self.api_client.test_connection()
+            # Update mesh card
+            mesh_info = config_summary.get("mesh_info", {})
+            if mesh_info:
+                mesh_text = f"Type: {mesh_info.get('mesh_type', 'Unknown')}\n"
+                mesh_text += f"Cells: {mesh_info.get('total_cells', 0):,}\n"
+                mesh_text += f"Quality: {mesh_info.get('quality_score', 0):.2f}"
+                self.mesh_card.set_description(mesh_text)
+                self.mesh_card.set_state(ComponentState.POPULATED)
+            
+            # Update solver card
+            solver_info = config_summary.get("solver_info", {})
+            if solver_info:
+                solver_text = f"Solver: {solver_info.get('solver_name', 'Unknown')}\n"
+                solver_text += f"End time: {solver_info.get('end_time', 0)} s\n"
+                solver_text += f"Time step: {solver_info.get('time_step', 0)} s"
+                self.solver_card.set_description(solver_text)
+                self.solver_card.set_state(ComponentState.POPULATED)
+            
+            # Update parameters card
+            sim_params = config_summary.get("simulation_parameters", {})
+            if sim_params:
+                param_text = f"Flow: {sim_params.get('flow_type', 'Unknown')}\n"
+                param_text += f"Analysis: {sim_params.get('analysis_type', 'Unknown')}\n"
+                if sim_params.get('velocity'):
+                    param_text += f"Velocity: {sim_params['velocity']:.2f} m/s"
+                self.parameters_card.set_description(param_text)
+                self.parameters_card.set_state(ComponentState.POPULATED)
+            
+            # Auto-load mesh into ParaView for visualization
+            self._auto_load_mesh_visualization(config_summary)
+            
+            # Enable Run Simulation button with clearer text
+            self.run_simulation_button.setEnabled(True)
+            self.run_simulation_button.setText("🚀 Run Simulation")
+            
+            # Log AI explanation if available
+            ai_explanation = config_summary.get("ai_explanation", "")
+            if ai_explanation:
+                self.add_log_message("info", f"AI Analysis: {ai_explanation}")
+                
         except Exception as e:
-            logger.error(f"Server connection test failed: {str(e)}")
-            return False
+            logger.error(f"Error updating UI with config summary: {str(e)}")
+            self.add_log_message("error", f"Error updating configuration display: {str(e)}")
     
-    def reset_simulation(self):
-        """Reset simulation to initial state"""
-        self.simulation_state.reset()
-        self.update_ui_state()
-        self.status_label.setText("Ready")
-        self.ai_input.clear()
+    def _auto_load_mesh_visualization(self, config_summary: Dict[str, Any]):
+        """Automatically load the generated mesh into ParaView for visualization."""
+        try:
+            # Check if we have a parent main window with ParaView widget
+            main_window = self.parent()
+            if not main_window or not hasattr(main_window, 'paraview_widget'):
+                self.add_log_message("warning", "ParaView widget not available for mesh visualization")
+                return
+            
+            paraview_widget = main_window.paraview_widget
+            
+            # Check if ParaView is connected
+            if not paraview_widget.is_connected():
+                self.add_log_message("info", "🔗 Connecting to ParaView server for mesh visualization...")
+                # Try to connect to ParaView
+                paraview_widget.connect_to_server()
+                
+                # Give it a moment to connect, then try to load
+                QTimer.singleShot(2000, lambda: self._load_mesh_file(config_summary, paraview_widget))
+            else:
+                # Already connected, load immediately
+                self._load_mesh_file(config_summary, paraview_widget)
+                
+        except Exception as e:
+            logger.error(f"Error auto-loading mesh visualization: {str(e)}")
+            self.add_log_message("error", f"Failed to auto-load mesh: {str(e)}")
     
-    def closeEvent(self, event):
-        """Handle widget close event"""
-        self.worker_thread.quit()
-        self.worker_thread.wait()
-        self.api_client.close()
-        event.accept() 
+    def _load_mesh_file(self, config_summary: Dict[str, Any], paraview_widget):
+        """Load the mesh file into ParaView."""
+        try:
+            # Get the case path from config summary or construct it
+            case_info = config_summary.get("case_info", {})
+            foam_file_path = case_info.get("foam_file_path")
+            
+            if not foam_file_path and self.current_project:
+                # Construct the .foam file path based on project name
+                foam_file_path = f"/home/ubuntu/foam_projects/{self.current_project}/active_run/{self.current_project}.foam"
+                self.add_log_message("info", f"Using constructed foam file path: {foam_file_path}")
+            
+            if foam_file_path:
+                self.add_log_message("info", f"📊 Loading mesh visualization: {foam_file_path}")
+                paraview_widget.load_foam_file(foam_file_path)
+                self.add_log_message("info", "✅ Mesh loaded into ParaView - you can now review the geometry")
+            else:
+                self.add_log_message("warning", "No mesh file path available for visualization")
+                
+        except Exception as e:
+            logger.error(f"Error loading mesh file: {str(e)}")
+            self.add_log_message("error", f"Failed to load mesh file: {str(e)}") 

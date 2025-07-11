@@ -6,6 +6,7 @@ from loguru import logger
 
 from langgraph.graph import StateGraph, END
 from .state import CFDState, CFDStep
+from .remote_executor import RemoteExecutor
 
 
 def orchestrator_agent(state: CFDState) -> CFDState:
@@ -14,11 +15,19 @@ def orchestrator_agent(state: CFDState) -> CFDState:
     
     This agent analyzes the current state and determines the next step
     in the CFD workflow, including error recovery and quality checks.
+    Supports both local and remote execution modes.
     """
     if state["verbose"]:
         logger.info(f"Orchestrator: Current step = {state['current_step']}")
         logger.info(f"Orchestrator: Errors = {state['errors']}")
         logger.info(f"Orchestrator: Retry count = {state['retry_count']}")
+        
+        # Log execution mode
+        execution_mode = state.get("execution_mode", "local")
+        if execution_mode == "remote":
+            project_name = state.get("project_name", "unknown")
+            server_url = state.get("server_url", "unknown")
+            logger.info(f"Orchestrator: Remote execution mode - project '{project_name}' on '{server_url}'")
     
     # Initialize error recovery tracking if not present
     if "error_recovery_attempts" not in state:
@@ -121,6 +130,18 @@ def handle_normal_progression(state: CFDState) -> CFDState:
     """Handle normal workflow progression."""
     current_step = state["current_step"]
     
+    # Check if user has explicitly approved (for resuming workflow)
+    if current_step == CFDStep.USER_APPROVAL and state.get("user_approved", False):
+        if state["verbose"]:
+            logger.info("User approval received - proceeding to simulation")
+        return {
+            **state,
+            "current_step": CFDStep.SIMULATION,
+            "workflow_paused": False,
+            "awaiting_user_approval": False,
+            "retry_count": 0
+        }
+    
     # Determine next step based on current step
     next_step_map = {
         CFDStep.START: CFDStep.NL_INTERPRETATION,
@@ -149,6 +170,12 @@ def handle_normal_progression(state: CFDState) -> CFDState:
 
 def determine_next_agent(state: CFDState) -> str:
     """Determine which agent to call next based on current step."""
+    
+    # Special case: if we're at user approval and awaiting approval, pause workflow
+    if (state["current_step"] == CFDStep.USER_APPROVAL and 
+        state.get("awaiting_user_approval", False)):
+        return "end"  # Pause workflow until user approval
+    
     step_to_agent = {
         CFDStep.NL_INTERPRETATION: "nl_interpreter",
         CFDStep.MESH_GENERATION: "mesh_generator",
@@ -242,10 +269,42 @@ def create_initial_state(
         max_retries: int = 3,
         user_approval_enabled: bool = True,
         stl_file: Optional[str] = None,
-        force_validation: bool = False
+        force_validation: bool = False,
+        # Remote execution parameters
+        execution_mode: str = "local",
+        server_url: Optional[str] = None,
+        project_name: Optional[str] = None
     ) -> CFDState:
-    """Create initial state for the CFD workflow."""
-    return CFDState(
+    """
+    Create initial state for the CFD workflow.
+    
+    Args:
+        user_prompt: User's simulation description
+        verbose: Enable verbose logging
+        export_images: Enable image export
+        output_format: Output format ("images", "data", etc.)
+        max_retries: Maximum retry attempts
+        user_approval_enabled: Enable user approval step
+        stl_file: Optional STL file path
+        force_validation: Force validation
+        execution_mode: "local" or "remote"
+        server_url: Server URL for remote execution
+        project_name: Project name for remote execution
+    """
+    # Validate remote execution parameters
+    if execution_mode == "remote":
+        if not server_url:
+            raise ValueError("server_url is required for remote execution")
+        if not project_name:
+            # Generate a unique project name if not provided
+            import time
+            import hashlib
+            timestamp = str(int(time.time()))
+            prompt_hash = hashlib.md5(user_prompt.encode()).hexdigest()[:8]
+            project_name = f"foamai_{timestamp}_{prompt_hash}"
+            logger.info(f"Generated project name for remote execution: {project_name}")
+    
+    initial_state = CFDState(
         user_prompt=user_prompt,
         stl_file=stl_file,
         parsed_parameters={},
@@ -275,4 +334,259 @@ def create_initial_state(
         current_iteration=0,
         conversation_active=True,
         previous_results=None,
-    ) 
+        # Remote execution fields
+        execution_mode=execution_mode,
+        server_url=server_url,
+        project_name=project_name,
+        
+        # User approval workflow fields
+        awaiting_user_approval=False,
+        workflow_paused=False,
+        config_summary=None
+    )
+    
+    return initial_state
+
+
+# Remote execution utility functions
+def configure_remote_execution(
+    server_url: str,
+    project_name: str,
+    test_connection: bool = True
+) -> Dict[str, Any]:
+    """
+    Configure remote execution settings and optionally test the connection.
+    
+    Args:
+        server_url: Remote server URL
+        project_name: Project name on server
+        test_connection: Whether to test the connection
+        
+    Returns:
+        Configuration result with status and details
+    """
+    config_result = {
+        "success": False,
+        "server_url": server_url,
+        "project_name": project_name,
+        "tested": test_connection,
+        "error": None
+    }
+    
+    try:
+        if test_connection:
+            # Test server connection
+            with RemoteExecutor(server_url, project_name) as remote:
+                # Health check
+                health = remote.health_check()
+                
+                # Ensure project exists or create it
+                if not remote.ensure_project_exists():
+                    remote.create_project_if_not_exists("LangGraph CFD workflow project")
+                
+                config_result["server_health"] = health
+                config_result["project_created"] = True
+        
+        config_result["success"] = True
+        logger.info(f"Remote execution configured successfully: {server_url} / {project_name}")
+        
+    except Exception as e:
+        config_result["error"] = str(e)
+        logger.error(f"Failed to configure remote execution: {str(e)}")
+    
+    return config_result
+
+
+def create_remote_workflow_state(
+    user_prompt: str,
+    server_url: str,
+    project_name: Optional[str] = None,
+    **kwargs
+) -> CFDState:
+    """
+    Convenience function to create a workflow state configured for remote execution.
+    
+    Args:
+        user_prompt: User's simulation description
+        server_url: Remote server URL
+        project_name: Optional project name (auto-generated if not provided)
+        **kwargs: Additional parameters for create_initial_state
+        
+    Returns:
+        CFDState configured for remote execution
+    """
+    return create_initial_state(
+        user_prompt=user_prompt,
+        execution_mode="remote",
+        server_url=server_url,
+        project_name=project_name,
+        **kwargs
+    )
+
+
+def get_remote_project_info(server_url: str, project_name: str) -> Dict[str, Any]:
+    """
+    Get information about a remote project.
+    
+    Args:
+        server_url: Remote server URL
+        project_name: Project name
+        
+    Returns:
+        Project information including ParaView server status
+    """
+    try:
+        import requests
+        
+        # Get project info
+        response = requests.get(f"{server_url.rstrip('/')}/api/projects/{project_name}")
+        response.raise_for_status()
+        project_info = response.json()
+        
+        # Get ParaView server info
+        try:
+            pv_response = requests.get(f"{server_url.rstrip('/')}/api/projects/{project_name}/pvserver/info")
+            pv_response.raise_for_status()
+            pvserver_info = pv_response.json()
+            project_info["pvserver_info"] = pvserver_info
+        except Exception as e:
+            logger.warning(f"Could not get ParaView server info: {e}")
+            project_info["pvserver_info"] = {"status": "not_found"}
+        
+        return project_info
+        
+    except Exception as e:
+        logger.error(f"Failed to get remote project info: {str(e)}")
+        return {"error": str(e)}
+
+
+def start_remote_paraview_server(server_url: str, project_name: str, port: Optional[int] = None) -> Dict[str, Any]:
+    """
+    Start ParaView server for a remote project using the project-based API.
+    
+    Args:
+        server_url: Remote server URL
+        project_name: Project name
+        port: Optional specific port
+        
+    Returns:
+        ParaView server information
+    """
+    try:
+        import requests
+        
+        # Prepare request data
+        data = {}
+        if port:
+            data["port"] = port
+        
+        # Start ParaView server using project-based API
+        response = requests.post(
+            f"{server_url.rstrip('/')}/api/projects/{project_name}/pvserver/start",
+            json=data,
+            headers={"Content-Type": "application/json"}
+        )
+        response.raise_for_status()
+        result = response.json()
+        
+        # Extract connection info and format for widget
+        formatted_result = {
+            "success": True,
+            "host": "localhost",  # ParaView server is accessible at localhost
+            "port": result.get("port", 11111),
+            "project_name": result.get("project_name", project_name),
+            "connection_string": result.get("connection_string", f"localhost:{result.get('port', 11111)}"),
+            "status": result.get("status", "running"),
+            "pid": result.get("pid"),
+            "case_path": result.get("case_path"),
+            "started_at": result.get("started_at"),
+            "message": result.get("message", "ParaView server started successfully")
+        }
+        
+        logger.info(f"Started ParaView server for project '{project_name}': {formatted_result}")
+        return formatted_result
+        
+    except Exception as e:
+        logger.error(f"Failed to start remote ParaView server: {str(e)}")
+        return {"error": str(e)}
+
+
+def stop_remote_paraview_server(server_url: str, project_name: str) -> Dict[str, Any]:
+    """
+    Stop ParaView server for a remote project using the project-based API.
+    
+    Args:
+        server_url: Remote server URL
+        project_name: Project name
+        
+    Returns:
+        Operation result
+    """
+    try:
+        import requests
+        
+        # Stop ParaView server using project-based API
+        response = requests.delete(f"{server_url.rstrip('/')}/api/projects/{project_name}/pvserver/stop")
+        response.raise_for_status()
+        result = response.json()
+        
+        logger.info(f"Stopped ParaView server for project '{project_name}': {result}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to stop remote ParaView server: {str(e)}")
+        return {"error": str(e)}
+
+
+def approve_configuration_and_continue(state: CFDState) -> CFDState:
+    """
+    Approve the current configuration and continue the workflow.
+    
+    This function is called by the desktop UI when the user approves
+    the configuration and wants to proceed with the simulation.
+    
+    Args:
+        state: Current workflow state
+        
+    Returns:
+        Updated state with approval and ready to continue
+    """
+    if state["verbose"]:
+        logger.info("Configuration approved by user - continuing workflow")
+    
+    return {
+        **state,
+        "user_approved": True,
+        "awaiting_user_approval": False,
+        "workflow_paused": False,
+        "current_step": CFDStep.USER_APPROVAL,  # Will progress to SIMULATION in next orchestrator call
+        "retry_count": 0
+    }
+
+
+def reject_configuration(state: CFDState, feedback: str = "") -> CFDState:
+    """
+    Reject the current configuration and provide feedback.
+    
+    This function is called by the desktop UI when the user wants
+    to modify the configuration.
+    
+    Args:
+        state: Current workflow state
+        feedback: User feedback on what to change
+        
+    Returns:
+        Updated state to restart from solver selection
+    """
+    if state["verbose"]:
+        logger.info(f"Configuration rejected by user with feedback: {feedback}")
+    
+    return {
+        **state,
+        "user_approved": False,
+        "awaiting_user_approval": False,
+        "workflow_paused": False,
+        "current_step": CFDStep.SOLVER_SELECTION,  # Restart from solver selection
+        "warnings": state["warnings"] + [f"User requested changes: {feedback}"] if feedback else state["warnings"],
+        "retry_count": 0
+    } 

@@ -3,7 +3,7 @@
 name = "foamai-core"
 version = "0.1.0"
 description = "Agent for FoamAI"
-requires-python = ">=3.13"
+requires-python = ">=3.9"
 dependencies = [
     # Deps for llm agent
     "langchain>=0.2.0",

@@ -37,7 +37,7 @@ echo "Configuration: Volume=$${DATA_VOLUME_SIZE_GB}GB, FS=$${FILESYSTEM_TYPE_OVE
 log() {
     local level="$1"
     shift
-    echo "[$$(date "+%Y-%m-%d %H:%M:%S")] [$level] $*"
+    echo "[$$(date \"+%Y-%m-%d %H:%M:%S\")] [$level] $*"
 }
 
 log "INFO" "Starting FoamAI deployment with robust EBS volume mounting"

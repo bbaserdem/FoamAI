@@ -99,70 +99,70 @@ is_expected_size() {
     local min_size_gb=$((DATA_VOLUME_SIZE_GB - (DATA_VOLUME_SIZE_GB * 10 / 100)))  # 10% tolerance
     local max_size_gb=$((DATA_VOLUME_SIZE_GB + (DATA_VOLUME_SIZE_GB * 10 / 100)))
     
-    log "DEBUG" "Device $device: size=$${size_gb}GB, expected=$${DATA_VOLUME_SIZE_GB}GB, range=$${min_size_gb}-$${max_size_gb}GB"
+    log "DEBUG" "Device $device: size=$${size_gb}GB, expected=$${DATA_VOLUME_SIZE_GB}GB, range=$${min_size_gb}-$${max_size_gb}GB" >&2
     [[ $size_gb -ge $min_size_gb && $size_gb -le $max_size_gb ]]
 }
 
 # Strategy 1: Size-based discovery (most flexible)
 find_data_volume_by_size() {
-    log "INFO" "Strategy 1: Searching for data volume by size ($${DATA_VOLUME_SIZE_GB}GB)"
+    log "INFO" "Strategy 1: Searching for data volume by size ($${DATA_VOLUME_SIZE_GB}GB)" >&2
     
     for device in /dev/nvme*n1 /dev/xvd* /dev/sd* /dev/nvme*; do
         if [[ -b "$device" ]] && ! is_mounted "$device" && is_expected_size "$device"; then
-            log "INFO" "Found data volume by size: $device ($(get_device_size_gb "$device")GB)"
+            log "INFO" "Found data volume by size: $device ($(get_device_size_gb "$device")GB)" >&2
             echo "$device"
             return 0
         fi
     done
     
-    log "WARN" "No data volume found by size matching $${DATA_VOLUME_SIZE_GB}GB"
+    log "WARN" "No data volume found by size matching $${DATA_VOLUME_SIZE_GB}GB" >&2
     return 1
 }
 
 # Strategy 2: AWS metadata-based discovery (most authoritative)
 find_data_volume_by_metadata() {
-    log "INFO" "Strategy 2: Searching for data volume using AWS metadata"
+    log "INFO" "Strategy 2: Searching for data volume using AWS metadata" >&2
     
     # Get instance ID
     local instance_id=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
     if [[ -z "$instance_id" ]]; then
-        log "WARN" "Could not get instance ID from metadata"
+        log "WARN" "Could not get instance ID from metadata" >&2
         return 1
     fi
     
     # Try to use AWS CLI if available (may not be installed yet)
     if command -v aws &> /dev/null; then
-        log "INFO" "Using AWS CLI to query volume attachments"
+        log "INFO" "Using AWS CLI to query volume attachments" >&2
         # This would require AWS CLI setup, which happens later
         # For now, skip this strategy during initial deployment
     fi
     
-    log "INFO" "AWS metadata strategy not available during initial deployment"
+    log "INFO" "AWS metadata strategy not available during initial deployment" >&2
     return 1
 }
 
 # Strategy 3: Unused device discovery (fallback)
 find_unused_device() {
-    log "INFO" "Strategy 3: Searching for unused devices"
+    log "INFO" "Strategy 3: Searching for unused devices" >&2
     
     for device in /dev/nvme*n1 /dev/xvd* /dev/sd*; do
         if [[ -b "$device" ]] && ! is_mounted "$device" && ! has_filesystem "$device"; then
             # Additional check: ensure it's not the root device
             if ! df / | grep -q "$device"; then
-                log "INFO" "Found unused device: $device ($(get_device_size_gb "$device")GB)"
+                log "INFO" "Found unused device: $device ($(get_device_size_gb "$device")GB)" >&2
                 echo "$device"
                 return 0
             fi
         fi
     done
     
-    log "WARN" "No unused devices found"
+    log "WARN" "No unused devices found" >&2
     return 1
 }
 
 # Main data volume discovery function
 discover_data_volume() {
-    log "INFO" "Starting data volume discovery process"
+    log "INFO" "Starting data volume discovery process" >&2
     
     # Try each strategy in order of preference
     local device=""
@@ -185,7 +185,7 @@ discover_data_volume() {
         return 0
     fi
     
-    log "ERROR" "All discovery strategies failed"
+    log "ERROR" "All discovery strategies failed" >&2
     return 1
 }
 

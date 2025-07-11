@@ -1,524 +1,12 @@
-"""Mesh Generator Agent - Generates mesh configurations for different geometry types."""
+"""Mesh Generator Agent - Creates OpenFOAM mesh configurations."""
 
-import numpy as np
-from typing import Dict, Any, List, Tuple, Optional
+import os
+import json
+from typing import Dict, Any, Optional
 from pathlib import Path
-import struct
 from loguru import logger
 
 from .state import CFDState, CFDStep, GeometryType
-
-
-def analyze_stl_bounding_box(stl_file: str) -> Dict[str, Any]:
-    """
-    Analyze STL file to get bounding box and dimensions.
-    Returns dimensions in the original STL units without conversion.
-    """
-    from pathlib import Path
-    import numpy as np
-    
-    stl_path = Path(stl_file)
-    if not stl_path.exists():
-        logger.error(f"STL file not found: {stl_file}")
-        return get_default_stl_dimensions()
-    
-    try:
-        # Extract vertices from STL
-        vertices = extract_stl_vertices(stl_path)
-        
-        if not vertices:
-            logger.error(f"No vertices found in STL file: {stl_file}")
-            return get_default_stl_dimensions()
-        
-        # Convert to numpy array for easier manipulation
-        vertices = np.array(vertices)
-        
-        # Calculate bounding box
-        min_coords = vertices.min(axis=0)
-        max_coords = vertices.max(axis=0)
-        dimensions = max_coords - min_coords
-        center = (max_coords + min_coords) / 2
-        
-        # Calculate characteristic length (max dimension)
-        characteristic_length = float(np.max(dimensions))
-        
-        # NO UNIT CONVERSION - Use STL dimensions as-is
-        # The user wants to keep the original size regardless of units
-        logger.info(f"STL Analysis - Using original dimensions without unit conversion")
-        logger.info(f"STL Bounding Box: min={min_coords.tolist()}, max={max_coords.tolist()}")
-        logger.info(f"STL Dimensions: {dimensions.tolist()}")
-        logger.info(f"STL Characteristic Length: {characteristic_length:.3f}")
-        
-        # Calculate volume estimate (sum of all triangle areas * average height)
-        # This is a rough estimate
-        volume = float(np.prod(dimensions)) * 0.5  # Rough estimate
-        
-        return {
-            "bounding_box": {
-                "min": min_coords.tolist(),
-                "max": max_coords.tolist(),
-                "dimensions": dimensions.tolist(),
-                "center": center.tolist()
-            },
-            "characteristic_length": characteristic_length,
-            "scaled_characteristic_length": characteristic_length,  # No scaling
-            "dimensions": {
-                "x": float(dimensions[0]),
-                "y": float(dimensions[1]),
-                "z": float(dimensions[2])
-            },
-            "center": center.tolist(),
-            "volume": volume,
-            "detected_units": "as-is",  # No unit detection
-            "scale_factor": 1.0,  # No scaling applied
-            "vertex_count": len(vertices)
-        }
-        
-    except Exception as e:
-        logger.error(f"Error analyzing STL file {stl_file}: {e}")
-        return get_default_stl_dimensions()
-
-
-def extract_stl_vertices(stl_path: Path) -> List[List[float]]:
-    """Extract all vertices from an STL file (ASCII or binary)."""
-    vertices = []
-    
-    try:
-        # Read first part of file to determine format
-        with open(stl_path, 'rb') as f:
-            header = f.read(80)
-            
-        # Check if it's a proper ASCII STL file
-        if header.startswith(b'solid'):
-            # Read more data to verify it's actually ASCII
-            with open(stl_path, 'r', encoding='utf-8', errors='ignore') as f:
-                first_lines = f.readlines()[:10]  # Read first 10 lines
-                
-            # Check if we can find valid ASCII STL content
-            has_valid_ascii = False
-            for line in first_lines:
-                if 'vertex' in line.lower() or 'normal' in line.lower() or 'facet' in line.lower():
-                    has_valid_ascii = True
-                    break
-            
-            if has_valid_ascii:
-                # Try ASCII parsing
-                vertices = extract_ascii_stl_vertices(stl_path)
-                if vertices:
-                    logger.info(f"Successfully parsed as ASCII STL: {len(vertices)} vertices")
-                else:
-                    logger.warning("ASCII STL parsing failed, trying binary parsing")
-                    vertices = extract_binary_stl_vertices(stl_path)
-            else:
-                # Header says 'solid' but no valid ASCII content found - likely binary
-                logger.warning("STL file has 'solid' header but appears to be binary format")
-                vertices = extract_binary_stl_vertices(stl_path)
-        else:
-            # Binary STL
-            vertices = extract_binary_stl_vertices(stl_path)
-            
-        if vertices:
-            logger.info(f"Successfully extracted {len(vertices)} vertices from STL file")
-        else:
-            logger.error(f"Failed to extract vertices from STL file: {stl_path}")
-            
-    except Exception as e:
-        logger.error(f"Error reading STL file {stl_path}: {e}")
-        
-    return vertices
-
-
-def extract_ascii_stl_vertices(stl_path: Path) -> List[List[float]]:
-    """Extract vertices from ASCII STL file."""
-    vertices = []
-    
-    try:
-        with open(stl_path, 'r', encoding='utf-8', errors='ignore') as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith('vertex'):
-                    parts = line.split()
-                    if len(parts) >= 4:
-                        x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
-                        vertices.append([x, y, z])
-    except Exception as e:
-        logger.error(f"Error reading ASCII STL {stl_path}: {e}")
-        
-    return vertices
-
-
-def extract_binary_stl_vertices(stl_path: Path) -> List[List[float]]:
-    """Extract vertices from binary STL file."""
-    vertices = []
-    
-    try:
-        with open(stl_path, 'rb') as f:
-            # Skip header
-            f.read(80)
-            
-            # Read number of triangles
-            num_triangles_data = f.read(4)
-            if len(num_triangles_data) != 4:
-                logger.error(f"Invalid binary STL file: cannot read triangle count")
-                return vertices
-                
-            num_triangles = struct.unpack('<I', num_triangles_data)[0]
-            logger.info(f"Binary STL file contains {num_triangles} triangles")
-            
-            # Validate triangle count is reasonable
-            if num_triangles > 10000000:  # 10M triangles is very large
-                logger.warning(f"STL file has very large triangle count: {num_triangles}")
-            
-            for i in range(num_triangles):
-                try:
-                    # Read triangle data (normal + 3 vertices + attribute)
-                    triangle_data = f.read(50)
-                    if len(triangle_data) != 50:
-                        logger.warning(f"Incomplete triangle data at triangle {i}")
-                        break
-                        
-                    data = struct.unpack('<12fH', triangle_data)
-                    
-                    # Extract vertices (skip normal at indices 0-2)
-                    v1 = [data[3], data[4], data[5]]
-                    v2 = [data[6], data[7], data[8]]
-                    v3 = [data[9], data[10], data[11]]
-                    
-                    # Validate vertices are not NaN or infinite
-                    all_vertices = [v1, v2, v3]
-                    for vertex in all_vertices:
-                        if all(isinstance(coord, (int, float)) and not (np.isnan(coord) or np.isinf(coord)) for coord in vertex):
-                            vertices.append(vertex)
-                        else:
-                            logger.warning(f"Invalid vertex data at triangle {i}: {vertex}")
-                            
-                except struct.error as e:
-                    logger.warning(f"Error unpacking triangle {i}: {e}")
-                    break
-                except Exception as e:
-                    logger.warning(f"Error processing triangle {i}: {e}")
-                    break
-                    
-    except Exception as e:
-        logger.error(f"Error reading binary STL {stl_path}: {e}")
-        
-    return vertices
-
-
-def detect_stl_units(characteristic_length: float) -> str:
-    """
-    Detect likely units based on characteristic length.
-    
-    Heuristic rules:
-    - < 0.01: likely millimeters (very small)
-    - 0.01 to 0.1: likely centimeters or small meters
-    - 0.1 to 10: likely meters
-    - > 10: likely millimeters (large model)
-    - > 1000: definitely millimeters
-    """
-    if characteristic_length > 1000:
-        return "mm"
-    elif characteristic_length > 10:
-        return "mm"  # Likely large model in mm
-    elif characteristic_length > 0.1:
-        return "m"   # Reasonable size in meters
-    elif characteristic_length > 0.01:
-        return "cm"  # Could be cm or small meters
-    else:
-        return "mm"  # Very small, likely mm
-
-
-def get_unit_scale_factor(units: str) -> float:
-    """Get scale factor to convert to meters."""
-    scale_factors = {
-        "mm": 0.001,  # mm to m
-        "cm": 0.01,   # cm to m
-        "m": 1.0,     # m to m
-        "in": 0.0254, # inches to m
-        "ft": 0.3048  # feet to m
-    }
-    return scale_factors.get(units, 1.0)
-
-
-def get_default_stl_dimensions() -> Dict[str, Any]:
-    """Return default STL dimensions when analysis fails."""
-    return {
-        "bounding_box": {
-            "min": [0, 0, 0],
-            "max": [10, 10, 10],  # Use larger default size
-            "dimensions": [10, 10, 10],
-            "center": [5, 5, 5]
-        },
-        "characteristic_length": 10.0,
-        "scaled_characteristic_length": 10.0,
-        "dimensions": {"x": 10.0, "y": 10.0, "z": 10.0},
-        "center": [5, 5, 5],  # Add missing center key at root level
-        "volume": 1000.0,
-        "detected_units": "as-is",
-        "scale_factor": 1.0,  # Add missing scale factor
-        "vertex_count": 0
-    }
-
-
-def validate_stl_dimensions(stl_analysis: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Validate STL dimensions and apply safety checks.
-    
-    Returns updated analysis with any corrections applied.
-    """
-    scaled_length = stl_analysis["scaled_characteristic_length"]
-    
-    # Safety checks
-    warnings = []
-    corrections = {}
-    
-    # Check for extreme sizes
-    if scaled_length < 0.001:  # Less than 1mm
-        warnings.append(f"Very small geometry ({scaled_length*1000:.1f}mm), may cause mesh issues")
-    elif scaled_length > 1000:  # Larger than 1km
-        warnings.append(f"Very large geometry ({scaled_length:.1f}m), may cause mesh issues")
-        # Suggest scaling
-        suggested_scale = 1.0 / (scaled_length / 1.0)  # Scale to ~1m
-        corrections["suggested_scale_factor"] = suggested_scale
-    
-    # Check aspect ratio
-    dims = stl_analysis["dimensions"]
-    max_dim = max(dims["x"], dims["y"], dims["z"])
-    min_dim = min(dims["x"], dims["y"], dims["z"])
-    aspect_ratio = max_dim / min_dim if min_dim > 0 else float('inf')
-    
-    if aspect_ratio > 100:
-        warnings.append(f"High aspect ratio ({aspect_ratio:.1f}), may cause mesh quality issues")
-    
-    # Update analysis with validation results
-    stl_analysis["validation"] = {
-        "warnings": warnings,
-        "corrections": corrections,
-        "aspect_ratio": aspect_ratio
-    }
-    
-    return stl_analysis
-
-
-def calculate_adaptive_mesh_parameters(characteristic_length: float, base_resolution: int) -> Dict[str, Any]:
-    """
-    Calculate adaptive mesh parameters based on STL characteristic length.
-    
-    This ensures adequate mesh resolution around objects of any size while
-    staying within computational limits.
-    
-    Args:
-        characteristic_length: Maximum dimension of the STL object
-        base_resolution: Base resolution setting (coarse=20, medium=40, fine=80)
-        
-    Returns:
-        Dict with domain_multiplier, cell counts, and warnings
-    """
-    # Configuration parameters
-    MIN_CELLS_PER_OBJECT = 20  # Minimum cells across object for accuracy
-    TARGET_CELLS_PER_OBJECT = 30  # Target for good quality
-    MAX_TOTAL_CELLS = 1_000_000  # Computational limit for background mesh
-    MAX_CELLS_PER_DIRECTION = 300  # Maximum cells in any direction
-    
-    # Dynamic domain multiplier based on object size
-    if characteristic_length < 1.0:
-        # Very small objects need tighter domains
-        domain_multiplier = 5.0
-    elif characteristic_length < 10.0:
-        # Small objects
-        domain_multiplier = 10.0
-    elif characteristic_length < 100.0:
-        # Medium objects
-        domain_multiplier = 15.0
-    else:
-        # Large objects can have larger domains
-        domain_multiplier = 20.0
-    
-    # Calculate domain size
-    domain_length = characteristic_length * domain_multiplier
-    domain_height = domain_length * 0.5  # Typical aspect ratio
-    domain_width = domain_length * 0.5
-    
-    # Calculate required cell size for target resolution
-    target_cell_size = characteristic_length / TARGET_CELLS_PER_OBJECT
-    
-    # Calculate cells needed in each direction
-    cells_x = int(domain_length / target_cell_size)
-    cells_y = int(domain_height / target_cell_size)
-    cells_z = int(domain_width / target_cell_size)
-    
-    # Apply limits
-    cells_x = min(cells_x, MAX_CELLS_PER_DIRECTION)
-    cells_y = min(cells_y, MAX_CELLS_PER_DIRECTION)
-    cells_z = min(cells_z, MAX_CELLS_PER_DIRECTION)
-    
-    # Check total cell count
-    total_cells = cells_x * cells_y * cells_z
-    
-    warnings = []
-    if total_cells > MAX_TOTAL_CELLS:
-        # Scale back proportionally
-        scale_factor = (MAX_TOTAL_CELLS / total_cells) ** (1/3)
-        cells_x = int(cells_x * scale_factor)
-        cells_y = int(cells_y * scale_factor)
-        cells_z = int(cells_z * scale_factor)
-        total_cells = cells_x * cells_y * cells_z
-        
-        # Recalculate actual resolution
-        actual_cell_size = domain_length / cells_x
-        actual_cells_per_object = characteristic_length / actual_cell_size
-        
-        warnings.append(f"Mesh resolution limited due to cell count. Object will have ~{actual_cells_per_object:.0f} cells across.")
-    
-    # Calculate actual cells per object
-    actual_cell_size_x = domain_length / cells_x
-    cells_per_object = characteristic_length / actual_cell_size_x
-    
-    # Add warnings if resolution is too low
-    if cells_per_object < MIN_CELLS_PER_OBJECT:
-        warnings.append(f"Low resolution warning: Only {cells_per_object:.0f} cells across object. Consider scaling up the geometry.")
-        
-        # Suggest scale factor
-        suggested_scale = MIN_CELLS_PER_OBJECT / cells_per_object
-        warnings.append(f"Suggested scale factor: {suggested_scale:.1f}x to achieve minimum resolution.")
-    
-    # Calculate refinement levels for snappyHexMesh
-    if cells_per_object < 10:
-        # Very coarse - need aggressive refinement
-        min_refinement = 2
-        max_refinement = 4
-    elif cells_per_object < 20:
-        # Coarse - need good refinement
-        min_refinement = 1
-        max_refinement = 3
-    else:
-        # Adequate - normal refinement
-        min_refinement = 0
-        max_refinement = 2
-    
-    # Log the calculations
-    logger.info(f"Adaptive Mesh Calculation:")
-    logger.info(f"  Object size: {characteristic_length:.3f}")
-    logger.info(f"  Domain multiplier: {domain_multiplier}x")
-    logger.info(f"  Domain size: {domain_length:.3f} x {domain_height:.3f} x {domain_width:.3f}")
-    logger.info(f"  Background mesh: {cells_x} x {cells_y} x {cells_z} = {total_cells:,} cells")
-    logger.info(f"  Cells per object: {cells_per_object:.1f}")
-    logger.info(f"  Refinement levels: {min_refinement}-{max_refinement}")
-    
-    if warnings:
-        for warning in warnings:
-            logger.warning(f"  ⚠️  {warning}")
-    
-    return {
-        "domain_multiplier": domain_multiplier,
-        "domain_length": domain_length,
-        "domain_height": domain_height,
-        "domain_width": domain_width,
-        "cells_x": cells_x,
-        "cells_y": cells_y,
-        "cells_z": cells_z,
-        "total_cells": total_cells,
-        "cells_per_object": cells_per_object,
-        "min_refinement": min_refinement,
-        "max_refinement": max_refinement,
-        "warnings": warnings
-    }
-
-
-def create_adaptive_domain_vertices(domain_length: float, domain_height: float, domain_width: float, 
-                                   stl_center: List[float], characteristic_length: float, 
-                                   domain_size_multiplier: float) -> List[List[float]]:
-    """
-    Create domain vertices that position the STL geometry optimally within the domain.
-    
-    Creates a background mesh domain that properly contains the entire STL geometry.
-    The domain is positioned to ensure the STL is fully contained with appropriate
-    upstream and downstream distances for external flow.
-    """
-    # For external flow, we want:
-    # - More space upstream (40% of domain before object center)
-    # - Less space downstream (60% of domain after object center)
-    # - Centered in Y and Z directions
-    
-    # Calculate upstream/downstream split
-    upstream_fraction = 0.4
-    downstream_fraction = 0.6
-    
-    # Position domain to contain the entire STL with proper spacing
-    # The STL center might not be at origin, so we need to account for that
-    x_min = stl_center[0] - (upstream_fraction * domain_length)
-    x_max = stl_center[0] + (downstream_fraction * domain_length)
-    
-    # Center the domain in Y and Z around the STL center
-    y_min = stl_center[1] - (domain_height / 2)
-    y_max = stl_center[1] + (domain_height / 2)
-    
-    z_min = stl_center[2] - (domain_width / 2)
-    z_max = stl_center[2] + (domain_width / 2)
-    
-    # Create vertices for blockMesh (order matters for OpenFOAM)
-    vertices = [
-        [x_min, y_min, z_min],  # 0
-        [x_max, y_min, z_min],  # 1
-        [x_max, y_max, z_min],  # 2
-        [x_min, y_max, z_min],  # 3
-        [x_min, y_min, z_max],  # 4
-        [x_max, y_min, z_max],  # 5
-        [x_max, y_max, z_max],  # 6
-        [x_min, y_max, z_max]   # 7
-    ]
-    
-    return vertices
-
-
-def calculate_adaptive_location_in_mesh(domain_vertices: List[List[float]], 
-                                       stl_center: List[float]) -> List[float]:
-    """
-    Calculate a safe locationInMesh point for snappyHexMesh.
-    
-    Places the point upstream of the STL geometry in the fluid domain.
-    The point must be within the background mesh domain bounds and
-    outside any solid geometry.
-    """
-    # Get domain bounds from the background mesh vertices
-    x_coords = [v[0] for v in domain_vertices]
-    y_coords = [v[1] for v in domain_vertices]
-    z_coords = [v[2] for v in domain_vertices]
-    
-    x_min, x_max = min(x_coords), max(x_coords)
-    y_min, y_max = min(y_coords), max(y_coords)
-    z_min, z_max = min(z_coords), max(z_coords)
-    
-    # Place the point upstream of the STL center
-    # Use 20% of the domain length upstream of the object center
-    upstream_distance = (x_max - x_min) * 0.2
-    
-    location_x = stl_center[0] - upstream_distance
-    location_y = stl_center[1]  # Use STL center Y
-    location_z = stl_center[2]  # Use STL center Z
-    
-    # Ensure the point is within domain bounds with safety margin
-    safety_margin = 0.05  # 5% margin from boundaries
-    domain_width = x_max - x_min
-    domain_height = y_max - y_min
-    domain_depth = z_max - z_min
-    
-    # Apply safety margins
-    location_x = max(x_min + domain_width * safety_margin, 
-                    min(location_x, x_max - domain_width * safety_margin))
-    location_y = max(y_min + domain_height * safety_margin,
-                    min(location_y, y_max - domain_height * safety_margin))
-    location_z = max(z_min + domain_depth * safety_margin,
-                    min(location_z, z_max - domain_depth * safety_margin))
-    
-    logger.info(f"LocationInMesh: {[location_x, location_y, location_z]} (upstream of STL center {stl_center})")
-    
-    return [location_x, location_y, location_z]
-
-
-# Additional imports for the existing mesh generator functionality
-import os
-import json
 
 
 def mesh_generator_agent(state: CFDState) -> CFDState:
@@ -663,7 +151,7 @@ def generate_cylinder_mesh(dimensions: Dict[str, float], resolution: str = "medi
         
         # Use snappyHexMesh for proper cylinder geometry
         mesh_config = {
-            "type": "snappyHexMesh",
+            "type": "snappyHexMesh",  # Use snappyHexMesh instead of blockMesh
             "mesh_topology": "snappy",
             "geometry_type": "cylinder",
             "is_external_flow": True,
@@ -1415,40 +903,16 @@ def generate_stl_mesh_config(stl_file: str, mesh_resolution: str, flow_context: 
     # Get base resolution settings
     base_resolution = {"coarse": 20, "medium": 40, "fine": 80, "very_fine": 120}.get(mesh_resolution, 40)
     
-    # Analyze STL file to get actual dimensions
-    logger.info(f"Analyzing STL file dimensions: {stl_file}")
-    stl_analysis = analyze_stl_bounding_box(stl_file)
-    characteristic_length = stl_analysis["scaled_characteristic_length"]
-    stl_center = stl_analysis["center"]  # Get center from analysis
+    # Estimate domain size based on flow context
+    domain_size_multiplier = flow_context.get("domain_size_multiplier", 20.0)
     
-    # Apply validation and corrections
-    stl_analysis = validate_stl_dimensions(stl_analysis)
-    
-    # Use actual STL dimensions
-    stl_dims = stl_analysis["dimensions"]
-    
-    # Calculate adaptive mesh parameters
-    adaptive_params = calculate_adaptive_mesh_parameters(characteristic_length, base_resolution)
-    
-    # Extract calculated values
-    domain_length = adaptive_params["domain_length"]
-    domain_height = adaptive_params["domain_height"]
-    domain_width = adaptive_params["domain_width"]
-    
-    # Log the analysis results
-    if stl_analysis.get("validation", {}).get("warnings"):
-        for warning in stl_analysis["validation"]["warnings"]:
-            logger.warning(f"STL Analysis: {warning}")
-    
-    # Add adaptive warnings to state
-    if adaptive_params.get("warnings"):
-        for warning in adaptive_params["warnings"]:
-            logger.warning(f"Adaptive Mesh: {warning}")
-    
-    logger.info(f"STL Mesh Config - Characteristic length: {characteristic_length:.3f}")
-    logger.info(f"STL Mesh Config - Domain: {domain_length:.3f} x {domain_height:.3f} x {domain_width:.3f}")
-    logger.info(f"STL Mesh Config - Units detected: {stl_analysis['detected_units']}")
-    logger.info(f"STL Mesh Config - Scale factor applied: {stl_analysis['scale_factor']}")
+    # For STL files, we'll create a reasonable domain size
+    # Since we don't know the STL dimensions yet, use default values
+    # These will be adjusted during case writing when we can analyze the STL
+    estimated_characteristic_length = 0.1  # 10cm default
+    domain_length = estimated_characteristic_length * domain_size_multiplier
+    domain_height = domain_length * 0.6  # 60% of length
+    domain_width = domain_length * 0.6   # 60% of length
     
     # Create a valid OpenFOAM dictionary name from STL filename
     # Remove extension and ensure it's a valid C++ identifier
@@ -1469,21 +933,26 @@ def generate_stl_mesh_config(stl_file: str, mesh_resolution: str, flow_context: 
         "stl_file": stl_file,
         "stl_name": surface_name,  # Use cleaned name for OpenFOAM
         
-        # Background mesh configuration with adaptive parameters
+        # Background mesh configuration
         "background_mesh": {
             "type": "blockMesh",
             "domain_length": domain_length,
             "domain_height": domain_height,
             "domain_width": domain_width,
-            "n_cells_x": adaptive_params["cells_x"],
-            "n_cells_y": adaptive_params["cells_y"],
-            "n_cells_z": adaptive_params["cells_z"],
-            # Create a box domain centered around the STL geometry
-            # Place inlet upstream and outlet downstream of the STL
-            "vertices": create_adaptive_domain_vertices(
-                domain_length, domain_height, domain_width, 
-                stl_center, characteristic_length, adaptive_params["domain_multiplier"]
-            )
+            "n_cells_x": int(base_resolution * 1.5),
+            "n_cells_y": int(base_resolution * 0.9),
+            "n_cells_z": int(base_resolution * 0.9),
+            # Create a simple box domain
+            "vertices": [
+                [0, 0, 0],
+                [domain_length, 0, 0],
+                [domain_length, domain_height, 0],
+                [0, domain_height, 0],
+                [0, 0, domain_width],
+                [domain_length, 0, domain_width],
+                [domain_length, domain_height, domain_width],
+                [0, domain_height, domain_width]
+            ]
         },
         
         # Geometry configuration for snappyHexMesh
@@ -1495,50 +964,48 @@ def generate_stl_mesh_config(stl_file: str, mesh_resolution: str, flow_context: 
             }
         },
         
-        # SnappyHexMesh settings with adaptive refinement
+        # SnappyHexMesh settings - improved for robustness
         "snappy_settings": {
             "castellated_mesh": True,
             "snap": True,
             "add_layers": False,  # Start without layers for robustness, can be enabled later
             "refinement_levels": {
-                "min": adaptive_params["min_refinement"],
-                "max": adaptive_params["max_refinement"],
-                "surface_level": adaptive_params["min_refinement"] + 1
+                "min": 0,  # Start with 0 for more conservative approach
+                "max": 2,  # Reduced to 2 for better stability
+                "surface_level": 1
             },
             "refinement_regions": {
                 "global": {
                     "min": [0, 0, 0],
                     "max": [domain_length, domain_height, domain_width],
-                    "level": 0  # Base level
+                    "level": 0  # Start conservative
                 }
             },
-            # Adaptive locationInMesh based on STL position and domain
-            "location_in_mesh": calculate_adaptive_location_in_mesh(
-                create_adaptive_domain_vertices(
-                    domain_length, domain_height, domain_width, 
-                    stl_center, characteristic_length, adaptive_params["domain_multiplier"]
-                ), 
-                stl_center
-            ),
+            # Better locationInMesh - place it safely in upstream region
+            "location_in_mesh": [
+                domain_length * 0.05,  # 5% from inlet (very safe)
+                domain_height * 0.5,   # Middle height
+                domain_width * 0.5     # Middle width
+            ],
             "layers": {
                 "n_layers": 3,
                 "expansion_ratio": 1.3,
                 "final_layer_thickness": 0.7,
                 "min_thickness": 0.1
             },
-            # Mesh quality controls - adjusted based on resolution
+            # Improved mesh quality controls for STL files
             "mesh_quality": {
-                "maxNonOrtho": 75 if adaptive_params["cells_per_object"] < 20 else 65,
-                "maxBoundarySkewness": 25,
-                "maxInternalSkewness": 6,
-                "maxConcave": 85,
-                "minVol": 1e-15,
-                "minTetQuality": -1e30,
+                "maxNonOrtho": 75,  # More relaxed for complex geometry
+                "maxBoundarySkewness": 25,  # More relaxed
+                "maxInternalSkewness": 6,   # More relaxed
+                "maxConcave": 85,           # More relaxed
+                "minVol": 1e-15,           # More tolerant
+                "minTetQuality": -1e30,    # Very relaxed for initial mesh
                 "minArea": -1,
-                "minTwist": 0.01,
-                "minDeterminant": 0.0001,
-                "minFaceWeight": 0.01,
-                "minVolRatio": 0.005,
+                "minTwist": 0.01,          # More relaxed
+                "minDeterminant": 0.0001,  # More relaxed
+                "minFaceWeight": 0.01,     # More relaxed
+                "minVolRatio": 0.005,      # More relaxed
                 "minTriangleTwist": -1,
                 "nSmoothScale": 4,
                 "errorReduction": 0.75
@@ -1550,30 +1017,24 @@ def generate_stl_mesh_config(stl_file: str, mesh_resolution: str, flow_context: 
             "domain_length": domain_length,
             "domain_height": domain_height,
             "domain_width": domain_width,
-            "characteristic_length": characteristic_length,
+            "characteristic_length": estimated_characteristic_length,
             "is_3d": True
         },
-        
-        # STL analysis results for reference
-        "stl_analysis": stl_analysis,
-        
-        # Adaptive mesh parameters for reference
-        "adaptive_params": adaptive_params,
         
         # Resolution settings
         "resolution": {
             "background": base_resolution,
-            "surface": base_resolution * 1.5,
-            "refinement": base_resolution * 2
+            "surface": base_resolution * 1.5,  # Less aggressive refinement
+            "refinement": base_resolution * 2   # Less aggressive refinement
         },
         
-        # Estimated cell count
-        "total_cells": adaptive_params["total_cells"],
+        # Estimated cell count (will be refined during meshing)
+        "total_cells": int(base_resolution * base_resolution * base_resolution * 0.3),  # More conservative estimate
         
         # Quality metrics
         "quality_metrics": {
-            "aspect_ratio": 3.0,
-            "quality_score": 0.75 if adaptive_params["cells_per_object"] < 20 else 0.85
+            "aspect_ratio": 3.0,  # More relaxed for STL files
+            "quality_score": 0.75  # More realistic for complex geometries
         }
     }
     

@@ -53,7 +53,7 @@ output "paraview_endpoint" {
 
 output "ssh_connection" {
   description = "SSH connection command"
-  value       = "ssh -i ~/.ssh/${var.key_name} ubuntu@${aws_eip.foamai_eip.public_ip}"
+  value       = "ssh -i infra/keys/${var.key_name} ubuntu@${aws_eip.foamai_eip.public_ip}"
 }
 
 # Resource ARNs for reference
@@ -84,8 +84,8 @@ output "connection_tests" {
   value = {
     api_health_check    = "curl -f http://${aws_eip.foamai_eip.public_ip}:8000/ping"
     paraview_port_check = "nc -zv ${aws_eip.foamai_eip.public_ip} 11111"
-    ssh_test           = "ssh -i ~/.ssh/${var.key_name} -o ConnectTimeout=10 ubuntu@${aws_eip.foamai_eip.public_ip} 'echo Connected successfully'"
-    docker_status      = "ssh -i ~/.ssh/${var.key_name} ubuntu@${aws_eip.foamai_eip.public_ip} 'sudo docker ps'"
+    ssh_test           = "ssh -i infra/keys/${var.key_name} -o ConnectTimeout=10 ubuntu@${aws_eip.foamai_eip.public_ip} 'echo Connected successfully'"
+    docker_status      = "ssh -i infra/keys/${var.key_name} ubuntu@${aws_eip.foamai_eip.public_ip} 'sudo docker ps'"
   }
 }
 
@@ -97,7 +97,7 @@ output "access_information" {
     api_url            = "http://${aws_eip.foamai_eip.public_ip}:8000"
     api_docs_url       = "http://${aws_eip.foamai_eip.public_ip}:8000/docs"
     paraview_server    = "${aws_eip.foamai_eip.public_ip}:11111"
-    ssh_command        = "ssh -i ~/.ssh/${var.key_name} ubuntu@${aws_eip.foamai_eip.public_ip}"
+    ssh_command        = "ssh -i infra/keys/${var.key_name} ubuntu@${aws_eip.foamai_eip.public_ip}"
     region             = var.aws_region
     availability_zone  = aws_subnet.foamai_public_subnet.availability_zone
   }

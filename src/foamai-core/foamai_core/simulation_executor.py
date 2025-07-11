@@ -9,7 +9,6 @@ from typing import Dict, Any, Optional, List
 from loguru import logger
 
 from .state import CFDState, CFDStep, GeometryType
-from .remote_executor import RemoteExecutor
 
 
 def simulation_executor_agent(state: CFDState) -> CFDState:
@@ -18,22 +17,40 @@ def simulation_executor_agent(state: CFDState) -> CFDState:
     
     Executes OpenFOAM simulation pipeline including mesh generation,
     mesh checking, and solver execution with progress monitoring.
-    
-    Can execute either locally or remotely based on configuration.
     """
     try:
         if state["verbose"]:
             logger.info("Simulation Executor: Starting simulation execution")
         
-        # Determine execution mode
-        execution_mode = state.get("execution_mode", "local")  # "local" or "remote"
+        case_directory = Path(state["case_directory"])
         
-        if execution_mode == "remote":
-            # Use remote execution
-            return execute_simulation_remote(state)
-        else:
-            # Use local execution (original behavior)
-            return execute_simulation_local(state)
+        # Execute simulation pipeline
+        simulation_results = execute_simulation_pipeline(case_directory, state)
+        
+        # Check simulation success
+        if not simulation_results["success"]:
+            error_msg = f"Simulation failed: {simulation_results.get('error', 'Unknown error')}"
+            logger.error(error_msg)
+            return {
+                **state,
+                "errors": state["errors"] + [error_msg],
+                "simulation_results": simulation_results,
+                "current_step": CFDStep.ERROR
+            }
+        
+        # Parse convergence metrics
+        convergence_metrics = parse_convergence_metrics(simulation_results)
+        
+        if state["verbose"]:
+            logger.info(f"Simulation Executor: Simulation completed successfully")
+            logger.info(f"Simulation Executor: Final residuals: {convergence_metrics.get('final_residuals', {})}")
+        
+        return {
+            **state,
+            "simulation_results": simulation_results,
+            "convergence_metrics": convergence_metrics,
+            "errors": []
+        }
         
     except Exception as e:
         logger.error(f"Simulation Executor error: {str(e)}")
@@ -42,99 +59,6 @@ def simulation_executor_agent(state: CFDState) -> CFDState:
             "errors": state["errors"] + [f"Simulation execution failed: {str(e)}"],
             "current_step": CFDStep.ERROR
         }
-
-
-def execute_simulation_remote(state: CFDState) -> CFDState:
-    """
-    Execute simulation pipeline using remote server.
-    """
-    try:
-        # Get remote execution configuration
-        server_url = state.get("server_url", "http://localhost:8000")
-        project_name = state.get("project_name")
-        
-        if not project_name:
-            raise ValueError("Project name is required for remote execution")
-        
-        if state["verbose"]:
-            logger.info(f"Remote execution: project '{project_name}' on server '{server_url}'")
-        
-        # Initialize remote executor
-        with RemoteExecutor(server_url, project_name) as remote:
-            # Ensure project exists
-            if not remote.ensure_project_exists():
-                remote.create_project_if_not_exists("LangGraph generated simulation")
-            
-            # Execute simulation pipeline remotely
-            simulation_results = execute_simulation_pipeline_remote(remote, state)
-            
-            # Check simulation success
-            if not simulation_results["success"]:
-                error_msg = f"Remote simulation failed: {simulation_results.get('error', 'Unknown error')}"
-                logger.error(error_msg)
-                return {
-                    **state,
-                    "errors": state["errors"] + [error_msg],
-                    "simulation_results": simulation_results,
-                    "current_step": CFDStep.ERROR
-                }
-            
-            # Parse convergence metrics
-            convergence_metrics = parse_convergence_metrics(simulation_results)
-            
-            if state["verbose"]:
-                logger.info(f"Simulation Executor: Remote simulation completed successfully")
-                logger.info(f"Simulation Executor: Final residuals: {convergence_metrics.get('final_residuals', {})}")
-            
-            return {
-                **state,
-                "simulation_results": simulation_results,
-                "convergence_metrics": convergence_metrics,
-                "errors": []
-            }
-        
-    except Exception as e:
-        logger.error(f"Remote simulation execution error: {str(e)}")
-        return {
-            **state,
-            "errors": state["errors"] + [f"Remote simulation execution failed: {str(e)}"],
-            "current_step": CFDStep.ERROR
-        }
-
-
-def execute_simulation_local(state: CFDState) -> CFDState:
-    """
-    Execute simulation pipeline using local execution (original behavior).
-    """
-    case_directory = Path(state["case_directory"])
-    
-    # Execute simulation pipeline
-    simulation_results = execute_simulation_pipeline(case_directory, state)
-    
-    # Check simulation success
-    if not simulation_results["success"]:
-        error_msg = f"Simulation failed: {simulation_results.get('error', 'Unknown error')}"
-        logger.error(error_msg)
-        return {
-            **state,
-            "errors": state["errors"] + [error_msg],
-            "simulation_results": simulation_results,
-            "current_step": CFDStep.ERROR
-        }
-    
-    # Parse convergence metrics
-    convergence_metrics = parse_convergence_metrics(simulation_results)
-    
-    if state["verbose"]:
-        logger.info(f"Simulation Executor: Simulation completed successfully")
-        logger.info(f"Simulation Executor: Final residuals: {convergence_metrics.get('final_residuals', {})}")
-    
-    return {
-        **state,
-        "simulation_results": simulation_results,
-        "convergence_metrics": convergence_metrics,
-        "errors": []
-    }
 
 
 def execute_simulation_pipeline(case_directory: Path, state: CFDState) -> Dict[str, Any]:
@@ -275,118 +199,6 @@ def execute_simulation_pipeline(case_directory: Path, state: CFDState) -> Dict[s
         
         if state["verbose"]:
             logger.info(f"Total simulation pipeline time: {results['total_time']:.1f} seconds")
-        
-    except Exception as e:
-        results["error"] = str(e)
-        results["total_time"] = time.time() - start_time
-    
-    return results
-
-
-def execute_simulation_pipeline_remote(remote: RemoteExecutor, state: CFDState) -> Dict[str, Any]:
-    """Execute the complete OpenFOAM simulation pipeline remotely."""
-    results = {
-        "success": False,
-        "steps": {},
-        "total_time": 0,
-        "log_files": {}
-    }
-    
-    start_time = time.time()
-    
-    try:
-        # Step 1: Generate mesh
-        if state["verbose"]:
-            logger.info("Running blockMesh remotely...")
-            mesh_cells = state.get("mesh_config", {}).get("total_cells", 0)
-            if mesh_cells and mesh_cells > 100000:
-                logger.warning(f"Large mesh with {mesh_cells} cells - mesh generation may take a moment")
-        
-        mesh_result = run_blockmesh_remote(remote, state)
-        results["steps"]["mesh_generation"] = mesh_result
-        
-        if not mesh_result["success"]:
-            results["error"] = f"Mesh generation failed: {mesh_result['error']}"
-            return results
-        
-        if state["verbose"]:
-            logger.info("Remote mesh generation completed successfully")
-        
-        # Step 1b: Run snappyHexMesh if needed
-        mesh_type = state.get("mesh_config", {}).get("type", "blockMesh")
-        if mesh_type == "snappyHexMesh":
-            if state["verbose"]:
-                logger.info("Running snappyHexMesh remotely to refine mesh around geometry...")
-            
-            snappy_result = run_snappyhexmesh_remote(remote, state)
-            results["steps"]["snappyHexMesh"] = snappy_result
-            
-            if not snappy_result["success"]:
-                results["error"] = f"snappyHexMesh failed: {snappy_result['error']}"
-                return results
-            
-            if state["verbose"]:
-                logger.info("Remote snappyHexMesh completed successfully")
-        
-        # Step 1.5: Create cylinder geometry if needed
-        if state.get("use_toposet_createpatch", False):
-            if state["verbose"]:
-                logger.info("Running topoSet remotely to create cylinder geometry...")
-            
-            toposet_result = run_toposet_remote(remote, state)
-            results["steps"]["toposet"] = toposet_result
-            
-            if not toposet_result["success"]:
-                results["error"] = f"topoSet failed: {toposet_result['error']}"
-                return results
-            
-            if state["verbose"]:
-                logger.info("Running createPatch remotely to create cylinder boundary...")
-            
-            createpatch_result = run_createpatch_remote(remote, state)
-            results["steps"]["createpatch"] = createpatch_result
-            
-            if not createpatch_result["success"]:
-                results["error"] = f"createPatch failed: {createpatch_result['error']}"
-                return results
-        
-        # Step 3: Check mesh quality
-        if state["verbose"]:
-            logger.info("Running checkMesh remotely...")
-        
-        mesh_check_result = run_checkmesh_remote(remote, state)
-        results["steps"]["mesh_check"] = mesh_check_result
-        
-        if not mesh_check_result["success"]:
-            results["error"] = f"Mesh check failed: {mesh_check_result['error']}"
-            return results
-        
-        if state["verbose"]:
-            logger.info("Remote mesh quality check completed")
-        
-        # Step 4: Run solver
-        solver = state["solver_settings"]["solver"]
-        if state["verbose"]:
-            logger.info(f"Running {solver} remotely...")
-            velocity = state.get("parsed_parameters", {}).get("velocity", 1.0)
-            if velocity and velocity > 100:
-                logger.info(f"Note: High velocity ({velocity} m/s) simulations require small time steps for stability")
-        
-        solver_result = run_solver_remote(remote, solver, state)
-        results["steps"]["solver"] = solver_result
-        
-        if not solver_result["success"]:
-            results["error"] = f"Solver execution failed: {solver_result['error']}"
-            return results
-        
-        if state["verbose"]:
-            logger.info("Remote solver execution completed successfully")
-        
-        results["success"] = True
-        results["total_time"] = time.time() - start_time
-        
-        if state["verbose"]:
-            logger.info(f"Total remote simulation pipeline time: {results['total_time']:.1f} seconds")
         
     except Exception as e:
         results["error"] = str(e)
@@ -1493,328 +1305,3 @@ def remap_boundary_conditions_after_mesh(case_directory: Path, state: CFDState) 
         logger.error(f"Boundary condition remapping failed: {str(e)}")
     
     return result 
-
-
-# Remote execution functions
-def run_blockmesh_remote(remote: RemoteExecutor, state: CFDState) -> Dict[str, Any]:
-    """Run blockMesh remotely."""
-    try:
-        if state["verbose"]:
-            logger.info("Executing blockMesh on remote server...")
-        
-        result = remote.run_blockmesh()
-        
-        return {
-            "success": result.get("success", False),
-            "return_code": result.get("exit_code", -1),
-            "stdout": result.get("stdout", ""),
-            "stderr": result.get("stderr", ""),
-            "execution_time": result.get("execution_time", 0),
-            "mesh_info": parse_blockmesh_output_from_text(result.get("stdout", "")),
-            "error": result.get("stderr") if not result.get("success") else None
-        }
-        
-    except Exception as e:
-        logger.error(f"Remote blockMesh execution failed: {str(e)}")
-        return {
-            "success": False,
-            "return_code": -1,
-            "stdout": "",
-            "stderr": str(e),
-            "mesh_info": {},
-            "error": str(e)
-        }
-
-
-def run_checkmesh_remote(remote: RemoteExecutor, state: CFDState) -> Dict[str, Any]:
-    """Run checkMesh remotely."""
-    try:
-        if state["verbose"]:
-            logger.info("Executing checkMesh on remote server...")
-        
-        result = remote.run_checkmesh()
-        
-        return {
-            "success": result.get("success", False),
-            "return_code": result.get("exit_code", -1),
-            "stdout": result.get("stdout", ""),
-            "stderr": result.get("stderr", ""),
-            "mesh_quality": parse_checkmesh_output_from_text(result.get("stdout", "")),
-            "error": result.get("stderr") if not result.get("success") else None
-        }
-        
-    except Exception as e:
-        logger.error(f"Remote checkMesh execution failed: {str(e)}")
-        return {
-            "success": False,
-            "return_code": -1,
-            "stdout": "",
-            "stderr": str(e),
-            "mesh_quality": {},
-            "error": str(e)
-        }
-
-
-def run_solver_remote(remote: RemoteExecutor, solver: str, state: CFDState) -> Dict[str, Any]:
-    """Run OpenFOAM solver remotely."""
-    try:
-        if state["verbose"]:
-            logger.info(f"Executing {solver} on remote server...")
-        
-        # Use foamRun for modern OpenFOAM or direct solver
-        if solver in ["incompressibleFluid", "compressibleFluid", "multiphaseFluid"]:
-            result = remote.run_foamrun(solver, timeout=1800)
-        else:
-            result = remote.run_solver(solver, timeout=1800)
-        
-        return {
-            "success": result.get("success", False),
-            "return_code": result.get("exit_code", -1),
-            "stdout": result.get("stdout", ""),
-            "stderr": result.get("stderr", ""),
-            "execution_time": result.get("execution_time", 0),
-            "solver_info": parse_solver_output_from_text(result.get("stdout", ""), solver),
-            "error": result.get("stderr") if not result.get("success") else None
-        }
-        
-    except Exception as e:
-        logger.error(f"Remote {solver} execution failed: {str(e)}")
-        return {
-            "success": False,
-            "return_code": -1,
-            "stdout": "",
-            "stderr": str(e),
-            "solver_info": {},
-            "error": str(e)
-        }
-
-
-def run_snappyhexmesh_remote(remote: RemoteExecutor, state: CFDState) -> Dict[str, Any]:
-    """Run snappyHexMesh remotely."""
-    try:
-        if state["verbose"]:
-            logger.info("Executing snappyHexMesh on remote server...")
-        
-        result = remote.run_snappyhexmesh()
-        
-        return {
-            "success": result.get("success", False),
-            "return_code": result.get("exit_code", -1),
-            "stdout": result.get("stdout", ""),
-            "stderr": result.get("stderr", ""),
-            "execution_time": result.get("execution_time", 0),
-            "mesh_info": parse_snappyhexmesh_output_from_text(result.get("stdout", "")),
-            "error": result.get("stderr") if not result.get("success") else None
-        }
-        
-    except Exception as e:
-        logger.error(f"Remote snappyHexMesh execution failed: {str(e)}")
-        return {
-            "success": False,
-            "return_code": -1,
-            "stdout": "",
-            "stderr": str(e),
-            "mesh_info": {},
-            "error": str(e)
-        }
-
-
-def run_toposet_remote(remote: RemoteExecutor, state: CFDState) -> Dict[str, Any]:
-    """Run topoSet remotely."""
-    try:
-        if state["verbose"]:
-            logger.info("Executing topoSet on remote server...")
-        
-        result = remote.run_toposet()
-        
-        return {
-            "success": result.get("success", False),
-            "return_code": result.get("exit_code", -1),
-            "stdout": result.get("stdout", ""),
-            "stderr": result.get("stderr", ""),
-            "error": result.get("stderr") if not result.get("success") else None
-        }
-        
-    except Exception as e:
-        logger.error(f"Remote topoSet execution failed: {str(e)}")
-        return {
-            "success": False,
-            "return_code": -1,
-            "stdout": "",
-            "stderr": str(e),
-            "error": str(e)
-        }
-
-
-def run_createpatch_remote(remote: RemoteExecutor, state: CFDState) -> Dict[str, Any]:
-    """Run createPatch remotely."""
-    try:
-        if state["verbose"]:
-            logger.info("Executing createPatch on remote server...")
-        
-        result = remote.run_createpatch()
-        
-        return {
-            "success": result.get("success", False),
-            "return_code": result.get("exit_code", -1),
-            "stdout": result.get("stdout", ""),
-            "stderr": result.get("stderr", ""),
-            "error": result.get("stderr") if not result.get("success") else None
-        }
-        
-    except Exception as e:
-        logger.error(f"Remote createPatch execution failed: {str(e)}")
-        return {
-            "success": False,
-            "return_code": -1,
-            "stdout": "",
-            "stderr": str(e),
-            "error": str(e)
-        }
-
-
-# Text parsing functions (for parsing command output from server responses)
-def parse_blockmesh_output_from_text(output_text: str) -> Dict[str, Any]:
-    """Parse blockMesh output from text string."""
-    mesh_info = {
-        "total_cells": 0,
-        "total_points": 0,
-        "total_faces": 0,
-        "mesh_ok": False
-    }
-    
-    try:
-        for line in output_text.split('\n'):
-            if "cells:" in line.lower():
-                # Extract cell count
-                match = re.search(r'cells:\s*(\d+)', line, re.IGNORECASE)
-                if match:
-                    mesh_info["total_cells"] = int(match.group(1))
-            
-            elif "points:" in line.lower():
-                # Extract point count
-                match = re.search(r'points:\s*(\d+)', line, re.IGNORECASE)
-                if match:
-                    mesh_info["total_points"] = int(match.group(1))
-            
-            elif "faces:" in line.lower():
-                # Extract face count
-                match = re.search(r'faces:\s*(\d+)', line, re.IGNORECASE)
-                if match:
-                    mesh_info["total_faces"] = int(match.group(1))
-            
-            elif "end" in line.lower() and ("blockmesh" in line.lower() or "successfully" in line.lower()):
-                mesh_info["mesh_ok"] = True
-        
-    except Exception as e:
-        logger.warning(f"Error parsing blockMesh output: {str(e)}")
-    
-    return mesh_info
-
-
-def parse_checkmesh_output_from_text(output_text: str) -> Dict[str, Any]:
-    """Parse checkMesh output from text string."""
-    mesh_quality = {
-        "mesh_ok": False,
-        "quality_score": 0.0,
-        "errors": [],
-        "warnings": []
-    }
-    
-    try:
-        for line in output_text.split('\n'):
-            line_lower = line.lower()
-            
-            if "mesh ok" in line_lower or "successful" in line_lower:
-                mesh_quality["mesh_ok"] = True
-            
-            elif "failed" in line_lower or "error" in line_lower:
-                mesh_quality["errors"].append(line.strip())
-            
-            elif "warning" in line_lower:
-                mesh_quality["warnings"].append(line.strip())
-            
-            # Extract quality metrics if available
-            elif "aspect ratio" in line_lower:
-                match = re.search(r'(\d+\.?\d*)', line)
-                if match:
-                    aspect_ratio = float(match.group(1))
-                    # Simple quality scoring based on aspect ratio
-                    mesh_quality["quality_score"] = max(0.0, min(1.0, 1.0 / max(1.0, aspect_ratio / 10.0)))
-        
-        # If no specific quality score found, use binary success/failure
-        if mesh_quality["quality_score"] == 0.0:
-            mesh_quality["quality_score"] = 1.0 if mesh_quality["mesh_ok"] else 0.0
-        
-    except Exception as e:
-        logger.warning(f"Error parsing checkMesh output: {str(e)}")
-    
-    return mesh_quality
-
-
-def parse_solver_output_from_text(output_text: str, solver: str) -> Dict[str, Any]:
-    """Parse solver output from text string."""
-    solver_info = {
-        "execution_time": 0.0,
-        "final_time": 0.0,
-        "iterations": 0,
-        "converged": False
-    }
-    
-    try:
-        for line in output_text.split('\n'):
-            line_lower = line.lower()
-            
-            # Look for time execution info
-            if "execution time" in line_lower or "cpu time" in line_lower:
-                match = re.search(r'(\d+\.?\d*)', line)
-                if match:
-                    solver_info["execution_time"] = float(match.group(1))
-            
-            # Look for final time
-            elif "time =" in line_lower or "final time" in line_lower:
-                match = re.search(r'(\d+\.?\d*)', line)
-                if match:
-                    solver_info["final_time"] = float(match.group(1))
-            
-            # Look for convergence indicators
-            elif "converged" in line_lower or "solution converged" in line_lower:
-                solver_info["converged"] = True
-            
-            elif "end" in line_lower and solver.lower() in line_lower:
-                # Solver completed
-                pass
-        
-    except Exception as e:
-        logger.warning(f"Error parsing {solver} output: {str(e)}")
-    
-    return solver_info
-
-
-def parse_snappyhexmesh_output_from_text(output_text: str) -> Dict[str, Any]:
-    """Parse snappyHexMesh output from text string."""
-    mesh_info = {
-        "final_cells": 0,
-        "layers_added": False,
-        "mesh_ok": False
-    }
-    
-    try:
-        for line in output_text.split('\n'):
-            line_lower = line.lower()
-            
-            if "cells:" in line_lower and "final" in line_lower:
-                match = re.search(r'(\d+)', line)
-                if match:
-                    mesh_info["final_cells"] = int(match.group(1))
-            
-            elif "layer" in line_lower and ("added" in line_lower or "successful" in line_lower):
-                mesh_info["layers_added"] = True
-            
-            elif "successfully completed" in line_lower or "end snappy" in line_lower:
-                mesh_info["mesh_ok"] = True
-        
-    except Exception as e:
-        logger.warning(f"Error parsing snappyHexMesh output: {str(e)}")
-    
-    return mesh_info 

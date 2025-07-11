@@ -15,25 +15,10 @@ def visualization_agent(state: CFDState) -> CFDState:
     
     Generates visualizations using ParaView and exports images or data files
     based on simulation results and user preferences.
-    
-    For remote execution, visualization is delegated to the desktop UI.
     """
     try:
         if state["verbose"]:
             logger.info("Visualization: Starting visualization generation")
-        
-        # Check if running in remote execution mode
-        if state.get("execution_mode") == "remote":
-            logger.info("Remote execution detected - skipping LangGraph visualization (delegated to UI)")
-            
-            # For remote execution, visualization is handled by the desktop UI
-            # Just mark this step as complete and proceed
-            return {
-                **state,
-                "visualization_path": "remote://delegated_to_ui",
-                "current_step": CFDStep.COMPLETE,
-                "errors": []
-            }
         
         case_directory = Path(state["case_directory"])
         output_format = state.get("output_format", "images")
@@ -80,7 +65,7 @@ def visualization_agent(state: CFDState) -> CFDState:
             
             # Get ParaView path from settings
             sys.path.append('src')
-            from .config import get_settings
+            from foamai.config import get_settings
             settings = get_settings()
             
             if settings.paraview_path and Path(settings.paraview_path).exists():

@@ -2,7 +2,7 @@ name: Documentation
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
     paths:
       # Documentation files
       - '**/*.md'
@@ -10,7 +10,7 @@ on:
       # Docs workflow
       - '.github/workflows/docs.yml'
   pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
     paths:
       # Documentation files
       - '**/*.md'
@@ -33,6 +33,7 @@ jobs:
         use-verbose-mode: 'no'
         config-file: '.github/mlc_config.json'
         check-modified-files-only: 'yes'
+        base-branch: 'main'
 
     - name: Validate Markdown Format
       run: |

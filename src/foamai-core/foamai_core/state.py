@@ -121,3 +121,4 @@ class CFDState(TypedDict):
     awaiting_user_approval: bool  # True when workflow is paused for user approval
     workflow_paused: bool  # True when workflow is paused waiting for external input
     config_summary: Optional[Dict[str, Any]]  # Configuration summary for UI display 
+    config_only_mode: Optional[bool]  # True when running configuration phase only (no solver execution) 

@@ -40,17 +40,59 @@ def user_approval_agent(state: CFDState) -> CFDState:
             # Generate configuration summary for UI
             config_summary = generate_configuration_summary(state)
             
+            # Extract mesh and simulation information from config-only results
+            mesh_info = {}
+            simulation_results = state.get("simulation_results", {})
+            
+            # Get mesh information from the configuration phase results
+            if simulation_results.get("steps", {}).get("mesh_generation"):
+                mesh_gen_result = simulation_results["steps"]["mesh_generation"]
+                mesh_info = {
+                    "mesh_type": state.get("mesh_config", {}).get("type", "blockMesh"),
+                    "total_cells": mesh_gen_result.get("mesh_info", {}).get("total_cells", 0),
+                    "quality_score": mesh_gen_result.get("mesh_info", {}).get("quality_score", 0.0)
+                }
+                if state["verbose"]:
+                    logger.info(f"User Approval: Extracted mesh info from config results: {mesh_info}")
+            else:
+                # Fallback to mesh_config if simulation_results not available
+                mesh_config = state.get("mesh_config", {})
+                if mesh_config:
+                    mesh_info = {
+                        "mesh_type": mesh_config.get("type", "blockMesh"),
+                        "total_cells": mesh_config.get("total_cells", 0),
+                        "quality_score": 0.0  # Default if not available
+                    }
+                    if state["verbose"]:
+                        logger.info(f"User Approval: Using fallback mesh info from config: {mesh_info}")
+            
+            # Add case file information if available
+            case_info = {}
+            if state.get("project_name"):
+                case_info = {
+                    "project_name": state["project_name"],
+                    "foam_file_path": f"/home/ubuntu/foam_projects/{state['project_name']}/active_run/{state['project_name']}.foam"
+                }
+            
+            # Update config summary with mesh and case info
+            config_summary.update({
+                "mesh_info": mesh_info,
+                "case_info": case_info
+            })
+            
             if state["verbose"]:
                 logger.info(f"User Approval: Generated config summary with keys: {list(config_summary.keys())}")
                 logger.info("User Approval: Workflow will pause for user review in desktop UI")
             
             # Set state to indicate waiting for user approval
+            # This will pause the workflow until the user clicks "Run Simulation"
             return {
                 **state,
                 "user_approved": False,
                 "awaiting_user_approval": True,
                 "config_summary": config_summary,
                 "current_step": CFDStep.USER_APPROVAL,
+                "workflow_paused": True,
                 "errors": []
             }
         else:
@@ -67,6 +109,7 @@ def user_approval_agent(state: CFDState) -> CFDState:
                 return {
                     **state,
                     "user_approved": True,
+                    "config_only_mode": False,  # Full simulation mode after approval
                     "errors": []
                 }
             elif user_decision == "changes":

@@ -3,7 +3,7 @@ Simulation Setup Widget for OpenFOAM Desktop Application
 Main widget that replaces the chat interface with structured simulation setup
 """
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                                QLineEdit, QLabel, QFrame, QTextEdit, QMessageBox, QDialog,
@@ -11,10 +11,11 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
 from PySide6.QtCore import Qt, QTimer, Signal, QThread, QObject
 from PySide6.QtGui import QFont
 
-from api_client import ProjectAPIClient
-from simulation_state import SimulationState, ComponentState, MeshData, SolverData, ParametersData
-from simulation_cards import MeshCard, SolverCard, ParametersCard
-from langgraph_interface import LangGraphInterface
+from .api_client import ProjectAPIClient
+from .simulation_state import SimulationState, ComponentState, MeshData, SolverData, ParametersData
+from .simulation_cards import MeshCard, SolverCard, ParametersCard
+from .langgraph_interface import LangGraphInterface
+from .detail_dialogs import MeshDetailDialog, SolverDetailDialog, ParametersDetailDialog
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +28,19 @@ class SimulationSetupWidget(QWidget):
     workflow_completed = Signal(dict)
     workflow_failed = Signal(str)
     
+    # New signals for ParaView integration
+    paraview_connect_requested = Signal(str, str)  # server_url, project_name
+    paraview_disconnect_requested = Signal()
+    paraview_load_mesh_requested = Signal(str)  # file_path
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         self.api_client = None
         self.current_project = None
         self.langgraph_interface = None
         self.simulation_state = SimulationState()
+        self.current_config_summary = None  # Store current configuration for editing
+        self.paraview_was_connected = False  # Track if ParaView was connected before project switch
         
         self.setup_ui()
         self.setup_connections()
@@ -190,6 +198,11 @@ class SimulationSetupWidget(QWidget):
         self.start_button.clicked.connect(self.start_workflow)
         self.stop_button.clicked.connect(self.stop_workflow)
         self.run_simulation_button.clicked.connect(self.run_simulation)
+        
+        # Connect card edit signals
+        self.mesh_card.edit_requested.connect(self.on_edit_requested)
+        self.solver_card.edit_requested.connect(self.on_edit_requested)
+        self.parameters_card.edit_requested.connect(self.on_edit_requested)
     
     def set_api_client(self, api_client: ProjectAPIClient):
         """Set the API client for server communication."""
@@ -241,6 +254,20 @@ class SimulationSetupWidget(QWidget):
     def set_current_project(self, project_name: str):
         """Set the current project for workflow execution."""
         logger.info(f"SimulationSetupWidget.set_current_project called with: {project_name}")
+        
+        # Check if we're switching to a different project and ParaView is connected
+        if self.current_project != project_name and self.current_project is not None:
+            # Check if ParaView is currently connected
+            main_window = self.parent()
+            if main_window and hasattr(main_window, 'paraview_widget'):
+                paraview_widget = main_window.paraview_widget
+                # Check the connection status using the internal connected flag to avoid API calls during switching
+                self.paraview_was_connected = getattr(paraview_widget, 'connected', False)
+                
+                if self.paraview_was_connected:
+                    self.add_log_message("info", f"📡 Disconnecting from ParaView before switching to project: {project_name}")
+                    self.paraview_disconnect_requested.emit()
+        
         self.current_project = project_name
         
         if self.langgraph_interface:
@@ -248,6 +275,13 @@ class SimulationSetupWidget(QWidget):
             result = self.langgraph_interface.configure_remote_execution(project_name, test_connection=True)
             if result["success"]:
                 self.add_log_message("info", f"Configured for project: {project_name}")
+                
+                # If ParaView was connected before switching, reconnect to new project
+                if self.paraview_was_connected and self.api_client:
+                    self.add_log_message("info", f"📡 Reconnecting to ParaView for new project: {project_name}")
+                    # Give more time for the disconnection and project configuration to settle
+                    QTimer.singleShot(2000, lambda: self.paraview_connect_requested.emit(self.api_client.base_url, project_name))
+                    self.paraview_was_connected = False  # Reset flag
             else:
                 self.add_log_message("error", f"Failed to configure project: {result.get('error')}")
         else:
@@ -330,8 +364,23 @@ class SimulationSetupWidget(QWidget):
         # Check if we're waiting for user approval (configuration review)
         current_state = self.langgraph_interface.get_current_state()
         if current_state and current_state.get("awaiting_user_approval", False):
-            # User ready to proceed - continue workflow with simulation
-            success = self.langgraph_interface.approve_configuration()
+            # Check if configuration has been modified by user
+            if current_state.get("user_modified_config", False):
+                self.add_log_message("info", "🔄 Using user-modified configuration for simulation")
+            
+            # Debug: Show what solver will be used
+            solver_settings = current_state.get("solver_settings", {})
+            solver_name = solver_settings.get("solver", "Unknown")
+            logger.info(f"DEBUG: About to run simulation with solver: {solver_name}")
+            logger.info(f"DEBUG: Full solver_settings: {solver_settings}")
+            self.add_log_message("info", f"🔧 Running simulation with solver: {solver_name}")
+            
+            # Disconnect from ParaView before starting simulation to prevent freezing
+            self.add_log_message("info", "📡 Disconnecting from ParaView server before simulation...")
+            self.paraview_disconnect_requested.emit()
+            
+            # User ready to proceed - run solver only
+            success = self.langgraph_interface.run_solver_only()
             if success:
                 self.add_log_message("info", "🚀 Starting OpenFOAM simulation on remote server...")
                 self.run_simulation_button.setEnabled(False)
@@ -364,6 +413,390 @@ class SimulationSetupWidget(QWidget):
         self.mesh_card.set_description("")
         self.solver_card.set_description("")
         self.parameters_card.set_description("")
+    
+    def on_edit_requested(self, component_type: str):
+        """Handle edit request from a simulation card."""
+        logger.info(f"Edit requested for component: {component_type}")
+        
+        if component_type == "mesh":
+            self.open_mesh_detail_dialog()
+        elif component_type == "solver":
+            self.open_solver_detail_dialog()
+        elif component_type == "parameters":
+            self.open_parameters_detail_dialog()
+    
+    def open_mesh_detail_dialog(self):
+        """Open mesh detail dialog for editing."""
+        # Create mesh data from current state
+        mesh_data = self._create_mesh_data_from_config()
+        
+        dialog = MeshDetailDialog(mesh_data, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Get updated data and validate
+            updated_mesh_data = dialog.get_mesh_data()
+            
+            # Show validation preview if there are issues
+            if not self._show_validation_preview("mesh", updated_mesh_data):
+                return  # User chose not to continue with invalid data
+            
+            # Update mesh card with new data
+            self.mesh_card.set_description(updated_mesh_data.description)
+            self.mesh_card.set_state(ComponentState.POPULATED)
+            
+            # Send updated configuration back to LangGraph
+            self._send_config_update("mesh", updated_mesh_data)
+            self.add_log_message("info", "Mesh configuration updated")
+            
+            # Add visual indicator that this component has been modified
+            self._mark_component_as_modified("mesh")
+    
+    def open_solver_detail_dialog(self):
+        """Open solver detail dialog for editing."""
+        # Create solver data from current state
+        solver_data = self._create_solver_data_from_config()
+        
+        dialog = SolverDetailDialog(solver_data, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Get updated data and validate
+            updated_solver_data = dialog.get_solver_data()
+            
+            # Show validation preview if there are issues
+            if not self._show_validation_preview("solver", updated_solver_data):
+                return  # User chose not to continue with invalid data
+            
+            # Update solver card with new data
+            self.solver_card.set_solver_info(
+                updated_solver_data.name,
+                updated_solver_data.description,
+                updated_solver_data.justification
+            )
+            
+            # Send updated configuration back to LangGraph
+            self._send_config_update("solver", updated_solver_data)
+            self.add_log_message("info", "Solver configuration updated")
+            
+            # Add visual indicator that this component has been modified
+            self._mark_component_as_modified("solver")
+    
+    def open_parameters_detail_dialog(self):
+        """Open parameters detail dialog for editing."""
+        # Create parameters data from current state
+        parameters_data = self._create_parameters_data_from_config()
+        
+        dialog = ParametersDetailDialog(parameters_data, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Get updated data and validate
+            updated_parameters_data = dialog.get_parameters_data()
+            
+            # Show validation preview if there are issues
+            if not self._show_validation_preview("parameters", updated_parameters_data):
+                return  # User chose not to continue with invalid data
+            
+            # Update parameters card with new data
+            self.parameters_card.set_parameters_info(
+                updated_parameters_data.description,
+                updated_parameters_data.parameters
+            )
+            
+            # Send updated configuration back to LangGraph
+            self._send_config_update("parameters", updated_parameters_data)
+            self.add_log_message("info", "Parameters configuration updated")
+            
+            # Add visual indicator that this component has been modified
+            self._mark_component_as_modified("parameters")
+    
+    def _create_mesh_data_from_config(self) -> MeshData:
+        """Create mesh data from current configuration summary."""
+        if not self.current_config_summary:
+            return MeshData(
+                description=self.mesh_card.description_label.text(),
+                generated_by_ai=True
+            )
+        
+        mesh_info = self.current_config_summary.get("mesh_info", {})
+        mesh_config = self.current_config_summary.get("mesh_config", {})
+        
+        return MeshData(
+            description=mesh_info.get("description", mesh_config.get("description", self.mesh_card.description_label.text())),
+            file_path=mesh_info.get("file_path", mesh_config.get("file_path")),
+            file_type=mesh_info.get("mesh_type", mesh_config.get("type", "blockMesh")),
+            content=mesh_info.get("content", mesh_config.get("content")),
+            generated_by_ai=True
+        )
+    
+    def _create_solver_data_from_config(self) -> SolverData:
+        """Create solver data from current configuration summary."""
+        if not self.current_config_summary:
+            return SolverData(
+                name="Current Solver",
+                description=self.solver_card.description_label.text(),
+                generated_by_ai=True
+            )
+        
+        solver_info = self.current_config_summary.get("solver_info", {})
+        solver_config = self.current_config_summary.get("solver_config", {})
+        
+        return SolverData(
+            name=solver_info.get("solver_name", solver_config.get("name", "simpleFoam")),
+            description=solver_info.get("description", solver_config.get("description", self.solver_card.description_label.text())),
+            justification=solver_info.get("justification", solver_config.get("justification", "")),
+            parameters=solver_info.get("parameters", solver_config.get("parameters", {})),
+            generated_by_ai=True
+        )
+    
+    def _create_parameters_data_from_config(self) -> ParametersData:
+        """Create parameters data from current configuration summary."""
+        if not self.current_config_summary:
+            return ParametersData(
+                description=self.parameters_card.description_label.text(),
+                generated_by_ai=True
+            )
+        
+        sim_params = self.current_config_summary.get("simulation_parameters", {})
+        
+        return ParametersData(
+            description=sim_params.get("description", self.parameters_card.description_label.text()),
+            parameters=sim_params.get("parameters", sim_params),  # Use entire sim_params as parameters
+            generated_by_ai=True
+        )
+    
+    def _send_config_update(self, component: str, data):
+        """Send configuration update to LangGraph interface."""
+        if not self.langgraph_interface:
+            logger.warning("LangGraph interface not available for configuration update")
+            return
+        
+        try:
+            # Validate the configuration before sending
+            validation_result = self._validate_component_config(component, data)
+            if not validation_result["valid"]:
+                logger.error(f"Configuration validation failed for {component}: {validation_result['errors']}")
+                self.add_log_message("error", f"❌ {component.capitalize()} configuration validation failed: {', '.join(validation_result['errors'])}")
+                return
+            
+            # Convert the data to a format suitable for the workflow
+            config_update = {component: self._convert_data_to_config_format(component, data)}
+            
+            # Add debug logging for solver updates
+            if component == "solver":
+                solver_name = getattr(data, 'name', 'Unknown')
+                logger.info(f"DEBUG: Sending solver update - name: {solver_name}")
+                logger.info(f"DEBUG: Full solver data: {data}")
+                logger.info(f"DEBUG: Converted config update: {config_update}")
+            
+            # Send the update to the LangGraph interface
+            success = self.langgraph_interface.update_configuration(config_update)
+            
+            if success:
+                logger.info(f"Successfully updated {component} configuration")
+                if component == "solver":
+                    solver_name = getattr(data, 'name', 'Unknown')
+                    self.add_log_message("info", f"✅ Solver updated to: {solver_name}")
+                else:
+                    self.add_log_message("info", f"✅ {component.capitalize()} configuration sent to workflow")
+                
+                # Update the local configuration summary to reflect changes
+                self._update_local_config_summary(component, data)
+            else:
+                logger.error(f"Failed to update {component} configuration")
+                self.add_log_message("error", f"❌ Failed to update {component} configuration")
+                
+        except Exception as e:
+            logger.error(f"Error sending {component} configuration update: {str(e)}")
+            self.add_log_message("error", f"❌ Error updating {component} configuration: {str(e)}")
+    
+    def _convert_data_to_config_format(self, component: str, data) -> Dict[str, Any]:
+        """Convert UI data to configuration format expected by LangGraph."""
+        if component == "mesh":
+            return {
+                "description": data.description,
+                "file_path": data.file_path,
+                "file_type": data.file_type,
+                "content": data.content,
+                "user_modified": True
+            }
+        elif component == "solver":
+            return {
+                "name": data.name,
+                "description": data.description,
+                "justification": data.justification,
+                "parameters": data.parameters,
+                "user_modified": True
+            }
+        elif component == "parameters":
+            return {
+                "description": data.description,
+                "parameters": data.parameters,
+                "content": data.content,
+                "user_modified": True
+            }
+        else:
+            return {"user_modified": True}
+    
+    def _validate_component_config(self, component: str, data) -> Dict[str, Any]:
+        """Validate component configuration before sending to LangGraph."""
+        errors = []
+        
+        try:
+            if component == "mesh":
+                errors.extend(self._validate_mesh_config(data))
+            elif component == "solver":
+                errors.extend(self._validate_solver_config(data))
+            elif component == "parameters":
+                errors.extend(self._validate_parameters_config(data))
+            
+            return {
+                "valid": len(errors) == 0,
+                "errors": errors
+            }
+            
+        except Exception as e:
+            return {
+                "valid": False,
+                "errors": [f"Validation error: {str(e)}"]
+            }
+    
+    def _validate_mesh_config(self, mesh_data: MeshData) -> List[str]:
+        """Validate mesh configuration."""
+        errors = []
+        
+        if not mesh_data.description and not mesh_data.content:
+            errors.append("Mesh must have either a description or content")
+        
+        if mesh_data.file_path and not mesh_data.file_type:
+            errors.append("Mesh file must have a file type")
+        
+        if mesh_data.file_type and mesh_data.file_type not in ['.stl', '.foam', '.obj', 'blockMesh', 'snappyHexMesh']:
+            errors.append(f"Unsupported mesh file type: {mesh_data.file_type}")
+        
+        return errors
+    
+    def _validate_solver_config(self, solver_data: SolverData) -> List[str]:
+        """Validate solver configuration."""
+        errors = []
+        
+        if not solver_data.name:
+            errors.append("Solver name is required")
+        
+        # Check if solver name is valid OpenFOAM solver
+        valid_solvers = [
+            "simpleFoam", "pimpleFoam", "icoFoam", "buoyantSimpleFoam", 
+            "rhoPimpleFoam", "potentialFoam", "interFoam", "reactingFoam",
+            "chtMultiRegionFoam", "rhoSimpleFoam", "sonicFoam"
+        ]
+        if solver_data.name not in valid_solvers:
+            errors.append(f"Unknown solver: {solver_data.name}. Valid solvers: {', '.join(valid_solvers)}")
+        
+        if not solver_data.description:
+            errors.append("Solver description is required")
+        
+        return errors
+    
+    def _validate_parameters_config(self, parameters_data: ParametersData) -> List[str]:
+        """Validate parameters configuration."""
+        errors = []
+        
+        if not parameters_data.description and not parameters_data.parameters:
+            errors.append("Parameters must have either a description or parameter values")
+        
+        # Validate parameter values if present
+        if parameters_data.parameters:
+            for key, value in parameters_data.parameters.items():
+                if not key.strip():
+                    errors.append("Parameter names cannot be empty")
+                if isinstance(value, str) and not value.strip():
+                    errors.append(f"Parameter '{key}' has empty value")
+        
+        return errors
+    
+    def _update_local_config_summary(self, component: str, data):
+        """Update the local configuration summary with user changes."""
+        if not self.current_config_summary:
+            self.current_config_summary = {}
+        
+        if component == "mesh":
+            if "mesh_info" not in self.current_config_summary:
+                self.current_config_summary["mesh_info"] = {}
+            self.current_config_summary["mesh_info"].update({
+                "description": data.description,
+                "file_path": data.file_path,
+                "mesh_type": data.file_type,
+                "content": data.content,
+                "user_modified": True
+            })
+            
+        elif component == "solver":
+            if "solver_info" not in self.current_config_summary:
+                self.current_config_summary["solver_info"] = {}
+            self.current_config_summary["solver_info"].update({
+                "solver_name": data.name,
+                "description": data.description,
+                "justification": data.justification,
+                "parameters": data.parameters,
+                "user_modified": True
+            })
+            
+        elif component == "parameters":
+            if "simulation_parameters" not in self.current_config_summary:
+                self.current_config_summary["simulation_parameters"] = {}
+            self.current_config_summary["simulation_parameters"].update({
+                "description": data.description,
+                "parameters": data.parameters,
+                "user_modified": True
+            })
+        
+        # Mark the entire configuration as user-modified
+        self.current_config_summary["user_modified"] = True
+        
+        logger.info(f"Updated local config summary for {component}")
+    
+    def _mark_component_as_modified(self, component: str):
+        """Add visual indicator that a component has been modified by the user."""
+        if component == "mesh":
+            card = self.mesh_card
+        elif component == "solver":
+            card = self.solver_card
+        elif component == "parameters":
+            card = self.parameters_card
+        else:
+            return
+        
+        # Update the status label to show modification
+        current_status = card.status_label.text()
+        if "Modified" not in current_status:
+            card.status_label.setText(f"{current_status} - Modified")
+            card.status_label.setStyleSheet("color: #ff8c00; font-size: 10pt; font-weight: bold;")
+        
+        # Add visual border to indicate modification
+        card.setStyleSheet(card.styleSheet() + """
+            QFrame {
+                border: 3px solid #ff8c00 !important;
+                box-shadow: 0 0 10px rgba(255, 140, 0, 0.3);
+            }
+        """)
+        
+        logger.info(f"Marked {component} as modified with visual indicators")
+    
+    def _show_validation_preview(self, component: str, data) -> bool:
+        """Show a preview of validation results before applying changes."""
+        validation_result = self._validate_component_config(component, data)
+        
+        if not validation_result["valid"]:
+            # Show validation errors in a message box
+            error_message = f"Configuration validation failed for {component}:\n\n"
+            error_message += "\n".join(f"• {error}" for error in validation_result["errors"])
+            
+            reply = QMessageBox.question(
+                self,
+                "Validation Errors",
+                f"{error_message}\n\nDo you want to continue anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            
+            return reply == QMessageBox.StandardButton.Yes
+        
+        return True
     
     def add_log_message(self, level: str, message: str):
         """Add a message to the log display."""
@@ -485,56 +918,96 @@ class SimulationSetupWidget(QWidget):
         solver_info_text += f"\nConverged: {'Yes' if convergence else 'No'}"
         
         self.solver_card.set_solver_info(solver_name, solver_info_text)
+        
+        # Re-enable run simulation button and reset text
+        self.run_simulation_button.setEnabled(True)
+        self.run_simulation_button.setText("🚀 Run Simulation")
+        
+        # Reconnect to ParaView to view results
+        if self.api_client and self.current_project:
+            self.add_log_message("info", "📡 Reconnecting to ParaView server to view results...")
+            self.paraview_connect_requested.emit(self.api_client.base_url, self.current_project)
     
     def on_user_approval_required(self, config_summary: Dict[str, Any]):
         """Handle configuration ready for review - update cards and enable Run Simulation button."""
+        logger.info(f"on_user_approval_required called with config_summary keys: {list(config_summary.keys()) if config_summary else 'None'}")
         self.add_log_message("info", "✅ Configuration generated and ready for review")
         self.progress_label.setText("Review simulation setup below, then click 'Run Simulation' when ready")
+        
+        # Store the configuration summary for editing
+        self.current_config_summary = config_summary
         
         try:
             # Update mesh card
             mesh_info = config_summary.get("mesh_info", {})
-            if mesh_info:
+            if mesh_info and mesh_info.get("total_cells", 0) > 0:
                 mesh_text = f"Type: {mesh_info.get('mesh_type', 'Unknown')}\n"
                 mesh_text += f"Cells: {mesh_info.get('total_cells', 0):,}\n"
-                mesh_text += f"Quality: {mesh_info.get('quality_score', 0):.2f}"
+                if mesh_info.get('quality_score', 0) > 0:
+                    mesh_text += f"Quality: {mesh_info.get('quality_score', 0):.2f}"
                 self.mesh_card.set_description(mesh_text)
                 self.mesh_card.set_state(ComponentState.POPULATED)
+            else:
+                # Fallback to mesh config if mesh_info not available
+                mesh_config = config_summary.get("mesh_config", {})
+                if mesh_config:
+                    mesh_text = f"Type: {mesh_config.get('type', 'Unknown')}\n"
+                    mesh_text += f"Cells: {mesh_config.get('total_cells', 0):,}"
+                    self.mesh_card.set_description(mesh_text)
+                    self.mesh_card.set_state(ComponentState.POPULATED)
+                else:
+                    # Last resort - show basic info
+                    self.mesh_card.set_description("Mesh configuration generated")
+                    self.mesh_card.set_state(ComponentState.POPULATED)
             
             # Update solver card
             solver_info = config_summary.get("solver_info", {})
-            if solver_info:
+            if solver_info and solver_info.get("solver_name"):
                 solver_text = f"Solver: {solver_info.get('solver_name', 'Unknown')}\n"
                 solver_text += f"End time: {solver_info.get('end_time', 0)} s\n"
                 solver_text += f"Time step: {solver_info.get('time_step', 0)} s"
                 self.solver_card.set_description(solver_text)
                 self.solver_card.set_state(ComponentState.POPULATED)
+            else:
+                # Fallback - show basic info
+                self.solver_card.set_description("Solver configuration generated")
+                self.solver_card.set_state(ComponentState.POPULATED)
             
             # Update parameters card
             sim_params = config_summary.get("simulation_parameters", {})
-            if sim_params:
+            if sim_params and sim_params.get("flow_type"):
                 param_text = f"Flow: {sim_params.get('flow_type', 'Unknown')}\n"
                 param_text += f"Analysis: {sim_params.get('analysis_type', 'Unknown')}\n"
                 if sim_params.get('velocity'):
                     param_text += f"Velocity: {sim_params['velocity']:.2f} m/s"
                 self.parameters_card.set_description(param_text)
                 self.parameters_card.set_state(ComponentState.POPULATED)
+            else:
+                # Fallback - show basic info
+                self.parameters_card.set_description("Simulation parameters configured")
+                self.parameters_card.set_state(ComponentState.POPULATED)
             
             # Auto-load mesh into ParaView for visualization
             self._auto_load_mesh_visualization(config_summary)
             
-            # Enable Run Simulation button with clearer text
+        except Exception as e:
+            logger.error(f"Error updating UI with config summary: {str(e)}")
+            self.add_log_message("error", f"Error updating configuration display: {str(e)}")
+            
+        finally:
+            # Always enable Run Simulation button and reset UI state
             self.run_simulation_button.setEnabled(True)
             self.run_simulation_button.setText("🚀 Run Simulation")
+            
+            # Mark workflow as stopped at this point
+            self.reset_ui_state()
             
             # Log AI explanation if available
             ai_explanation = config_summary.get("ai_explanation", "")
             if ai_explanation:
                 self.add_log_message("info", f"AI Analysis: {ai_explanation}")
-                
-        except Exception as e:
-            logger.error(f"Error updating UI with config summary: {str(e)}")
-            self.add_log_message("error", f"Error updating configuration display: {str(e)}")
+            else:
+                self.add_log_message("info", "Configuration review complete. Ready to run simulation!")
     
     def _auto_load_mesh_visualization(self, config_summary: Dict[str, Any]):
         """Automatically load the generated mesh into ParaView for visualization."""
@@ -547,25 +1020,6 @@ class SimulationSetupWidget(QWidget):
             
             paraview_widget = main_window.paraview_widget
             
-            # Check if ParaView is connected
-            if not paraview_widget.is_connected():
-                self.add_log_message("info", "🔗 Connecting to ParaView server for mesh visualization...")
-                # Try to connect to ParaView
-                paraview_widget.connect_to_server()
-                
-                # Give it a moment to connect, then try to load
-                QTimer.singleShot(2000, lambda: self._load_mesh_file(config_summary, paraview_widget))
-            else:
-                # Already connected, load immediately
-                self._load_mesh_file(config_summary, paraview_widget)
-                
-        except Exception as e:
-            logger.error(f"Error auto-loading mesh visualization: {str(e)}")
-            self.add_log_message("error", f"Failed to auto-load mesh: {str(e)}")
-    
-    def _load_mesh_file(self, config_summary: Dict[str, Any], paraview_widget):
-        """Load the mesh file into ParaView."""
-        try:
             # Get the case path from config summary or construct it
             case_info = config_summary.get("case_info", {})
             foam_file_path = case_info.get("foam_file_path")
@@ -575,13 +1029,22 @@ class SimulationSetupWidget(QWidget):
                 foam_file_path = f"/home/ubuntu/foam_projects/{self.current_project}/active_run/{self.current_project}.foam"
                 self.add_log_message("info", f"Using constructed foam file path: {foam_file_path}")
             
-            if foam_file_path:
-                self.add_log_message("info", f"📊 Loading mesh visualization: {foam_file_path}")
-                paraview_widget.load_foam_file(foam_file_path)
-                self.add_log_message("info", "✅ Mesh loaded into ParaView - you can now review the geometry")
-            else:
+            if not foam_file_path:
                 self.add_log_message("warning", "No mesh file path available for visualization")
+                return
+            
+            # Always trigger ParaView connection when setup is finished (it will check server status internally)
+            self.add_log_message("info", "🔗 Connecting to ParaView server for mesh visualization...")
+            if self.api_client and self.current_project:
+                # Emit the connection request signal
+                self.paraview_connect_requested.emit(self.api_client.base_url, self.current_project)
+                
+                # Schedule mesh loading after connection (give it time to connect and start server if needed)
+                QTimer.singleShot(5000, lambda: self.paraview_load_mesh_requested.emit(foam_file_path))
+                self.add_log_message("info", "✅ ParaView connection requested - mesh will load automatically")
+            else:
+                self.add_log_message("error", "API client or project not available for ParaView connection")
                 
         except Exception as e:
-            logger.error(f"Error loading mesh file: {str(e)}")
-            self.add_log_message("error", f"Failed to load mesh file: {str(e)}") 
+            logger.error(f"Error auto-loading mesh visualization: {str(e)}")
+            self.add_log_message("error", f"Failed to auto-load mesh: {str(e)}") 

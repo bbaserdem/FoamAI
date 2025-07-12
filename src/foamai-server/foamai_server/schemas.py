@@ -193,6 +193,7 @@ class CommandRequest(BaseModel):
     environment: Optional[Dict[str, str]] = Field(None, description="Additional environment variables")
     working_directory: str = Field("active_run", description="Working directory within project (default: active_run)")
     timeout: Optional[int] = Field(None, description="Timeout in seconds (default: 300)")
+    save_run: Optional[bool] = Field(False, description="Save a copy of the active_run directory after successful execution (default: false)")
 
 class CommandResponse(BaseModel):
     """Response from command execution"""
@@ -204,6 +205,7 @@ class CommandResponse(BaseModel):
     command: str = Field(..., description="Full command that was executed")
     working_directory: str = Field(..., description="Directory where command was executed")
     timestamp: str = Field(..., description="ISO timestamp of execution")
+    saved_run_directory: Optional[str] = Field(None, description="Directory name where the run was saved (e.g., 'run_000')")
 
 # =============================================================================
 # SYSTEM SCHEMAS

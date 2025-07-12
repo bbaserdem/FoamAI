@@ -285,7 +285,8 @@ async def run_command(project_name: str, request: CommandRequest):
             args=request.args,
             environment=request.environment,
             working_directory=request.working_directory,
-            timeout=request.timeout
+            timeout=request.timeout,
+            save_run=request.save_run
         )
         
         return CommandResponse(**result)

@@ -4,6 +4,7 @@ import os
 import time
 import re
 import glob
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
@@ -98,6 +99,48 @@ class CommandService:
             logger.info(f"  - {path} (version: {version}){marker}")
         
         return sorted_paths[0]
+    def _save_run_copy(self, project_dir: Path, working_directory: str) -> str:
+        """
+        Save a copy of the active_run directory to a numbered run folder.
+        
+        Args:
+            project_dir: Path to the project directory
+            working_directory: The working directory that was used (usually 'active_run')
+            
+        Returns:
+            str: The name of the created run directory (e.g., 'run_000')
+            
+        Raises:
+            CommandExecutionError: If the copy operation fails
+        """
+        source_dir = project_dir / working_directory
+        
+        if not source_dir.exists():
+            raise CommandExecutionError(f"Source directory does not exist: {source_dir}")
+        
+        # Find the next available run directory name
+        run_counter = 0
+        while True:
+            run_dir_name = f"run_{run_counter:03d}"
+            target_dir = project_dir / run_dir_name
+            
+            if not target_dir.exists():
+                break
+            run_counter += 1
+            
+            # Safety check to prevent infinite loop
+            if run_counter > 9999:
+                raise CommandExecutionError("Too many run directories (max 9999)")
+        
+        try:
+            # Copy the entire directory tree
+            shutil.copytree(source_dir, target_dir)
+            logger.info(f"Saved run copy to: {run_dir_name}")
+            return run_dir_name
+            
+        except Exception as e:
+            raise CommandExecutionError(f"Failed to save run copy: {e}")
+
     
     def execute_command(
         self,
@@ -106,7 +149,8 @@ class CommandService:
         args: Optional[List[str]] = None,
         environment: Optional[Dict[str, str]] = None,
         working_directory: str = "active_run",
-        timeout: Optional[int] = None
+        timeout: Optional[int] = None,
+        save_run: bool = False
     ) -> Dict:
         """
         Execute a command in the specified project directory.
@@ -173,6 +217,16 @@ class CommandService:
             stdout = self._truncate_output(result.stdout, "stdout")
             stderr = self._truncate_output(result.stderr, "stderr")
             
+            # Save run copy if requested and command was successful
+            saved_run_directory = None
+            if save_run and result.returncode == 0:
+                try:
+                    saved_run_directory = self._save_run_copy(project_dir, working_directory)
+                    logger.info(f"Command completed successfully and run saved to: {saved_run_directory}")
+                except Exception as e:
+                    logger.error(f"Command succeeded but failed to save run copy: {e}")
+                    # Don't fail the entire operation just because the copy failed
+
             logger.info(f"Command completed in {execution_time:.2f} seconds with exit code {result.returncode}")
             
             return {
@@ -183,7 +237,8 @@ class CommandService:
                 "execution_time": round(execution_time, 2),
                 "command": " ".join(cmd_list),
                 "working_directory": str(work_dir),
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "saved_run_directory": saved_run_directory
             }
             
         except subprocess.TimeoutExpired:

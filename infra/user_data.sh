@@ -34,23 +34,31 @@ RETRY_DELAY=10
 # Logging functions
 log_info() {
     local message="$1"
-    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] $message${NC}" | tee -a "$LOG_FILE"
+    local log_entry="${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] $message${NC}"
+    echo -e "$log_entry" >&3 2>/dev/null || true  # To console (if available)
+    echo -e "$log_entry" >> "$LOG_FILE"  # To log file
 }
 
 log_warn() {
     local message="$1"
-    echo -e "${YELLOW}[$(date +'%Y-%m-%d %H:%M:%S')] [WARN] $message${NC}" | tee -a "$LOG_FILE"
+    local log_entry="${YELLOW}[$(date +'%Y-%m-%d %H:%M:%S')] [WARN] $message${NC}"
+    echo -e "$log_entry" >&3 2>/dev/null || true  # To console (if available)
+    echo -e "$log_entry" >> "$LOG_FILE"  # To log file
 }
 
 log_error() {
     local message="$1"
-    echo -e "${RED}[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] $message${NC}" | tee -a "$LOG_FILE"
+    local log_entry="${RED}[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] $message${NC}"
+    echo -e "$log_entry" >&3 2>/dev/null || true  # To console (if available)
+    echo -e "$log_entry" >> "$LOG_FILE"  # To log file
 }
 
 log_debug() {
     local message="$1"
     if [[ "${DEBUG:-false}" == "true" ]]; then
-        echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')] [DEBUG] $message${NC}" | tee -a "$LOG_FILE"
+        local log_entry="${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')] [DEBUG] $message${NC}"
+        echo -e "$log_entry" >&3 2>/dev/null || true  # To console (if available)
+        echo -e "$log_entry" >> "$LOG_FILE"  # To log file
     fi
 }
 
@@ -154,9 +162,11 @@ check_disk_space() {
 # Initialize logging
 init_logging() {
     mkdir -p "$(dirname "$LOG_FILE")"
-    exec 1> >(tee -a "$LOG_FILE")
-    exec 2>&1
+    # Only redirect to log file, not to stdout/stderr to avoid interfering with function returns
+    exec 3>&1 4>&2  # Save original stdout and stderr
+    exec 1>>"$LOG_FILE" 2>&1  # Redirect both to log file only
     
+    # For console output, we'll use explicit file descriptor 3 (original stdout)
     log_info "=== FoamAI Startup Script Started: $(date) ==="
     log_info "Script PID: $$"
     log_info "Log file: $LOG_FILE"

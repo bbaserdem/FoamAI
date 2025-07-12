@@ -149,4 +149,4 @@ jobs:
           echo "- \`ghcr.io/${{ env.DOCKER_ORG }}/foamai/api:latest\`" >> $GITHUB_STEP_SUMMARY
           echo "- \`ghcr.io/${{ env.DOCKER_ORG }}/foamai/pvserver:latest\`" >> $GITHUB_STEP_SUMMARY
           echo "- Tagged with commit SHA: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-        fi 
+        fi

@@ -84,8 +84,8 @@ output "connection_tests" {
   value = {
     api_health_check    = "curl -f http://${aws_eip.foamai_eip.public_ip}:8000/ping"
     paraview_port_check = "nc -zv ${aws_eip.foamai_eip.public_ip} 11111"
-    ssh_test           = "ssh -i infra/keys/${var.key_name} -o ConnectTimeout=10 ubuntu@${aws_eip.foamai_eip.public_ip} 'echo Connected successfully'"
-    docker_status      = "ssh -i infra/keys/${var.key_name} ubuntu@${aws_eip.foamai_eip.public_ip} 'sudo docker ps'"
+    ssh_test            = "ssh -i infra/keys/${var.key_name} -o ConnectTimeout=10 ubuntu@${aws_eip.foamai_eip.public_ip} 'echo Connected successfully'"
+    docker_status       = "ssh -i infra/keys/${var.key_name} ubuntu@${aws_eip.foamai_eip.public_ip} 'sudo docker ps'"
   }
 }
 
@@ -93,13 +93,13 @@ output "connection_tests" {
 output "access_information" {
   description = "Important access information and URLs"
   value = {
-    public_ip           = aws_eip.foamai_eip.public_ip
-    api_url            = "http://${aws_eip.foamai_eip.public_ip}:8000"
-    api_docs_url       = "http://${aws_eip.foamai_eip.public_ip}:8000/docs"
-    paraview_server    = "${aws_eip.foamai_eip.public_ip}:11111"
-    ssh_command        = "ssh -i infra/keys/${var.key_name} ubuntu@${aws_eip.foamai_eip.public_ip}"
-    region             = var.aws_region
-    availability_zone  = aws_subnet.foamai_public_subnet.availability_zone
+    public_ip         = aws_eip.foamai_eip.public_ip
+    api_url           = "http://${aws_eip.foamai_eip.public_ip}:8000"
+    api_docs_url      = "http://${aws_eip.foamai_eip.public_ip}:8000/docs"
+    paraview_server   = "${aws_eip.foamai_eip.public_ip}:11111"
+    ssh_command       = "ssh -i infra/keys/${var.key_name} ubuntu@${aws_eip.foamai_eip.public_ip}"
+    region            = var.aws_region
+    availability_zone = aws_subnet.foamai_public_subnet.availability_zone
   }
 }
 
@@ -110,9 +110,9 @@ output "access_information" {
 output "ecr_repository_urls" {
   description = "AWS ECR repository URLs for Docker images"
   value = {
-    api       = aws_ecr_repository.foamai_api.repository_url
-    openfoam  = aws_ecr_repository.foamai_openfoam.repository_url
-    pvserver  = aws_ecr_repository.foamai_pvserver.repository_url
+    api      = aws_ecr_repository.foamai_api.repository_url
+    openfoam = aws_ecr_repository.foamai_openfoam.repository_url
+    pvserver = aws_ecr_repository.foamai_pvserver.repository_url
   }
 }
 

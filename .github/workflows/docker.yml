@@ -50,6 +50,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write  # This can help with authentication
 
     steps:
     - name: Checkout repository
@@ -65,6 +66,8 @@ jobs:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+        # Alternative: Use a PAT if GITHUB_TOKEN doesn't work
+        # password: ${{ secrets.GHCR_TOKEN }}
 
     - name: Extract metadata
       id: meta

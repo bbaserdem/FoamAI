@@ -170,7 +170,7 @@ variable "github_org" {
   description = "GitHub organization/owner for container images"
   type        = string
   default     = "bbaserdem"
-  
+
   validation {
     condition     = can(regex("^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]$", var.github_org))
     error_message = "GitHub organization must be a valid GitHub username or organization name."

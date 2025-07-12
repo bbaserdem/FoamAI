@@ -4,6 +4,8 @@ Integrates chat interface, project management, and ParaView visualization
 """
 import logging
 import sys
+import os
+from pathlib import Path
 from typing import Optional, Dict, Any
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                                QSplitter, QMenuBar, QMenu, QMessageBox, QStatusBar,
@@ -69,38 +71,53 @@ class ProjectCreationDialog(QDialog):
         super().accept()
 
 class SettingsDialog(QDialog):
-    """Settings dialog for configuring server connections"""
+    """Settings dialog for configuring server connections and API keys"""
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setModal(True)
-        self.resize(400, 300)
+        self.resize(500, 350)
+        
+        # Ensure .env file exists
+        self._ensure_env_file()
         
         layout = QVBoxLayout(self)
         
         # Form layout for settings
         form_layout = QFormLayout()
         
+        # OpenAI API Key
+        self.openai_api_key_input = QLineEdit()
+        self.openai_api_key_input.setEchoMode(QLineEdit.Password)
+        self.openai_api_key_input.setText(self._get_env_value('OPENAI_API_KEY', 'sk-proj-'))
+        self.openai_api_key_input.setPlaceholderText("Enter your OpenAI API key")
+        form_layout.addRow("OpenAI API Key:", self.openai_api_key_input)
+        
         # Server settings
         self.server_host_input = QLineEdit()
-        self.server_host_input.setText(Config.SERVER_HOST)
+        self.server_host_input.setText(self._get_env_value('SERVER_HOST', 'localhost'))
         form_layout.addRow("Server Host:", self.server_host_input)
         
         self.server_port_input = QLineEdit()
-        self.server_port_input.setText(str(Config.SERVER_PORT))
+        self.server_port_input.setText(self._get_env_value('SERVER_PORT', '8000'))
         form_layout.addRow("Server Port:", self.server_port_input)
         
         # ParaView server settings
         self.paraview_host_input = QLineEdit()
-        self.paraview_host_input.setText(Config.PARAVIEW_SERVER_HOST)
+        self.paraview_host_input.setText(self._get_env_value('PARAVIEW_SERVER_HOST', 'localhost'))
         form_layout.addRow("ParaView Server Host:", self.paraview_host_input)
         
         self.paraview_port_input = QLineEdit()
-        self.paraview_port_input.setText(str(Config.PARAVIEW_SERVER_PORT))
+        self.paraview_port_input.setText(self._get_env_value('PARAVIEW_SERVER_PORT', '11111'))
         form_layout.addRow("ParaView Server Port:", self.paraview_port_input)
         
         layout.addLayout(form_layout)
+        
+        # Information label
+        info_label = QLabel("Settings are saved to .env file in the project directory")
+        info_label.setStyleSheet("color: #666; font-size: 10px; margin-top: 10px;")
+        layout.addWidget(info_label)
         
         # Buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -108,14 +125,143 @@ class SettingsDialog(QDialog):
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
     
+    def _ensure_env_file(self):
+        """Create .env file if it doesn't exist"""
+        env_file = Path('foamai_desktop/.env')
+        if not env_file.exists():
+            logger.info("Creating .env file with default settings")
+            env_content = """# OpenFOAM Desktop Application Configuration
+
+# OpenAI API Key
+OPENAI_API_KEY=sk-proj-
+
+# Server Configuration
+SERVER_HOST=localhost
+SERVER_PORT=8000
+
+# ParaView Server Configuration
+PARAVIEW_SERVER_HOST=localhost
+PARAVIEW_SERVER_PORT=11111
+
+# Application Settings
+WINDOW_WIDTH=1200
+WINDOW_HEIGHT=800
+
+# Chat Interface Settings
+CHAT_HISTORY_LIMIT=100
+
+# ParaView Settings
+PARAVIEW_TIMEOUT=30
+
+# Request Timeout (seconds)
+REQUEST_TIMEOUT=60
+"""
+            with open(env_file, 'w') as f:
+                f.write(env_content)
+            logger.info(f"Created {env_file}")
+    
+    def _get_env_value(self, key: str, default: str = '') -> str:
+        """Get environment variable value from .env file"""
+        return os.getenv(key, default)
+    
+    def _update_env_file(self, updates: Dict[str, str]):
+        """Update .env file with new values"""
+        env_file = Path('foamai_desktop/.env')
+        
+        # Read current content
+        if env_file.exists():
+            with open(env_file, 'r') as f:
+                lines = f.readlines()
+        else:
+            lines = []
+        
+        # Update or add values
+        updated_lines = []
+        updated_keys = set()
+        
+        for line in lines:
+            if '=' in line and not line.strip().startswith('#'):
+                key = line.split('=')[0].strip()
+                if key in updates:
+                    updated_lines.append(f"{key}={updates[key]}\n")
+                    updated_keys.add(key)
+                else:
+                    updated_lines.append(line)
+            else:
+                updated_lines.append(line)
+        
+        # Add any new keys that weren't in the file
+        for key, value in updates.items():
+            if key not in updated_keys:
+                updated_lines.append(f"{key}={value}\n")
+        
+        # Write updated content
+        with open(env_file, 'w') as f:
+            f.writelines(updated_lines)
+        
+        logger.info(f"Updated .env file with {len(updates)} settings")
+    
     def get_settings(self):
         """Get the current settings"""
         return {
+            'openai_api_key': self.openai_api_key_input.text(),
             'server_host': self.server_host_input.text(),
             'server_port': self.server_port_input.text(),
             'paraview_host': self.paraview_host_input.text(),
             'paraview_port': self.paraview_port_input.text()
         }
+    
+    def accept(self):
+        """Save settings to .env file before accepting"""
+        try:
+            settings = self.get_settings()
+            
+            # Validate port numbers
+            try:
+                int(settings['server_port'])
+                int(settings['paraview_port'])
+            except ValueError:
+                QMessageBox.warning(self, "Invalid Input", "Port numbers must be integers.")
+                return
+            
+            # Validate API key format (basic check)
+            if settings['openai_api_key'] and not settings['openai_api_key'].startswith('sk-'):
+                reply = QMessageBox.question(
+                    self, "Invalid API Key Format",
+                    "The OpenAI API key doesn't appear to be in the correct format (should start with 'sk-'). "
+                    "Do you want to save it anyway?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                if reply == QMessageBox.No:
+                    return
+            
+            # Update .env file
+            env_updates = {
+                'OPENAI_API_KEY': settings['openai_api_key'],
+                'SERVER_HOST': settings['server_host'],
+                'SERVER_PORT': settings['server_port'],
+                'PARAVIEW_SERVER_HOST': settings['paraview_host'],
+                'PARAVIEW_SERVER_PORT': settings['paraview_port']
+            }
+            
+            self._update_env_file(env_updates)
+            
+            # Update environment variables for current session
+            for key, value in env_updates.items():
+                os.environ[key] = value
+            
+            QMessageBox.information(
+                self, "Settings Saved",
+                "Settings have been saved to .env file.\n\n"
+                "Note: Some changes may require restarting the application to take full effect."
+            )
+            
+            super().accept()
+            
+        except Exception as e:
+            logger.error(f"Error saving settings: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to save settings:\n{str(e)}")
 
 class AdvancedProjectDialog(QDialog):
     """Advanced project creation dialog with more options"""
@@ -904,8 +1050,21 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self)
         if dialog.exec() == QDialog.Accepted:
             settings = dialog.get_settings()
-            # Apply settings (would need to update Config class)
-            self.status_bar.showMessage("Settings updated", 3000)
+            # Settings are automatically saved to .env file by the dialog
+            self.status_bar.showMessage("Settings updated and saved to .env file", 5000)
+            
+            # Optionally reload the Config class to pick up changes
+            # Note: Full effect requires app restart for some components
+            try:
+                from importlib import reload
+                from . import config
+                reload(config)
+                logger.info("Config module reloaded with new settings")
+            except Exception as e:
+                logger.warning(f"Could not reload config module: {e}")
+                
+            # Test connections with new settings
+            QTimer.singleShot(1000, self.test_connections)
     
     def show_about(self):
         """Show about dialog"""

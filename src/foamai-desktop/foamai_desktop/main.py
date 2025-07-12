@@ -12,8 +12,8 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap, QIcon
 
 # Import application components
-from main_window import MainWindow
-from config import Config
+from .main_window import MainWindow
+from .config import Config
 
 def setup_logging():
     """Setup application logging"""

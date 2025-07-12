@@ -13,10 +13,10 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
 from PySide6.QtCore import Qt, QTimer, Signal, QSettings, QThread
 from PySide6.QtGui import QAction, QIcon, QFont
 
-from simulation_setup_widget import SimulationSetupWidget
-from paraview_widget import ParaViewWidget
-from api_client import ProjectAPIClient
-from config import Config
+from .simulation_setup_widget import SimulationSetupWidget
+from .paraview_widget import ParaViewWidget
+from .api_client import ProjectAPIClient
+from .config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -468,6 +468,14 @@ class MainWindow(QMainWindow):
             self.simulation_widget.results_ready.connect(self.load_results_visualization)
         if hasattr(self.simulation_widget, 'simulation_started'):
             self.simulation_widget.simulation_started.connect(self.on_simulation_started)
+        
+        # NEW: Connect ParaView control signals from simulation widget to ParaView widget
+        if hasattr(self.simulation_widget, 'paraview_connect_requested'):
+            self.simulation_widget.paraview_connect_requested.connect(self.paraview_widget.handle_connect_request)
+        if hasattr(self.simulation_widget, 'paraview_disconnect_requested'):
+            self.simulation_widget.paraview_disconnect_requested.connect(self.paraview_widget.handle_disconnect_request)
+        if hasattr(self.simulation_widget, 'paraview_load_mesh_requested'):
+            self.simulation_widget.paraview_load_mesh_requested.connect(self.paraview_widget.handle_load_mesh_request)
         
         # ParaView widget signals
         if hasattr(self.paraview_widget, 'visualization_loaded'):

@@ -25,15 +25,25 @@ def simulation_executor_agent(state: CFDState) -> CFDState:
         if state["verbose"]:
             logger.info("Simulation Executor: Starting simulation execution")
         
+        # Check if this is configuration-only mode (stops before solver)
+        config_only = state.get("config_only_mode", False)
+        
+        # DEBUG: Add explicit logging for config_only_mode
+        logger.info(f"DEBUG: simulation_executor_agent - config_only_mode from state: {state.get('config_only_mode')}")
+        logger.info(f"DEBUG: simulation_executor_agent - config_only variable: {config_only}")
+        logger.info(f"DEBUG: simulation_executor_agent - state keys: {list(state.keys())}")
+        
         # Determine execution mode
         execution_mode = state.get("execution_mode", "local")  # "local" or "remote"
         
         if execution_mode == "remote":
             # Use remote execution
-            return execute_simulation_remote(state)
+            logger.info(f"DEBUG: simulation_executor_agent - calling execute_simulation_remote with config_only={config_only}")
+            return execute_simulation_remote(state, config_only=config_only)
         else:
             # Use local execution (original behavior)
-            return execute_simulation_local(state)
+            logger.info(f"DEBUG: simulation_executor_agent - calling execute_simulation_local with config_only={config_only}")
+            return execute_simulation_local(state, config_only=config_only)
         
     except Exception as e:
         logger.error(f"Simulation Executor error: {str(e)}")
@@ -44,11 +54,19 @@ def simulation_executor_agent(state: CFDState) -> CFDState:
         }
 
 
-def execute_simulation_remote(state: CFDState) -> CFDState:
+def execute_simulation_remote(state: CFDState, config_only: bool = False) -> CFDState:
     """
     Execute simulation pipeline using remote server.
+    
+    Args:
+        state: Current CFD state
+        config_only: If True, stops before solver execution (config phase only)
     """
     try:
+        # DEBUG: Add explicit logging for config_only parameter
+        logger.info(f"DEBUG: execute_simulation_remote - config_only parameter: {config_only}")
+        logger.info(f"DEBUG: execute_simulation_remote - state config_only_mode: {state.get('config_only_mode')}")
+        
         # Get remote execution configuration
         server_url = state.get("server_url", "http://localhost:8000")
         project_name = state.get("project_name")
@@ -57,7 +75,8 @@ def execute_simulation_remote(state: CFDState) -> CFDState:
             raise ValueError("Project name is required for remote execution")
         
         if state["verbose"]:
-            logger.info(f"Remote execution: project '{project_name}' on server '{server_url}'")
+            mode_str = "configuration" if config_only else "full simulation"
+            logger.info(f"Remote execution: {mode_str} for project '{project_name}' on server '{server_url}'")
         
         # Initialize remote executor
         with RemoteExecutor(server_url, project_name) as remote:
@@ -66,7 +85,8 @@ def execute_simulation_remote(state: CFDState) -> CFDState:
                 remote.create_project_if_not_exists("LangGraph generated simulation")
             
             # Execute simulation pipeline remotely
-            simulation_results = execute_simulation_pipeline_remote(remote, state)
+            logger.info(f"DEBUG: execute_simulation_remote - calling execute_simulation_pipeline_remote with config_only={config_only}")
+            simulation_results = execute_simulation_pipeline_remote(remote, state, config_only=config_only)
             
             # Check simulation success
             if not simulation_results["success"]:
@@ -79,19 +99,35 @@ def execute_simulation_remote(state: CFDState) -> CFDState:
                     "current_step": CFDStep.ERROR
                 }
             
-            # Parse convergence metrics
-            convergence_metrics = parse_convergence_metrics(simulation_results)
+            logger.info(f"DEBUG: execute_simulation_remote - simulation_results keys: {list(simulation_results.keys())}")
+            logger.info(f"DEBUG: execute_simulation_remote - simulation_results config_only: {simulation_results.get('config_only')}")
             
-            if state["verbose"]:
-                logger.info(f"Simulation Executor: Remote simulation completed successfully")
-                logger.info(f"Simulation Executor: Final residuals: {convergence_metrics.get('final_residuals', {})}")
-            
-            return {
-                **state,
-                "simulation_results": simulation_results,
-                "convergence_metrics": convergence_metrics,
-                "errors": []
-            }
+            if config_only:
+                # Configuration phase completed - ready for user approval
+                if state["verbose"]:
+                    logger.info("Simulation Executor: Configuration phase completed - ready for user approval")
+                
+                return {
+                    **state,
+                    "simulation_results": simulation_results,
+                    "simulation_ready": True,
+                    "errors": []
+                }
+            else:
+                # Full simulation completed
+                # Parse convergence metrics
+                convergence_metrics = parse_convergence_metrics(simulation_results)
+                
+                if state["verbose"]:
+                    logger.info(f"Simulation Executor: Remote simulation completed successfully")
+                    logger.info(f"Simulation Executor: Final residuals: {convergence_metrics.get('final_residuals', {})}")
+                
+                return {
+                    **state,
+                    "simulation_results": simulation_results,
+                    "convergence_metrics": convergence_metrics,
+                    "errors": []
+                }
         
     except Exception as e:
         logger.error(f"Remote simulation execution error: {str(e)}")
@@ -102,14 +138,18 @@ def execute_simulation_remote(state: CFDState) -> CFDState:
         }
 
 
-def execute_simulation_local(state: CFDState) -> CFDState:
+def execute_simulation_local(state: CFDState, config_only: bool = False) -> CFDState:
     """
     Execute simulation pipeline using local execution (original behavior).
+    
+    Args:
+        state: Current CFD state
+        config_only: If True, stops before solver execution (config phase only)
     """
     case_directory = Path(state["case_directory"])
     
     # Execute simulation pipeline
-    simulation_results = execute_simulation_pipeline(case_directory, state)
+    simulation_results = execute_simulation_pipeline(case_directory, state, config_only=config_only)
     
     # Check simulation success
     if not simulation_results["success"]:
@@ -122,23 +162,43 @@ def execute_simulation_local(state: CFDState) -> CFDState:
             "current_step": CFDStep.ERROR
         }
     
-    # Parse convergence metrics
-    convergence_metrics = parse_convergence_metrics(simulation_results)
-    
-    if state["verbose"]:
-        logger.info(f"Simulation Executor: Simulation completed successfully")
-        logger.info(f"Simulation Executor: Final residuals: {convergence_metrics.get('final_residuals', {})}")
-    
-    return {
-        **state,
-        "simulation_results": simulation_results,
-        "convergence_metrics": convergence_metrics,
-        "errors": []
-    }
+    if config_only:
+        # Configuration phase completed - ready for user approval
+        if state["verbose"]:
+            logger.info("Simulation Executor: Configuration phase completed - ready for user approval")
+        
+        return {
+            **state,
+            "simulation_results": simulation_results,
+            "simulation_ready": True,
+            "errors": []
+        }
+    else:
+        # Full simulation completed
+        # Parse convergence metrics
+        convergence_metrics = parse_convergence_metrics(simulation_results)
+        
+        if state["verbose"]:
+            logger.info(f"Simulation Executor: Simulation completed successfully")
+            logger.info(f"Simulation Executor: Final residuals: {convergence_metrics.get('final_residuals', {})}")
+        
+        return {
+            **state,
+            "simulation_results": simulation_results,
+            "convergence_metrics": convergence_metrics,
+            "errors": []
+        }
 
 
-def execute_simulation_pipeline(case_directory: Path, state: CFDState) -> Dict[str, Any]:
-    """Execute the complete OpenFOAM simulation pipeline."""
+def execute_simulation_pipeline(case_directory: Path, state: CFDState, config_only: bool = False) -> Dict[str, Any]:
+    """
+    Execute the complete OpenFOAM simulation pipeline.
+    
+    Args:
+        case_directory: Path to the OpenFOAM case directory
+        state: Current CFD state
+        config_only: If True, stops before solver execution (mesh + setup only)
+    """
     results = {
         "success": False,
         "steps": {},
@@ -245,7 +305,19 @@ def execute_simulation_pipeline(case_directory: Path, state: CFDState) -> Dict[s
             else:
                 logger.warning("Mesh quality issues detected - simulation may have convergence problems")
         
-        # Step 4: Run solver
+        # If config_only mode, stop here before solver execution
+        if config_only:
+            if state["verbose"]:
+                logger.info("Configuration mode: Stopping before solver execution")
+            
+            results["success"] = True
+            results["total_time"] = time.time() - start_time
+            results["config_only"] = True
+            results["solver_ready"] = True
+            
+            return results
+        
+        # Step 4: Run solver (only if not config_only mode)
         solver = state["solver_settings"]["solver"]
         if state["verbose"]:
             logger.info(f"Running {solver}...")
@@ -283,8 +355,19 @@ def execute_simulation_pipeline(case_directory: Path, state: CFDState) -> Dict[s
     return results
 
 
-def execute_simulation_pipeline_remote(remote: RemoteExecutor, state: CFDState) -> Dict[str, Any]:
-    """Execute the complete OpenFOAM simulation pipeline remotely."""
+def execute_simulation_pipeline_remote(remote: RemoteExecutor, state: CFDState, config_only: bool = False) -> Dict[str, Any]:
+    """
+    Execute the complete OpenFOAM simulation pipeline remotely.
+    
+    Args:
+        remote: RemoteExecutor instance
+        state: Current CFD state
+        config_only: If True, stops before solver execution (mesh + setup only)
+    """
+    # DEBUG: Add explicit logging for config_only parameter
+    logger.info(f"DEBUG: execute_simulation_pipeline_remote - config_only parameter: {config_only}")
+    logger.info(f"DEBUG: execute_simulation_pipeline_remote - state config_only_mode: {state.get('config_only_mode')}")
+    
     results = {
         "success": False,
         "steps": {},
@@ -364,7 +447,23 @@ def execute_simulation_pipeline_remote(remote: RemoteExecutor, state: CFDState) 
         if state["verbose"]:
             logger.info("Remote mesh quality check completed")
         
-        # Step 4: Run solver
+        # If config_only mode, stop here before solver execution
+        if config_only:
+            if state["verbose"]:
+                logger.info("Configuration mode: Stopping before solver execution")
+            
+            logger.info(f"DEBUG: execute_simulation_pipeline_remote - STOPPING at config_only, returning results with config_only=True")
+            
+            results["success"] = True
+            results["total_time"] = time.time() - start_time
+            results["config_only"] = True
+            results["solver_ready"] = True
+            
+            return results
+        
+        logger.info(f"DEBUG: execute_simulation_pipeline_remote - config_only={config_only}, CONTINUING to solver execution")
+        
+        # Step 4: Run solver (only if not config_only mode)
         solver = state["solver_settings"]["solver"]
         if state["verbose"]:
             logger.info(f"Running {solver} remotely...")
@@ -393,6 +492,94 @@ def execute_simulation_pipeline_remote(remote: RemoteExecutor, state: CFDState) 
         results["total_time"] = time.time() - start_time
     
     return results
+
+
+def run_solver_only_remote(remote: RemoteExecutor, solver: str, state: CFDState) -> Dict[str, Any]:
+    """
+    Run only the solver step remotely (assuming mesh and setup are already complete).
+    
+    Args:
+        remote: RemoteExecutor instance
+        solver: Solver name to run
+        state: Current CFD state
+        
+    Returns:
+        Dictionary with solver execution results
+    """
+    start_time = time.time()
+    
+    try:
+        if state["verbose"]:
+            logger.info(f"Running solver-only execution: {solver} remotely...")
+        
+        solver_result = run_solver_remote(remote, solver, state)
+        
+        if not solver_result["success"]:
+            return {
+                "success": False,
+                "error": f"Solver execution failed: {solver_result['error']}",
+                "total_time": time.time() - start_time
+            }
+        
+        if state["verbose"]:
+            logger.info("Remote solver-only execution completed successfully")
+        
+        return {
+            "success": True,
+            "steps": {"solver": solver_result},
+            "total_time": time.time() - start_time
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "total_time": time.time() - start_time
+        }
+
+
+def run_solver_only_local(case_directory: Path, solver: str, state: CFDState) -> Dict[str, Any]:
+    """
+    Run only the solver step locally (assuming mesh and setup are already complete).
+    
+    Args:
+        case_directory: Path to the OpenFOAM case directory
+        solver: Solver name to run
+        state: Current CFD state
+        
+    Returns:
+        Dictionary with solver execution results
+    """
+    start_time = time.time()
+    
+    try:
+        if state["verbose"]:
+            logger.info(f"Running solver-only execution: {solver} locally...")
+        
+        solver_result = run_solver(case_directory, solver, state)
+        
+        if not solver_result["success"]:
+            return {
+                "success": False,
+                "error": f"Solver execution failed: {solver_result['error']}",
+                "total_time": time.time() - start_time
+            }
+        
+        if state["verbose"]:
+            logger.info("Local solver-only execution completed successfully")
+        
+        return {
+            "success": True,
+            "steps": {"solver": solver_result},
+            "total_time": time.time() - start_time
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "total_time": time.time() - start_time
+        }
 
 
 def run_blockmesh(case_directory: Path, state: CFDState) -> Dict[str, Any]:

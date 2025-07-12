@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushB
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QFont, QIcon, QPixmap, QPainter, QPen, QBrush, QColor
 
-from simulation_state import SimulationState, ComponentState, MeshData, SolverData, ParametersData
+from .simulation_state import SimulationState, ComponentState, MeshData, SolverData, ParametersData
 
 class SimulationCard(QFrame):
     """Base class for simulation component cards"""
@@ -18,6 +18,7 @@ class SimulationCard(QFrame):
     clicked = Signal()
     lock_changed = Signal(bool)
     upload_clicked = Signal()
+    edit_requested = Signal(str)  # component_type
     
     def __init__(self, title: str, component_type: str, parent=None):
         super().__init__(parent)
@@ -25,6 +26,7 @@ class SimulationCard(QFrame):
         self.component_type = component_type
         self.state = ComponentState.EMPTY
         self.locked = False
+        self.is_editable = False
         
         self.setup_ui()
         self.setup_styling()
@@ -73,6 +75,13 @@ class SimulationCard(QFrame):
         
         bottom_layout.addStretch()
         
+        # Details button
+        self.details_button = QPushButton("View Details")
+        self.details_button.setFixedSize(80, 25)
+        self.details_button.clicked.connect(self.on_details_clicked)
+        self.details_button.setVisible(False)  # Hidden by default
+        bottom_layout.addWidget(self.details_button)
+        
         # Action button (upload, select, etc.)
         self.action_button = QPushButton()
         self.action_button.setFixedSize(80, 25)
@@ -100,6 +109,9 @@ class SimulationCard(QFrame):
         """Handle mouse press event"""
         if event.button() == Qt.LeftButton:
             self.clicked.emit()
+            # If card has content and is editable, show details
+            if self.is_editable and self.state in [ComponentState.POPULATED, ComponentState.COMPLETE]:
+                self.edit_requested.emit(self.component_type)
         super().mousePressEvent(event)
     
     def on_lock_changed(self, locked: bool):
@@ -107,6 +119,10 @@ class SimulationCard(QFrame):
         self.locked = locked
         self.lock_changed.emit(locked)
         self.update_visual_state()
+    
+    def on_details_clicked(self):
+        """Handle details button click"""
+        self.edit_requested.emit(self.component_type)
     
     def update_visual_state(self):
         """Update visual appearance based on current state"""
@@ -125,6 +141,8 @@ class SimulationCard(QFrame):
             """)
             self.status_label.setText("Empty")
             self.status_label.setStyleSheet("color: #888; font-size: 10pt;")
+            self.details_button.setVisible(False)
+            self.is_editable = False
             
         elif self.state == ComponentState.POPULATED:
             self.setStyleSheet("""
@@ -133,14 +151,18 @@ class SimulationCard(QFrame):
                     border: 2px solid #0078d4;
                     border-radius: 8px;
                     margin: 2px;
+                    cursor: pointer;
                 }
                 QFrame:hover {
                     border-color: #106ebe;
                     background-color: #e8f4f8;
+                    transform: scale(1.02);
                 }
             """)
-            self.status_label.setText("Configured")
+            self.status_label.setText("Configured - Click to edit")
             self.status_label.setStyleSheet("color: #0078d4; font-size: 10pt; font-weight: bold;")
+            self.details_button.setVisible(True)
+            self.is_editable = True
             
         elif self.state == ComponentState.LOCKED:
             self.setStyleSheet("""
@@ -157,6 +179,8 @@ class SimulationCard(QFrame):
             """)
             self.status_label.setText("Locked")
             self.status_label.setStyleSheet("color: #107c10; font-size: 10pt; font-weight: bold;")
+            self.details_button.setVisible(False)
+            self.is_editable = False
             
         elif self.state == ComponentState.PROCESSING:
             self.setStyleSheet("""
@@ -173,6 +197,8 @@ class SimulationCard(QFrame):
             """)
             self.status_label.setText("Processing...")
             self.status_label.setStyleSheet("color: #ff8c00; font-size: 10pt; font-weight: bold;")
+            self.details_button.setVisible(False)
+            self.is_editable = False
             
         elif self.state == ComponentState.COMPLETE:
             self.setStyleSheet("""
@@ -181,14 +207,18 @@ class SimulationCard(QFrame):
                     border: 2px solid #28a745;
                     border-radius: 8px;
                     margin: 2px;
+                    cursor: pointer;
                 }
                 QFrame:hover {
                     border-color: #1e7e34;
                     background-color: #d4edda;
+                    transform: scale(1.02);
                 }
             """)
-            self.status_label.setText("Complete")
+            self.status_label.setText("Complete - Click to edit")
             self.status_label.setStyleSheet("color: #28a745; font-size: 10pt; font-weight: bold;")
+            self.details_button.setVisible(True)
+            self.is_editable = True
             
         elif self.state == ComponentState.ERROR:
             self.setStyleSheet("""
@@ -205,6 +235,8 @@ class SimulationCard(QFrame):
             """)
             self.status_label.setText("Error")
             self.status_label.setStyleSheet("color: #cc0000; font-size: 10pt; font-weight: bold;")
+            self.details_button.setVisible(False)
+            self.is_editable = False
     
     def set_state(self, state: ComponentState):
         """Set the current state"""
@@ -219,6 +251,11 @@ class SimulationCard(QFrame):
         else:
             self.description_label.setText("Click to configure or drag files here")
             self.description_label.setStyleSheet("color: #666; font-style: italic;")
+    
+    def set_editable(self, editable: bool):
+        """Set whether the card is editable"""
+        self.is_editable = editable
+        self.update_visual_state()
 
 class MeshCard(SimulationCard):
     """Card for mesh component"""

@@ -232,28 +232,57 @@ class LangGraphInterface(QObject):
             return False
         
         try:
-            from foamai_core.orchestrator import approve_configuration_and_continue
-            
-            # Update state to approve configuration
-            approved_state = approve_configuration_and_continue(self.current_state)
-            
-            # Start a new workflow execution with the approved state
-            self.workflow_thread = WorkflowThread(self.workflow, approved_state, self)
-            self.workflow_thread.step_changed.connect(self.step_changed)
-            self.workflow_thread.progress_updated.connect(self.progress_updated)
-            self.workflow_thread.log_message.connect(self.log_message)
-            self.workflow_thread.workflow_completed.connect(self._on_workflow_completed)
-            self.workflow_thread.workflow_failed.connect(self._on_workflow_failed)
-            self.workflow_thread.state_updated.connect(self._on_state_updated)
-            
-            self.workflow_thread.start()
-            self.current_state = approved_state
-            
-            logger.info("Configuration approved - workflow continuing")
-            return True
+            # Instead of restarting the entire workflow, execute just the solver
+            return self.run_solver_only()
             
         except Exception as e:
             logger.error(f"Failed to approve configuration: {str(e)}")
+            return False
+    
+    def run_solver_only(self) -> bool:
+        """
+        Run only the solver step after configuration is complete.
+        
+        This is called when the user approves the configuration
+        and wants to run the simulation.
+        
+        Returns:
+            True if solver execution started successfully, False otherwise
+        """
+        if not self.current_state:
+            logger.warning("No current state available for solver execution")
+            return False
+        
+        try:
+            from foamai_core.orchestrator import execute_solver_only
+            
+            # Execute solver only
+            solver_state = execute_solver_only(self.current_state)
+            
+            # Check if solver execution was successful
+            if solver_state.get("errors"):
+                error_msg = f"Solver execution failed: {solver_state['errors']}"
+                logger.error(error_msg)
+                self.workflow_failed.emit(error_msg)
+                return False
+            
+            # Update current state and emit completion signal
+            self.current_state = solver_state
+            self.is_running = False
+            
+            # Emit simulation completion signals
+            simulation_results = solver_state.get("simulation_results", {})
+            if simulation_results:
+                self.simulation_completed.emit(simulation_results)
+            
+            self.workflow_completed.emit(solver_state)
+            
+            logger.info("Solver-only execution completed successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to execute solver: {str(e)}")
+            self.workflow_failed.emit(f"Solver execution failed: {str(e)}")
             return False
     
     def reject_configuration(self, feedback: str = "") -> bool:
@@ -295,6 +324,93 @@ class LangGraphInterface(QObject):
             logger.error(f"Failed to reject configuration: {str(e)}")
             return False
     
+    def update_configuration(self, config_updates: Dict[str, Any]) -> bool:
+        """
+        Update the current configuration with user modifications.
+        
+        Args:
+            config_updates: Dictionary containing the updated configuration
+                          Expected format:
+                          {
+                              "mesh": {
+                                  "description": "...",
+                                  "file_path": "...",
+                                  "content": "..."
+                              },
+                              "solver": {
+                                  "name": "...",
+                                  "description": "...",
+                                  "justification": "..."
+                              },
+                              "parameters": {
+                                  "description": "...",
+                                  "parameters": {...}
+                              }
+                          }
+            
+        Returns:
+            True if configuration was updated successfully, False otherwise
+        """
+        if not self.current_state:
+            logger.warning("No current state available to update")
+            return False
+        
+        try:
+            logger.info(f"Updating configuration with: {list(config_updates.keys())}")
+            
+            # Update the current state with the new configuration
+            # This will be used when the user clicks "Run Simulation"
+            for component, updates in config_updates.items():
+                if component == "mesh":
+                    # Update mesh configuration
+                    if "mesh_config" in self.current_state:
+                        mesh_config = self.current_state.get("mesh_config", {})
+                        mesh_config.update(updates)
+                        self.current_state["mesh_config"] = mesh_config
+                    
+                elif component == "solver":
+                    # Update solver configuration - THIS IS THE KEY FIX!
+                    # The execution code reads from 'solver_settings', not 'solver_config'
+                    if "solver_settings" in self.current_state:
+                        solver_settings = self.current_state.get("solver_settings", {})
+                        # Update the solver name specifically
+                        if "name" in updates:
+                            solver_settings["solver"] = updates["name"]
+                        # Update other solver fields
+                        for key, value in updates.items():
+                            if key == "name":
+                                solver_settings["solver"] = value
+                            elif key == "parameters":
+                                solver_settings.update(value)
+                            else:
+                                solver_settings[key] = value
+                        self.current_state["solver_settings"] = solver_settings
+                        logger.info(f"Updated solver_settings: solver = {solver_settings.get('solver')}")
+                    
+                elif component == "parameters":
+                    # Update simulation parameters
+                    if "simulation_parameters" in self.current_state:
+                        sim_params = self.current_state.get("simulation_parameters", {})
+                        sim_params.update(updates)
+                        self.current_state["simulation_parameters"] = sim_params
+                
+                # Also store in a dedicated user_modifications section
+                if "user_modifications" not in self.current_state:
+                    self.current_state["user_modifications"] = {}
+                
+                self.current_state["user_modifications"][component] = updates
+            
+            # Mark that configuration has been modified by user
+            self.current_state["user_modified_config"] = True
+            
+            logger.info("Configuration updated successfully")
+            return True
+            
+        except Exception as e:
+            error_msg = f"Failed to update configuration: {str(e)}"
+            logger.error(error_msg)
+            return False
+    
     def _on_workflow_completed(self, final_state: Dict[str, Any]):
         """Handle workflow completion."""
         self.current_state = final_state
@@ -315,24 +431,44 @@ class LangGraphInterface(QObject):
         # Extract specific information and emit targeted signals
         current_step = state.get("current_step")
         
-        # Check for user approval requirement
+        # Check for configuration completion (simulation with config_only=True completed)
+        if (current_step == CFDStep.SIMULATION and 
+            state.get("config_only_mode", False) and 
+            state.get("simulation_results", {}).get("config_only", False)):
+            logger.info("Configuration phase completed - preparing user approval")
+            # Don't emit user_approval_required here - wait for USER_APPROVAL step
+        
+        # Check for user approval requirement (after config phase)
         if (current_step == CFDStep.USER_APPROVAL and 
             state.get("awaiting_user_approval", False) and 
             state.get("config_summary")):
             logger.info("User approval required - emitting signal to UI")
-            self.user_approval_required.emit(state["config_summary"])
+            config_summary = state["config_summary"]
+            logger.info(f"Config summary keys: {list(config_summary.keys()) if config_summary else 'None'}")
+            logger.info(f"Mesh info available: {bool(config_summary.get('mesh_info'))}")
+            logger.info(f"Solver info available: {bool(config_summary.get('solver_info'))}")
+            logger.info(f"Simulation params available: {bool(config_summary.get('simulation_parameters'))}")
+            self.user_approval_required.emit(config_summary)
         
-        # Check for mesh generation completion
-        if current_step == CFDStep.BOUNDARY_CONDITIONS and state.get("mesh_config"):
-            self.mesh_generated.emit(state["mesh_config"])
+        # Check for mesh generation completion (during config phase)
+        if (current_step == CFDStep.SIMULATION and 
+            state.get("config_only_mode", False) and 
+            state.get("simulation_results", {}).get("steps", {}).get("mesh_generation")):
+            mesh_info = state["simulation_results"]["steps"]["mesh_generation"].get("mesh_info", {})
+            if mesh_info:
+                self.mesh_generated.emit(mesh_info)
         
-        # Check for simulation start
-        if current_step == CFDStep.SIMULATION and not hasattr(self, '_simulation_started'):
+        # Check for full simulation start (after user approval)
+        if (current_step == CFDStep.SIMULATION and 
+            not state.get("config_only_mode", False) and 
+            not hasattr(self, '_simulation_started')):
             self._simulation_started = True
             self.simulation_started.emit()
         
-        # Check for simulation progress
-        if current_step == CFDStep.SIMULATION and state.get("simulation_results"):
+        # Check for simulation progress (full simulation only)
+        if (current_step == CFDStep.SIMULATION and 
+            not state.get("config_only_mode", False) and 
+            state.get("simulation_results")):
             self.simulation_progress.emit(state["simulation_results"])
         
         # Check for simulation completion
@@ -385,6 +521,13 @@ class WorkflowThread(QThread):
                 # Execute one workflow step
                 try:
                     next_state = self.workflow.invoke(state)
+                    
+                    # Check if workflow returned None (error condition)
+                    if next_state is None:
+                        error_msg = f"Workflow returned None state at step {step_name}"
+                        logger.error(error_msg)
+                        self.workflow_failed.emit(error_msg)
+                        return
                     
                     # Check if state actually changed
                     if next_state == state:

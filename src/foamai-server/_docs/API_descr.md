@@ -159,7 +159,8 @@ Execute an OpenFOAM command in a project directory.
     "FOAM_RUN": "/tmp"
   },
   "working_directory": "active_run",
-  "timeout": 300
+  "timeout": 300,
+  "save_run": true
 }
 ```
 
@@ -169,6 +170,7 @@ Execute an OpenFOAM command in a project directory.
 - `environment` (optional): Additional environment variables to set
 - `working_directory` (optional): Directory within project to run command (default: "active_run")
 - `timeout` (optional): Timeout in seconds (default: 300)
+- `save_run` (optional): If true, saves a copy of the active_run directory after successful command execution (default: false)
 
 **Response (200) - Success:**
 ```json
@@ -180,7 +182,8 @@ Execute an OpenFOAM command in a project directory.
   "execution_time": 2.45,
   "command": "blockMesh -case . -dict system/blockMeshDict",
   "working_directory": "/home/ubuntu/foam_projects/my_project/active_run",
-  "timestamp": "2025-01-10T12:00:00.000000"
+  "timestamp": "2025-01-10T12:00:00.000000",
+  "saved_run_directory": "run_000"
 }
 ```
 
@@ -233,6 +236,18 @@ curl -X POST http://your-server:8000/api/projects/cavity_flow/run_command \
   -d '{
     "command": "checkMesh",
     "args": ["-case", "."]
+  }'
+```
+
+*Run solver with save_run enabled:*
+```bash
+curl -X POST http://your-server:8000/api/projects/cavity_flow/run_command \
+  -H "Content-Type: application/json" \
+  -d '{
+    "command": "foamRun",
+    "args": ["-solver", "incompressibleFluid"],
+    "timeout": 1800,
+    "save_run": true
   }'
 ```
 
@@ -353,6 +368,45 @@ List all running PVServers (both task-based and project-based).
 }
 ```
 
+### POST /api/pvservers/clear-all
+Stop all running PVServers (both task-based and project-based) and clean up stale database entries.
+
+**Request Body:**
+```json
+{}
+```
+
+**Response (200):**
+```json
+{
+  "message": "All PVServers cleared successfully",
+  "task_pvservers_stopped": 2,
+  "task_pvservers_failed": 0,
+  "project_pvservers_stopped": 1,
+  "project_pvservers_failed": 0,
+  "system_processes_stopped": 0,
+  "system_processes_failed": 0,
+  "stale_entries_cleaned": 1,
+  "total_stopped": 3,
+  "total_failed": 0,
+  "timestamp": "2025-01-10T12:00:00.000000"
+}
+```
+
+**Response Fields:**
+- `task_pvservers_stopped`: Number of task-based pvservers successfully stopped
+- `task_pvservers_failed`: Number of task-based pvservers that failed to stop
+- `project_pvservers_stopped`: Number of project-based pvservers successfully stopped
+- `project_pvservers_failed`: Number of project-based pvservers that failed to stop
+- `system_processes_stopped`: Number of additional system pvserver processes stopped
+- `system_processes_failed`: Number of system processes that failed to stop
+- `stale_entries_cleaned`: Number of stale database entries removed
+- `total_stopped`: Total number of processes successfully stopped
+- `total_failed`: Total number of processes that failed to stop
+
+**Error Responses:**
+- `500`: Internal server error
+
 ### GET /api/system/stats
 Get system statistics.
 
@@ -464,8 +518,10 @@ Error responses include detailed error information:
 ## Notes
 
 - **File Storage**: All project files are stored in the server's `foam_projects` directory under `{project_name}/active_run/`
+- **Run Saving**: When `save_run` is enabled, successful command executions create numbered copies (`run_000`, `run_001`, etc.) of the `active_run` directory
 - **PVServer Ports**: Available ports range from 11111-11116 by default
 - **File Size Limits**: Maximum upload size is 300MB per file
 - **Concurrent PVServers**: Limited by server configuration (default: 5 concurrent)
 - **Process Management**: PVServers are automatically cleaned up on server shutdown
-- **Database**: All project and pvserver information is stored in SQLite database 
+- **Database**: All project and pvserver information is stored in SQLite database
+- **Clear All PVServers**: The clear-all endpoint provides a comprehensive cleanup of all running pvservers and stale database entries 

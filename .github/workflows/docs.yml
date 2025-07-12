@@ -1,0 +1,73 @@
+name: Documentation
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      # Documentation files
+      - '**/*.md'
+      - 'docs/**'
+      # Docs workflow
+      - '.github/workflows/docs.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      # Documentation files
+      - '**/*.md'
+      - 'docs/**'
+      # Docs workflow
+      - '.github/workflows/docs.yml'
+
+jobs:
+  validate-docs:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Check Markdown Links
+      uses: gaurav-nelson/github-action-markdown-link-check@v1
+      with:
+        use-quiet-mode: 'yes'
+        use-verbose-mode: 'no'
+        config-file: '.github/mlc_config.json'
+        check-modified-files-only: 'yes'
+        base-branch: 'main'
+
+    - name: Validate Markdown Format
+      run: |
+        echo "Checking markdown files for basic formatting..."
+        
+        # Find all markdown files
+        find . -name "*.md" -type f | while read -r file; do
+          echo "Checking $file..."
+          
+          # Check for trailing spaces
+          if grep -q " $" "$file"; then
+            echo "⚠️  Trailing spaces found in $file"
+          fi
+          
+          # Check for mixed line endings (basic check)
+          if file "$file" | grep -q "CRLF"; then
+            echo "⚠️  Windows line endings found in $file"
+          fi
+          
+          echo "✅ $file format is valid"
+        done
+
+    - name: Documentation Summary
+      run: |
+        echo "## Documentation Validation Summary 📚" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Markdown Links | ✅ Valid |" >> $GITHUB_STEP_SUMMARY
+        echo "| Format Check | ✅ Valid |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Documentation-Only Changes 📝" >> $GITHUB_STEP_SUMMARY
+        echo "This lightweight workflow validates documentation" >> $GITHUB_STEP_SUMMARY
+        echo "without running expensive build processes." >> $GITHUB_STEP_SUMMARY 

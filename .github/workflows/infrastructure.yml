@@ -1,0 +1,113 @@
+name: Infrastructure Validation
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      # Infrastructure files
+      - 'infra/**'
+      - 'dev/**'
+      # Infrastructure workflow
+      - '.github/workflows/infrastructure.yml'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      # Infrastructure files
+      - 'infra/**'
+      - 'dev/**'
+      # Infrastructure workflow
+      - '.github/workflows/infrastructure.yml'
+
+jobs:
+  validate-terraform:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: "~1.0"
+
+    - name: Terraform Format Check
+      run: terraform fmt -check -recursive infra/
+
+    - name: Terraform Init
+      run: |
+        cd infra/
+        terraform init -backend=false
+
+    - name: Terraform Validate
+      run: |
+        cd infra/
+        terraform validate
+
+    - name: Validate User Data Script
+      run: |
+        echo "Validating user_data.sh syntax..."
+        bash -n infra/user_data.sh
+        echo "✅ User data script syntax is valid"
+
+  validate-scripts:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Validate Shell Scripts
+      run: |
+        echo "Validating shell scripts..."
+        
+        # Check all shell scripts in dev/
+        for script in dev/*.sh; do
+          if [ -f "$script" ]; then
+            echo "Checking $script..."
+            bash -n "$script"
+            echo "✅ $script syntax is valid"
+          fi
+        done
+        
+        # Check user_data modules
+        for script in infra/user_data_modules/*.sh; do
+          if [ -f "$script" ]; then
+            echo "Checking $script..."
+            bash -n "$script"
+            echo "✅ $script syntax is valid"
+          fi
+        done
+
+    - name: Check Script Permissions
+      run: |
+        echo "Checking script permissions..."
+        find dev/ -name "*.sh" -type f ! -executable -print0 | while IFS= read -r -d '' file; do
+          echo "⚠️  Script not executable: $file"
+        done
+        
+        find infra/user_data_modules/ -name "*.sh" -type f ! -executable -print0 | while IFS= read -r -d '' file; do
+          echo "⚠️  Script not executable: $file"
+        done
+
+  infrastructure-summary:
+    runs-on: ubuntu-latest
+    needs: [validate-terraform, validate-scripts]
+    if: always()
+    
+    steps:
+    - name: Infrastructure Summary
+      run: |
+        echo "## Infrastructure Validation Summary 🏗️" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Terraform | ${{ needs.validate-terraform.result == 'success' && '✅ Valid' || '❌ Invalid' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Shell Scripts | ${{ needs.validate-scripts.result == 'success' && '✅ Valid' || '❌ Invalid' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Changed Files 📝" >> $GITHUB_STEP_SUMMARY
+        echo "This workflow validates infrastructure and deployment scripts" >> $GITHUB_STEP_SUMMARY
+        echo "without rebuilding Docker images unnecessarily." >> $GITHUB_STEP_SUMMARY 

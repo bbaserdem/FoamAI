@@ -99,9 +99,9 @@ in {
           terraform
           pkgs.awscli2
           pkgs.task-master-ai
-          pkgs.docker
           pkgs.docker-compose
           pkgs.openssh
+          pkgs.shellcheck
           #pkgs.paraview
         ];
 

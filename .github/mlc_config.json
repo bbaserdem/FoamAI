@@ -1,0 +1,21 @@
+{
+  "ignorePatterns": [
+    {
+      "pattern": "http://localhost"
+    },
+    {
+      "pattern": "http://127.0.0.1"
+    },
+    {
+      "pattern": "http://169.254.169.254"
+    },
+    {
+      "pattern": "https://github.com/bbaserdem/FoamAI/blob/main"
+    }
+  ],
+  "timeout": "10s",
+  "retryOn429": true,
+  "retryCount": 3,
+  "fallbackRetryDelay": "30s",
+  "aliveStatusCodes": [200, 206, 999]
+} 

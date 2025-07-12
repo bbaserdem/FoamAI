@@ -175,25 +175,25 @@ resource "aws_instance" "foamai_instance" {
   ami           = data.aws_ami.ubuntu.id
   instance_type = var.instance_type
   key_name      = aws_key_pair.foamai_key.key_name
-  
+
   vpc_security_group_ids = [aws_security_group.foamai_sg.id]
   subnet_id              = aws_subnet.foamai_public_subnet.id
-  
-  # User data script with template variables for robust EBS volume mounting
-  user_data = templatefile("${path.module}/user_data.sh.tpl", {
+
+  # User data script - minimal bootstrap that downloads full deployment script
+  user_data = base64encode(templatefile("${path.module}/user_data.sh.tpl", {
     data_volume_size_gb = var.data_volume_size
     filesystem_type     = var.data_volume_filesystem
-    mount_point        = var.data_volume_mount_point
-    wait_timeout       = var.ebs_wait_timeout
-    deployment_profile = var.deployment_profile
-  })
+    mount_point         = var.data_volume_mount_point
+    wait_timeout        = var.ebs_wait_timeout
+    deployment_profile  = "mvp"
+  }))
 
   # Storage configuration
   root_block_device {
     volume_type = "gp3"
     volume_size = var.root_volume_size
     encrypted   = true
-    
+
     tags = {
       Name        = "foamai-root-volume"
       Project     = "FoamAI"
@@ -207,7 +207,7 @@ resource "aws_instance" "foamai_instance" {
     volume_type = "gp3"
     volume_size = var.data_volume_size
     encrypted   = true
-    
+
     tags = {
       Name        = "foamai-data-volume"
       Project     = "FoamAI"

@@ -19,8 +19,8 @@ alwaysApply: true
 
 - **File References:**
   - Use `[filename](mdc:path/to/file)` ([filename](mdc:filename)) to reference files
-  - Example: [prisma.md](.github/instructions/prisma.md) for rule references
-  - Example: [schema.prisma](mdc:prisma/schema.prisma) for code references
+  - Example: [taskmaster.md](.github/instructions/taskmaster.md) for rule references
+  - Example: [pyproject.toml](mdc:pyproject.toml) for code references
 
 - **Code Examples:**
   - Use language-specific code blocks

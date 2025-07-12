@@ -32,17 +32,17 @@ alwaysApply: true
     - Implementation details have changed
 
 - **Example Pattern Recognition:**
-  ```typescript
-  // If you see repeated patterns like:
-  const data = await prisma.user.findMany({
-    select: { id: true, email: true },
-    where: { status: 'ACTIVE' }
-  });
+  ```python
+  # If you see repeated patterns like:
+  async def run_simulation(case_data: dict):
+      mesh = generate_mesh(case_data)
+      solver = select_solver(case_data)
+      result = await execute_simulation(mesh, solver)
   
-  // Consider adding to [prisma.md](.github/instructions/prisma.md):
-  // - Standard select fields
-  // - Common where conditions
-  // - Performance optimization patterns
+  # Consider adding to [dev_workflow.md](.github/instructions/dev_workflow.md):
+  # - Standard simulation patterns
+  # - Common error handling
+  # - Performance optimization patterns
   ```
 
 - **Rule Quality Checks:**

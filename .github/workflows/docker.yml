@@ -3,8 +3,28 @@ name: Build and Push Docker Images
 on:
   push:
     branches: [ main, master ]
+    paths:
+      # Docker-related files
+      - 'docker/**'
+      - 'src/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'requirements.txt'
+      - 'docker-compose.yml'
+      # Workflow itself
+      - '.github/workflows/docker.yml'
   pull_request:
     branches: [ main, master ]
+    paths:
+      # Docker-related files
+      - 'docker/**'
+      - 'src/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'requirements.txt'
+      - 'docker-compose.yml'
+      # Workflow itself
+      - '.github/workflows/docker.yml'
 
 env:
   REGISTRY: ghcr.io

@@ -41,6 +41,7 @@ foamai-key*
 *.tfstate.*
 *.tfplan
 *.tfplan.*
+tfplan
 .terraformrc
 terraform.rc
 override.tf

@@ -1277,11 +1277,125 @@ def detect_mars_simulation(prompt: str) -> bool:
     return any(keyword in prompt_lower for keyword in mars_keywords)
 
 
+def detect_moon_simulation(prompt: str) -> bool:
+    """Detect if the user is requesting a Moon simulation."""
+    moon_keywords = [
+        "moon", "lunar", "on the moon", "moon surface", "moon conditions",
+        "moon environment", "lunar surface", "lunar conditions", "lunar environment"
+    ]
+    
+    prompt_lower = prompt.lower()
+    return any(keyword in prompt_lower for keyword in moon_keywords)
+
+
+def detect_custom_environment(prompt: str) -> Dict[str, Any]:
+    """Use OpenAI to detect and extract custom environmental conditions."""
+    try:
+        # Skip if it's already Mars/Moon/Earth
+        if detect_mars_simulation(prompt) or detect_moon_simulation(prompt):
+            return {"has_custom_environment": False}
+        
+        # Check for environmental indicators
+        environmental_keywords = [
+            "pluto", "venus", "jupiter", "saturn", "neptune", "uranus", "mercury",
+            "altitude", "elevation", "sea level", "underwater", "deep ocean", "high altitude",
+            "mountain", "stratosphere", "atmosphere", "pressure", "vacuum", "space",
+            "planet", "planetary", "conditions", "environment"
+        ]
+        
+        prompt_lower = prompt.lower()
+        has_environmental_context = any(keyword in prompt_lower for keyword in environmental_keywords)
+        
+        if not has_environmental_context:
+            return {"has_custom_environment": False}
+        
+        # Get settings for API key
+        import sys
+        sys.path.append('src')
+        from foamai.config import get_settings
+        settings = get_settings()
+        
+        if not settings.openai_api_key:
+            logger.warning("No OpenAI API key found for custom environment detection")
+            return {"has_custom_environment": False}
+        
+        # Use OpenAI to extract environmental parameters
+        import openai
+        client = openai.OpenAI(api_key=settings.openai_api_key)
+        
+        system_message = """You are an expert in planetary science and atmospheric physics. Analyze the given prompt to determine if it describes a specific environmental or planetary condition that would affect fluid dynamics simulation parameters.
+
+Your task is to:
+1. Identify if there's a specific environment mentioned (planet, altitude, etc.)
+2. Determine appropriate physical parameters for that environment
+3. Return the parameters in the specified JSON format
+
+Be accurate with scientific values. If unsure about specific parameters, use reasonable estimates based on known science."""
+
+        user_message = f"""Analyze this fluid dynamics scenario for custom environmental conditions:
+
+PROMPT: "{prompt}"
+
+If this describes a specific environment (planet, altitude, underwater, etc.) that differs from standard Earth sea-level conditions, extract the appropriate physical parameters.
+
+Respond with ONLY this JSON format:
+{{
+    "has_custom_environment": true/false,
+    "environment_name": "name of environment (e.g., 'Pluto', 'High Altitude', 'Underwater')",
+    "temperature": temperature_in_kelvin,
+    "pressure": pressure_in_pascals,
+    "density": density_in_kg_per_m3,
+    "viscosity": viscosity_in_pa_s,
+    "gravity": gravity_in_m_per_s2,
+    "explanation": "brief explanation of the environment and parameter choices"
+}}
+
+Examples:
+- "Flow on Pluto" → Pluto conditions (40K, very low pressure/density, 0.62 m/s² gravity)
+- "Flow at 10km altitude" → High altitude conditions (reduced pressure/density, same gravity)
+- "Flow 100m underwater" → Underwater conditions (high pressure, water density)
+- "Flow around cylinder" → has_custom_environment: false (standard conditions)
+
+If no specific environment is mentioned, return has_custom_environment: false."""
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ],
+            max_tokens=500,
+            temperature=0.1
+        )
+        
+        # Parse JSON response
+        import json
+        try:
+            result = json.loads(response.choices[0].message.content)
+            if result.get("has_custom_environment", False):
+                logger.info(f"Detected custom environment: {result.get('environment_name', 'Unknown')}")
+                logger.info(f"Parameters: T={result.get('temperature')}K, P={result.get('pressure')}Pa, ρ={result.get('density')}kg/m³")
+            return result
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse OpenAI environment response: {e}")
+            return {"has_custom_environment": False}
+            
+    except Exception as e:
+        logger.warning(f"Custom environment detection failed: {e}")
+        return {"has_custom_environment": False}
+
+
 def set_default_fluid_properties(params: Dict[str, Any]) -> Dict[str, Any]:
     """Set default fluid properties if not specified."""
-    # Check if this is a Mars simulation
+    # Check if this is a Mars, Moon, or custom environment simulation
     original_prompt = params.get("original_prompt", "")
     is_mars_simulation = detect_mars_simulation(original_prompt)
+    is_moon_simulation = detect_moon_simulation(original_prompt)
+    
+    # Check for custom environment if not Mars/Moon
+    custom_environment = None
+    if not is_mars_simulation and not is_moon_simulation:
+        custom_environment = detect_custom_environment(original_prompt)
     
     if is_mars_simulation:
         # Mars atmospheric conditions
@@ -1292,6 +1406,27 @@ def set_default_fluid_properties(params: Dict[str, Any]) -> Dict[str, Any]:
             "pressure": 610.0,  # Mars atmospheric pressure (Pa) - about 0.6% of Earth's
         }
         logger.info("Using Mars atmospheric conditions for simulation")
+    elif is_moon_simulation:
+        # Moon atmospheric conditions (essentially vacuum)
+        defaults = {
+            "density": 1e-14,  # Moon trace atmosphere density (kg/m³)
+            "viscosity": 1.0e-5,  # Moon atmosphere viscosity (Pa·s) - similar to Mars for numerical stability
+            "temperature": 250.0,  # Moon surface temperature (K) - approximately -23°C (day side)
+            "pressure": 3e-15,  # Moon atmospheric pressure (Pa) - essentially vacuum
+        }
+        logger.info("Using Moon atmospheric conditions for simulation")
+    elif custom_environment and custom_environment.get("has_custom_environment", False):
+        # Custom environment conditions (detected by OpenAI)
+        defaults = {
+            "density": custom_environment.get("density", 1.225),
+            "viscosity": custom_environment.get("viscosity", 1.81e-5),
+            "temperature": custom_environment.get("temperature", 293.15),
+            "pressure": custom_environment.get("pressure", 101325),
+        }
+        env_name = custom_environment.get("environment_name", "Unknown")
+        explanation = custom_environment.get("explanation", "No explanation provided")
+        logger.info(f"Using custom environment conditions for simulation: {env_name}")
+        logger.info(f"Environment details: {explanation}")
     else:
         # Earth atmospheric conditions (default)
         defaults = {

@@ -240,6 +240,11 @@ def test_edge_cases():
             "expected_behavior": "Should apply Mars conditions"
         },
         {
+            "name": "Moon simulation support",
+            "prompt": "Lunar surface flow simulation",
+            "expected_behavior": "Should apply Moon conditions"
+        },
+        {
             "name": "High Reynolds number handling",
             "prompt": "Flow at Reynolds number 1 million",
             "expected_behavior": "Should suggest appropriate solver and turbulence"

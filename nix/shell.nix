@@ -102,7 +102,6 @@ in {
           pkgs.docker-compose
           pkgs.openssh
           pkgs.shellcheck
-          #pkgs.paraview
         ];
 
       env = {

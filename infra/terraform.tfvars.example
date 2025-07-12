@@ -29,6 +29,7 @@ allowed_ssh_cidrs = [
 # Application Configuration
 docker_hub_username = "foamai"  # Your Docker Hub username/organization
 github_repo_url = "https://github.com/yourusername/FoamAI.git"  # Update with your actual repo URL
+github_org = "bbaserdem"  # GitHub organization/owner for container images
 
 # Optional: Monitoring and Performance
 enable_detailed_monitoring = false  # Set to true for production monitoring

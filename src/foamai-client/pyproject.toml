@@ -9,7 +9,7 @@ authors = [
     { name = "mcbagz", email = "baserdemb@gmail.com" },
     { name = "jackwimbish", email = "baserdemb@gmail.com" },
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.9"
 dependencies = [
     # This deps
     "click>=8.0.0",

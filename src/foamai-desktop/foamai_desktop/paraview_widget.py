@@ -323,7 +323,7 @@ def initialize_vtk():
 # Don't initialize VTK immediately - defer until needed
 print("🔧 Deferring VTK initialization until needed...")
 
-from config import Config
+from .config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -388,147 +388,90 @@ class ParaViewWidget(QWidget):
     
     def connect_to_remote_server(self):
         """Connect to or start remote ParaView server with improved connection logic."""
-        if not REMOTE_PARAVIEW_AVAILABLE:
-            QMessageBox.warning(self, "Error", "Remote ParaView management not available")
-            return
+        logger.info(f"connect_to_remote_server called for project: {self.project_name}")
         
         if not self.server_url or not self.project_name:
-            QMessageBox.warning(self, "Error", "Remote server not configured")
+            error_msg = "Remote server not configured"
+            logger.error(error_msg)
+            QMessageBox.warning(self, "Error", error_msg)
             return
         
         try:
-            # Step 1: Check current server status
+            # Step 1: Check current server status via API
             self.connection_label.setText("Checking remote ParaView server status...")
             self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
             
-            project_info = get_remote_project_info(self.server_url, self.project_name)
+            server_status = self._check_remote_pvserver_status()
+            logger.info(f"Server status check result: {server_status}")
             
-            if "error" in project_info:
-                QMessageBox.warning(self, "Error", f"Failed to get project info: {project_info['error']}")
+            if server_status.get("status") == "error":
+                error_msg = f"Failed to check server status: {server_status.get('error', 'Unknown error')}"
+                logger.error(error_msg)
+                QMessageBox.warning(self, "Error", error_msg)
                 return
             
-            # Step 2: Create .foam file on server (regardless of ParaView server status)
-            try:
-                self.connection_label.setText("Creating .foam file on remote server...")
-                from foamai_core.remote_executor import RemoteExecutor
-                
-                with RemoteExecutor(self.server_url, self.project_name) as remote:
-                    # Create the .foam file in the active_run directory
-                    foam_filename = f"{self.project_name}.foam"
-                    foam_content = ""  # .foam files are typically empty
-                    
-                    remote.upload_text_file(foam_content, foam_filename)
-                    logger.info(f"Created .foam file on remote server: {foam_filename}")
-                    
-            except Exception as foam_error:
-                logger.warning(f"Failed to create .foam file: {foam_error}")
-                # Continue anyway - the case might still be loadable
-            
-            # Step 3: Check if ParaView server is already running
-            pvserver_info = project_info.get("pvserver_info", {})
-            server_running = False
-            connection_string = None
-            
-            if pvserver_info.get("status") == "running" and pvserver_info.get("port"):
-                # Server already running - construct proper connection string for remote access
-                port = pvserver_info.get("port")
-                remote_host = self._get_remote_host()
-                connection_string = f"{remote_host}:{port}"
-                logger.info(f"ParaView server already running at {connection_string} (remote access)")
-                
-                server_running = True  # Server is running according to API
-                
-                if PARAVIEW_AVAILABLE:
-                    # Try to connect (but server is running regardless of success)
-                    connection_successful = self._try_paraview_connection(connection_string)
-                    if not connection_successful:
-                        logger.warning("Server is running but connection failed (likely version mismatch)")
-                else:
-                    logger.info("Server is running but no ParaView client available")
-            
-            # Step 4: If no server running or connection failed, start new server
-            if not server_running:
+            # Step 2: Start server if not running
+            if server_status.get("status") != "running":
+                logger.info("PVServer not running, starting it...")
                 self.connection_label.setText("Starting remote ParaView server...")
-                self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
                 
-                result = start_remote_paraview_server(self.server_url, self.project_name)
-                
-                if "error" in result:
-                    QMessageBox.warning(self, "Error", f"Failed to start ParaView server: {result['error']}")
-                    self.connection_label.setText("Failed to start remote ParaView server")
-                    self.connection_label.setStyleSheet("color: red; font-weight: bold;")
+                if not self._start_remote_pvserver():
+                    error_msg = "Failed to start remote ParaView server"
+                    logger.error(error_msg)
+                    QMessageBox.warning(self, "Error", error_msg)
                     return
                 
-                # Get connection info from the start result
-                port = result.get("port", 11111)
+                # Wait a moment for server to start
+                import time
+                time.sleep(2)
+                
+                # Re-check status to get connection info
+                server_status = self._check_remote_pvserver_status()
+                logger.info(f"Server status after starting: {server_status}")
+            else:
+                logger.info("PVServer already running")
+            
+            # Step 3: Get connection information
+            if server_status.get("status") == "running":
+                port = server_status.get("port")
                 remote_host = self._get_remote_host()
                 connection_string = f"{remote_host}:{port}"
-                self.remote_paraview_info = result
                 
+                logger.info(f"Attempting to connect to ParaView at: {connection_string}")
+                
+                # Step 4: Try to connect ParaView client if available
                 if PARAVIEW_AVAILABLE:
-                    server_running = self._try_paraview_connection(connection_string)
+                    connection_successful = self._try_paraview_connection(connection_string)
+                    if connection_successful:
+                        logger.info("ParaView client connected successfully")
+                        
+                        self.connection_label.setText(f"Connected to remote ParaView server at {connection_string}")
+                        self.connection_label.setStyleSheet("color: green; font-weight: bold;")
+                        self.connect_btn.setText("Disconnect from Remote Server")
+                        self.connect_btn.setEnabled(False)
+                        self.disconnect_btn.setEnabled(True)
+                        self.enable_controls()
+                        
+                        # Emit connection status signal
+                        self.connection_status_changed.emit(True)
+                        
+                        # Auto-load the simulation data
+                        self._auto_load_remote_data()
+                        
+                        logger.info("Remote ParaView server connection complete")
+                    else:
+                        logger.warning("ParaView client connection failed but server is running")
+                        self.connection_label.setText(f"Server running at {connection_string} - Client connection failed")
+                        self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
                 else:
-                    server_running = True  # Server started, but no client
-                
-                # If connection still failed, check actual server status
-                if not server_running and PARAVIEW_AVAILABLE:
-                    logger.warning("Connection failed after starting server - checking actual server status")
-                    self.connection_label.setText("Checking actual server status...")
-                    
-                    # Wait a moment for server to fully start
-                    import time
-                    time.sleep(2)
-                    
-                    # Re-check server status to get actual port
-                    updated_info = get_remote_project_info(self.server_url, self.project_name)
-                    updated_pvserver = updated_info.get("pvserver_info", {})
-                    
-                    if updated_pvserver.get("status") == "running":
-                        actual_port = updated_pvserver.get("port")
-                        if actual_port and actual_port != port:
-                            logger.info(f"Server started at different port: {actual_port}")
-                            actual_connection = f"{remote_host}:{actual_port}"
-                            server_running = self._try_paraview_connection(actual_connection)
-                            if server_running:
-                                connection_string = actual_connection
-            
-            # Step 5: Update UI and handle connection results
-            if self.connected and PARAVIEW_AVAILABLE:
-                self.connection_label.setText(f"Connected to remote ParaView server at {connection_string}")
-                self.connection_label.setStyleSheet("color: green; font-weight: bold;")
-                self.connect_btn.setText("Disconnect from Remote Server")
-                self.connect_btn.setEnabled(False)
-                self.disconnect_btn.setEnabled(True)
-                self.enable_controls()
-                
-                # Emit connection status signal
-                self.connection_status_changed.emit(True)
-                
-                # Auto-load the simulation data
-                self._auto_load_remote_data()
-                
-                logger.info("Remote ParaView server connected successfully")
-                
-            elif server_running:
-                # Server is running but connection failed
-                self.connection_label.setText(f"Server running at {connection_string} - Connection failed (version mismatch)")
-                self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
-                
-                if PARAVIEW_AVAILABLE:
-                    # Show detailed error message
-                    QMessageBox.warning(
-                        self, 
-                        "Connection Failed", 
-                        f"ParaView server is running at {connection_string}\n\n"
-                        f"However, connection failed due to version mismatch:\n"
-                        f"• Client version: ParaView 6.0.0\n"
-                        f"• Server version: Different (likely newer)\n\n"
-                        f"To visualize data, you need:\n"
-                        f"1. Upgrade local ParaView to match server version, OR\n"
-                        f"2. Use ParaView directly at {connection_string}"
-                    )
-                else:
-                    QMessageBox.information(self, "Info", f"Remote ParaView server started at {connection_string}\nParaView client not available for connection")
+                    logger.info("ParaView client not available, but server is running")
+                    self.connection_label.setText(f"Server running at {connection_string} - No ParaView client")
+                    self.connection_label.setStyleSheet("color: blue; font-weight: bold;")
+            else:
+                error_msg = f"Server status is not running: {server_status}"
+                logger.error(error_msg)
+                self.connection_label.setText("Failed to start/connect to ParaView server")
+                self.connection_label.setStyleSheet("color: red; font-weight: bold;")
             
         except Exception as e:
             error_msg = f"Error with remote ParaView server: {str(e)}"
@@ -1002,22 +945,23 @@ class ParaViewWidget(QWidget):
                 self.connected = False
                 logger.info("Disconnected from remote ParaView server")
             
-            # Optionally stop the remote server
-            if REMOTE_PARAVIEW_AVAILABLE and self.server_url and self.project_name:
-                reply = QMessageBox.question(
-                    self, 
-                    "Stop Server?", 
-                    "Do you want to stop the remote ParaView server for other users too?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No
-                )
-                
-                if reply == QMessageBox.StandardButton.Yes:
-                    result = stop_remote_paraview_server(self.server_url, self.project_name)
-                    if "error" in result:
-                        QMessageBox.warning(self, "Warning", f"Failed to stop remote server: {result['error']}")
-                    else:
-                        logger.info("Remote ParaView server stopped")
+            # Always stop the remote server without asking user
+            if self.server_url and self.project_name:
+                logger.info("Stopping remote ParaView server via API...")
+                try:
+                    self._stop_remote_pvserver()
+                except Exception as e:
+                    logger.warning(f"Failed to stop remote server via API: {e}")
+                    # Fallback to old method if available
+                    if REMOTE_PARAVIEW_AVAILABLE:
+                        try:
+                            result = stop_remote_paraview_server(self.server_url, self.project_name)
+                            if "error" in result:
+                                logger.warning(f"Fallback stop failed: {result['error']}")
+                            else:
+                                logger.info("Remote ParaView server stopped via fallback")
+                        except Exception as fallback_error:
+                            logger.warning(f"Fallback stop also failed: {fallback_error}")
             
             self.connection_label.setText("Disconnected from remote ParaView server")
             self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
@@ -1039,6 +983,105 @@ class ParaViewWidget(QWidget):
             error_msg = f"Error disconnecting from remote server: {str(e)}"
             logger.error(error_msg)
             QMessageBox.warning(self, "Warning", error_msg)
+    
+    def handle_connect_request(self, server_url: str, project_name: str):
+        """Handle connection request from simulation setup widget."""
+        logger.info(f"ParaView connection requested for server: {server_url}, project: {project_name}")
+        
+        # Set remote server configuration
+        self.set_remote_server(server_url, project_name)
+        
+        # Check if PVServer is already running for this project
+        try:
+            server_status = self._check_remote_pvserver_status()
+            if server_status.get("status") != "running":
+                logger.info("PVServer not running, starting it via API...")
+                self._start_remote_pvserver()
+            else:
+                logger.info("PVServer already running, connecting to it...")
+        except Exception as e:
+            logger.error(f"Failed to check/start PVServer: {e}")
+        
+        # Connect to the server
+        self.connect_to_remote_server()
+    
+    def handle_disconnect_request(self):
+        """Handle disconnection request from simulation setup widget."""
+        logger.info("ParaView disconnection requested")
+        
+        if self.server_url and self.project_name:
+            self.disconnect_from_remote_server()
+        else:
+            self.disconnect_from_server()
+    
+    def _start_remote_pvserver(self):
+        """Start a remote ParaView server via API"""
+        if not self.server_url or not self.project_name:
+            logger.error("Cannot start PVServer: missing server URL or project name")
+            return False
+        
+        try:
+            import requests
+            from urllib.parse import urlparse, urljoin
+            
+            # Extract base URL from server_url
+            parsed_url = urlparse(self.server_url)
+            api_base = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            
+            # Call the API endpoint to start PVServer
+            api_url = urljoin(api_base, f"/api/projects/{self.project_name}/pvserver/start")
+            response = requests.post(api_url, json={}, timeout=30)
+            
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"PVServer started successfully: {result}")
+                return True
+            else:
+                logger.error(f"Failed to start PVServer: HTTP {response.status_code} - {response.text}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error starting PVServer via API: {e}")
+            return False
+    
+    def _stop_remote_pvserver(self):
+        """Stop a remote ParaView server via API"""
+        if not self.server_url or not self.project_name:
+            logger.error("Cannot stop PVServer: missing server URL or project name")
+            return False
+        
+        try:
+            import requests
+            from urllib.parse import urlparse, urljoin
+            
+            # Extract base URL from server_url
+            parsed_url = urlparse(self.server_url)
+            api_base = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            
+            # Call the API endpoint to stop PVServer
+            api_url = urljoin(api_base, f"/api/projects/{self.project_name}/pvserver/stop")
+            response = requests.delete(api_url, timeout=10)
+            
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"PVServer stopped successfully: {result}")
+                return True
+            else:
+                logger.error(f"Failed to stop PVServer: HTTP {response.status_code} - {response.text}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error stopping PVServer via API: {e}")
+            return False
+    
+    def handle_load_mesh_request(self, file_path: str):
+        """Handle mesh loading request from simulation setup widget."""
+        logger.info(f"ParaView mesh loading requested: {file_path}")
+        
+        if self.connected:
+            self.load_foam_file(file_path)
+        else:
+            logger.warning("ParaView not connected, cannot load mesh")
     
     def setup_ui(self):
         """Setup the user interface"""
@@ -2346,7 +2389,7 @@ class ParaViewWidget(QWidget):
     def _display_vtk_data_with_field(self, vtk_data, field_info):
         """Display VTK data with specific field coloring"""
         try:
-            from paraview_widget import VTK_AVAILABLE, vtk
+            from .paraview_widget import VTK_AVAILABLE, vtk
             if not VTK_AVAILABLE or vtk is None:
                 print("❌ VTK not available for field visualization")
                 return
@@ -2483,7 +2526,7 @@ class ParaViewWidget(QWidget):
     
     def _create_field_lookup_table(self, field_info, data_range):
         """Create appropriate lookup table based on field type"""
-        from paraview_widget import vtk
+        from .paraview_widget import vtk
         
         lut = vtk.vtkLookupTable()
         lut.SetNumberOfTableValues(256)
@@ -3061,7 +3104,7 @@ class ParaViewWidget(QWidget):
     def _display_vtk_data(self, vtk_data):
         """Display VTK data with blue-gray-red color scheme"""
         try:
-            from paraview_widget import VTK_AVAILABLE, vtk
+            from .paraview_widget import VTK_AVAILABLE, vtk
             if not VTK_AVAILABLE or vtk is None:
                 print("❌ VTK not available for visualization")
                 return
@@ -3391,7 +3434,48 @@ class ParaViewWidget(QWidget):
     
     def is_connected(self) -> bool:
         """Check if connected to ParaView server"""
-        return self.connected
+        # First check if we have a local connection
+        if not self.connected:
+            return False
+        
+        # If we have remote server info, also check if server is actually running
+        if self.server_url and self.project_name:
+            try:
+                server_status = self._check_remote_pvserver_status()
+                return server_status.get("status") == "running"
+            except Exception as e:
+                logger.warning(f"Failed to check remote PVServer status: {e}")
+                return False
+        
+        return True
+    
+    def _check_remote_pvserver_status(self):
+        """Check the status of the remote ParaView server via API"""
+        if not self.server_url or not self.project_name:
+            return {"status": "not_configured"}
+        
+        try:
+            # Use the API to check PVServer status for the project
+            import requests
+            from urllib.parse import urlparse, urljoin
+            
+            # Extract base URL from server_url
+            parsed_url = urlparse(self.server_url)
+            api_base = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            
+            # Call the API endpoint to check PVServer info
+            api_url = urljoin(api_base, f"/api/projects/{self.project_name}/pvserver/info")
+            response = requests.get(api_url, timeout=5)
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.warning(f"API call failed with status {response.status_code}: {response.text}")
+                return {"status": "error", "error": f"HTTP {response.status_code}"}
+                
+        except Exception as e:
+            logger.error(f"Failed to check PVServer status via API: {e}")
+            return {"status": "error", "error": str(e)}
     
     def validate_vtk(self) -> bool:
         """Validate VTK availability at runtime"""

@@ -382,7 +382,7 @@ class PVServerService:
     
     def cleanup_inactive(self) -> List[str]:
         """Clean up inactive pvservers"""
-        return cleanup_inactive_pvservers()
+        return cleanup_inactive_pvservers() 
     
     def clear_all_pvservers(self) -> Dict:
         """Clear all running pvserver processes (database-tracked and system processes)"""

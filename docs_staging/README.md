@@ -15,6 +15,7 @@ This directory contains all consolidated documentation for the FoamAI project. A
 - [Service Testing](TESTING.md) - Production service testing guide
 
 ## Architecture & Technical Documentation
+- [LangGraph Agents System](Agents.md) - Complete agent architecture, workflows, and output formats
 - [Tech Stack Recommendations](tech_stack_recommendations.md) - Recommended technologies and tools
 - [Agent Flow Recommendations](agent_flow_recommendations.md) - Agent workflow design
 - [Agents MVP](agentsMVP.md) - Minimum viable product for agents

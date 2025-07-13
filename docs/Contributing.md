@@ -13,12 +13,14 @@ A guide for developers contributing to the FoamAI project, including development
 
 ## Development Environment
 
-### Prerequisites
-- **Python 3.13+** (required for UV workspace)
-- **UV** (Python package manager) - [Install UV](https://docs.astral.sh/uv/getting-started/installation/)
-- **Git** (version 2.0+)
-- **Docker** (for local testing and containers)
-- **Text editor or IDE** of choice
+### System Requirements
+
+- **Ubuntu 22.04 LTS** (or compatible Linux distribution)
+- **Python 3.12+** (required for UV workspace)
+- **OpenFOAM v2412** installed from official repositories
+- **ParaView 6.0.0-RC2** for visualization compatibility
+- **Git** for version control
+- **Docker & Docker Compose** for containerized development
 
 ### Repository Setup
 ```bash
@@ -36,6 +38,15 @@ uv sync
 source .venv/bin/activate  # Linux/macOS
 # or
 .venv\Scripts\activate  # Windows
+```
+
+### Alternative Python Versions
+
+If you need a different Python version:
+
+```bash
+# Use specific Python version
+uv sync --python 3.12
 ```
 
 ## Project Structure
@@ -287,7 +298,7 @@ uv lock --upgrade
 uv sync --verbose
 
 # Use specific Python version
-uv sync --python 3.13
+uv sync --python 3.12
 ```
 
 ## Nix Dev Shell Setup

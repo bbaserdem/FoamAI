@@ -16,8 +16,8 @@
   pkgs = nixpkgs.legacyPackages.${system};
   inherit (pkgs) stdenv;
 
-  # We use python 3.13
-  python = pkgs.python313;
+  # We use python 3.12
+  python = pkgs.python312;
   baseSet = pkgs.callPackage pyproject-nix.build.packages {inherit python;};
 
   # We load a uv workspace from a workspace root

@@ -13,21 +13,35 @@ ENV PYTHONPATH=/app/src/foamai-server
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    # Python and essential build tools
-    python3 \
-    python3-pip \
-    python3-venv \
-    python3-dev \
-    build-essential \
-    # Networking and utilities
+    # Add repository management
+    software-properties-common \
+    # Basic utilities
     curl \
     wget \
     git \
-    # Required for some Python packages
+    # Required for building Python packages
     gcc \
     g++ \
+    build-essential \
     # Clean up apt cache to reduce image size
     && rm -rf /var/lib/apt/lists/*
+
+# Install Python 3.12 from deadsnakes PPA
+RUN add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y \
+    python3.12 \
+    python3.12-dev \
+    python3.12-venv \
+    python3.12-distutils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Python 3.12 as default python3
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 \
+    && update-alternatives --set python3 /usr/bin/python3.12
+
+# Install pip for Python 3.12
+RUN python3.12 -m ensurepip --upgrade || curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12
 
 # Create API user (non-root for security)
 RUN groupadd -r apiuser && useradd -r -g apiuser -m -d /home/apiuser apiuser
@@ -46,8 +60,8 @@ COPY src/foamai-server/ ./src/foamai-server/
 # Create virtual environment and install dependencies
 WORKDIR /app/src/foamai-server
 
-# Step 1: Create virtual environment
-RUN python3 -m venv .venv --system-site-packages
+# Step 1: Create virtual environment with Python 3.12
+RUN python3.12 -m venv .venv --system-site-packages
 
 # Step 2: Upgrade pip in the virtual environment
 RUN .venv/bin/python -m pip install --upgrade pip setuptools wheel

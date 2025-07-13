@@ -9,7 +9,7 @@ authors = [
     { name = "mcbagz", email = "baserdemb@gmail.com" },
     { name = "jackwimbish", email = "baserdemb@gmail.com" },
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
     # This deps
     "click>=8.0.0",
@@ -57,14 +57,14 @@ build-backend = "hatchling.build"
 
 [tool.black]
 line-length = 88
-target-version = ['py313']
+target-version = ['py312']
 
 [tool.isort]
 profile = "black"
 line_length = 88
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

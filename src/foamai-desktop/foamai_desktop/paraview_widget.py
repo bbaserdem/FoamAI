@@ -323,7 +323,7 @@ def initialize_vtk():
 # Don't initialize VTK immediately - defer until needed
 print("🔧 Deferring VTK initialization until needed...")
 
-from config import Config
+from .config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -388,168 +388,309 @@ class ParaViewWidget(QWidget):
     
     def connect_to_remote_server(self):
         """Connect to or start remote ParaView server with improved connection logic."""
-        if not REMOTE_PARAVIEW_AVAILABLE:
-            QMessageBox.warning(self, "Error", "Remote ParaView management not available")
-            return
+        logger.info(f"connect_to_remote_server called for project: {self.project_name}")
         
         if not self.server_url or not self.project_name:
-            QMessageBox.warning(self, "Error", "Remote server not configured")
+            error_msg = "Remote server not configured"
+            logger.error(error_msg)
+            QMessageBox.warning(self, "Error", error_msg)
             return
         
+        # COMPREHENSIVE STATE RESET BEFORE NEW CONNECTION
+        logger.info("Performing comprehensive state reset before new connection...")
         try:
-            # Step 1: Check current server status
+            # If we're already connected, do a full cleanup first
+            if self.connected:
+                logger.info("Already connected - performing cleanup before reconnection")
+                self._comprehensive_paraview_cleanup()
+                
+                # Disconnect cleanly from previous connection
+                if PARAVIEW_AVAILABLE:
+                    try:
+                        pv.Disconnect()
+                        logger.info("Disconnected from previous ParaView connection")
+                    except Exception as prev_disconnect_error:
+                        logger.warning(f"Previous disconnect failed: {prev_disconnect_error}")
+                
+                self.connected = False
+            
+            # Always clear internal state for fresh start
+            self._clear_internal_state()
+            
+            # Clear VTK resources to free memory
+            self._clear_vtk_resources()
+            
+            # Force garbage collection before new connection
+            import gc
+            gc.collect()
+            
+            logger.info("State reset completed - ready for new connection")
+            
+        except Exception as reset_error:
+            logger.warning(f"State reset failed: {reset_error}")
+            # Continue anyway - connection might still work
+        
+        # Wrap the entire connection process in a try-catch to prevent crashes
+        try:
+            # Step 1: Check current server status via API
             self.connection_label.setText("Checking remote ParaView server status...")
             self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
             
-            project_info = get_remote_project_info(self.server_url, self.project_name)
+            server_status = self._check_remote_pvserver_status()
+            logger.info(f"Server status check result: {server_status}")
             
-            if "error" in project_info:
-                QMessageBox.warning(self, "Error", f"Failed to get project info: {project_info['error']}")
+            if server_status.get("status") == "error":
+                error_msg = f"Failed to check server status: {server_status.get('error', 'Unknown error')}"
+                logger.error(error_msg)
+                QMessageBox.warning(self, "Error", error_msg)
                 return
             
-            # Step 2: Create .foam file on server (regardless of ParaView server status)
-            try:
-                self.connection_label.setText("Creating .foam file on remote server...")
-                from foamai_core.remote_executor import RemoteExecutor
-                
-                with RemoteExecutor(self.server_url, self.project_name) as remote:
-                    # Create the .foam file in the active_run directory
-                    foam_filename = f"{self.project_name}.foam"
-                    foam_content = ""  # .foam files are typically empty
-                    
-                    remote.upload_text_file(foam_content, foam_filename)
-                    logger.info(f"Created .foam file on remote server: {foam_filename}")
-                    
-            except Exception as foam_error:
-                logger.warning(f"Failed to create .foam file: {foam_error}")
-                # Continue anyway - the case might still be loadable
-            
-            # Step 3: Check if ParaView server is already running
-            pvserver_info = project_info.get("pvserver_info", {})
-            server_running = False
-            connection_string = None
-            
-            if pvserver_info.get("status") == "running" and pvserver_info.get("port"):
-                # Server already running - construct proper connection string for remote access
-                port = pvserver_info.get("port")
-                remote_host = self._get_remote_host()
-                connection_string = f"{remote_host}:{port}"
-                logger.info(f"ParaView server already running at {connection_string} (remote access)")
-                
-                server_running = True  # Server is running according to API
-                
-                if PARAVIEW_AVAILABLE:
-                    # Try to connect (but server is running regardless of success)
-                    connection_successful = self._try_paraview_connection(connection_string)
-                    if not connection_successful:
-                        logger.warning("Server is running but connection failed (likely version mismatch)")
-                else:
-                    logger.info("Server is running but no ParaView client available")
-            
-            # Step 4: If no server running or connection failed, start new server
-            if not server_running:
+            # Step 2: Start server if not running
+            if server_status.get("status") != "running":
+                logger.info("PVServer not running, starting it...")
                 self.connection_label.setText("Starting remote ParaView server...")
-                self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
                 
-                result = start_remote_paraview_server(self.server_url, self.project_name)
-                
-                if "error" in result:
-                    QMessageBox.warning(self, "Error", f"Failed to start ParaView server: {result['error']}")
-                    self.connection_label.setText("Failed to start remote ParaView server")
-                    self.connection_label.setStyleSheet("color: red; font-weight: bold;")
+                if not self._start_remote_pvserver():
+                    error_msg = "Failed to start remote ParaView server"
+                    logger.error(error_msg)
+                    QMessageBox.warning(self, "Error", error_msg)
                     return
                 
-                # Get connection info from the start result
-                port = result.get("port", 11111)
-                remote_host = self._get_remote_host()
-                connection_string = f"{remote_host}:{port}"
-                self.remote_paraview_info = result
+                # Wait a moment for server to start
+                import time
+                time.sleep(2)
                 
-                if PARAVIEW_AVAILABLE:
-                    server_running = self._try_paraview_connection(connection_string)
-                else:
-                    server_running = True  # Server started, but no client
-                
-                # If connection still failed, check actual server status
-                if not server_running and PARAVIEW_AVAILABLE:
-                    logger.warning("Connection failed after starting server - checking actual server status")
-                    self.connection_label.setText("Checking actual server status...")
-                    
-                    # Wait a moment for server to fully start
-                    import time
-                    time.sleep(2)
-                    
-                    # Re-check server status to get actual port
-                    updated_info = get_remote_project_info(self.server_url, self.project_name)
-                    updated_pvserver = updated_info.get("pvserver_info", {})
-                    
-                    if updated_pvserver.get("status") == "running":
-                        actual_port = updated_pvserver.get("port")
-                        if actual_port and actual_port != port:
-                            logger.info(f"Server started at different port: {actual_port}")
-                            actual_connection = f"{remote_host}:{actual_port}"
-                            server_running = self._try_paraview_connection(actual_connection)
-                            if server_running:
-                                connection_string = actual_connection
+                # Re-check status to get connection info
+                server_status = self._check_remote_pvserver_status()
+                logger.info(f"Server status after starting: {server_status}")
+            else:
+                logger.info("PVServer already running")
             
-            # Step 5: Update UI and handle connection results
-            if self.connected and PARAVIEW_AVAILABLE:
-                self.connection_label.setText(f"Connected to remote ParaView server at {connection_string}")
-                self.connection_label.setStyleSheet("color: green; font-weight: bold;")
-                self.connect_btn.setText("Disconnect from Remote Server")
-                self.connect_btn.setEnabled(False)
-                self.disconnect_btn.setEnabled(True)
-                self.enable_controls()
+            # Step 3: Get connection information
+            if server_status.get("status") == "running":
+                port = server_status.get("port")
+                remote_host = self._get_remote_host()
                 
-                # Emit connection status signal
-                self.connection_status_changed.emit(True)
+                # Debug logging for API response
+                logger.info(f"Raw API response port: {port} (type: {type(port)})")
+                logger.info(f"Raw remote host: {remote_host}")
                 
-                # Auto-load the simulation data
-                self._auto_load_remote_data()
+                # Validate port
+                if not port or not isinstance(port, (int, str)) or str(port).strip() == "":
+                    error_msg = f"Invalid port received from server: {port}"
+                    logger.error(error_msg)
+                    QMessageBox.warning(self, "Error", error_msg)
+                    return
                 
-                logger.info("Remote ParaView server connected successfully")
+                # Debug: Check if the port already contains duplication
+                port_str = str(port)
+                if ':' in port_str:
+                    logger.error(f"API returned port with colon: {port_str} - this is the source of duplication!")
                 
-            elif server_running:
-                # Server is running but connection failed
-                self.connection_label.setText(f"Server running at {connection_string} - Connection failed (version mismatch)")
-                self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
+                # Ensure port is a clean integer
+                try:
+                    port = int(port)
+                    if port <= 0 or port > 65535:
+                        raise ValueError(f"Port {port} is out of valid range")
+                except (ValueError, TypeError) as e:
+                    error_msg = f"Invalid port format from server: {port} - {e}"
+                    logger.error(error_msg)
+                    QMessageBox.warning(self, "Error", error_msg)
+                    return
                 
+                # Validate and clean remote_host
+                if not remote_host or remote_host.strip() == "":
+                    error_msg = f"Invalid remote host: {remote_host}"
+                    logger.error(error_msg)
+                    QMessageBox.warning(self, "Error", error_msg)
+                    return
+                
+                # Clean remote_host - ensure it doesn't contain a port
+                remote_host = remote_host.strip()
+                if ':' in remote_host:
+                    # Handle IPv6 addresses vs regular host:port
+                    if remote_host.startswith('[') and ']:' in remote_host:
+                        # IPv6 address like [::1]:8080 - extract just the IPv6 part
+                        remote_host = remote_host.split(']:')[0][1:]
+                        logger.info(f"Extracted IPv6 host: {remote_host}")
+                    else:
+                        # Regular host:port format - extract just the host part
+                        original_host = remote_host
+                        remote_host = remote_host.split(':')[0]
+                        logger.warning(f"Removed port from host: {original_host} -> {remote_host}")
+                
+                # Validate and clean port
+                port_str = str(port).strip()
+                if ':' in port_str:
+                    # Port contains colon - this is the duplication issue!
+                    original_port = port_str
+                    port_str = port_str.split(':')[0]  # Take only the first part
+                    logger.warning(f"Removed duplicated port: {original_port} -> {port_str}")
+                
+                # Convert back to integer and validate
+                try:
+                    port = int(port_str)
+                    if port <= 0 or port > 65535:
+                        raise ValueError(f"Port {port} is out of valid range")
+                except (ValueError, TypeError) as e:
+                    error_msg = f"Invalid port after cleanup: {port_str} - {e}"
+                    logger.error(error_msg)
+                    QMessageBox.warning(self, "Error", error_msg)
+                    return
+                
+                # Final validation - ensure both components are clean
+                if ':' in remote_host:
+                    error_msg = f"Host still contains colon after cleanup: {remote_host}"
+                    logger.error(error_msg)
+                    QMessageBox.warning(self, "Error", error_msg)
+                    return
+                
+                connection_string = f"{remote_host}:{port}"
+                
+                # Final validation of connection string format
+                colon_count = connection_string.count(':')
+                if colon_count != 1:
+                    error_msg = f"Malformed connection string: {connection_string} (has {colon_count} colons, should have 1)"
+                    logger.error(error_msg)
+                    QMessageBox.warning(self, "Error", error_msg)
+                    return
+                
+                logger.info(f"=== FINAL CONNECTION ATTEMPT ===")
+                logger.info(f"Clean remote host: '{remote_host}'")
+                logger.info(f"Clean port: {port}")
+                logger.info(f"Final connection string: '{connection_string}'")
+                logger.info(f"Connection string colon count: {connection_string.count(':')}")
+                logger.info(f"=== ATTEMPTING CONNECTION ===")
+                
+                # Step 4: Try to connect ParaView client if available
                 if PARAVIEW_AVAILABLE:
-                    # Show detailed error message
-                    QMessageBox.warning(
-                        self, 
-                        "Connection Failed", 
-                        f"ParaView server is running at {connection_string}\n\n"
-                        f"However, connection failed due to version mismatch:\n"
-                        f"• Client version: ParaView 6.0.0\n"
-                        f"• Server version: Different (likely newer)\n\n"
-                        f"To visualize data, you need:\n"
-                        f"1. Upgrade local ParaView to match server version, OR\n"
-                        f"2. Use ParaView directly at {connection_string}"
-                    )
+                    connection_successful = self._try_paraview_connection(connection_string)
+                    if connection_successful:
+                        logger.info("ParaView client connected successfully")
+                        
+                        # Update connection status with malformed connection check
+                        status_message = self._get_connection_status_message()
+                        if "bug" in status_message:
+                            self.connection_label.setText(f"Connected to {connection_string} - ParaView bug detected")
+                            self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
+                        else:
+                            self.connection_label.setText(f"Connected to remote ParaView server at {connection_string}")
+                            self.connection_label.setStyleSheet("color: green; font-weight: bold;")
+                        
+                        self.connect_btn.setText("Disconnect from Remote Server")
+                        self.connect_btn.setEnabled(False)
+                        self.disconnect_btn.setEnabled(True)
+                        self.enable_controls()
+                        
+                        # Emit connection status signal
+                        self.connection_status_changed.emit(True)
+                        
+                        # Auto-load the simulation data
+                        self._auto_load_remote_data()
+                        
+                        logger.info("Remote ParaView server connection complete")
+                        
+                    else:
+                        logger.warning("ParaView client connection failed but server is running")
+                        self.connection_label.setText(f"Server running at {connection_string} - Client connection failed")
+                        self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
                 else:
-                    QMessageBox.information(self, "Info", f"Remote ParaView server started at {connection_string}\nParaView client not available for connection")
+                    logger.info("ParaView client not available, but server is running")
+                    self.connection_label.setText(f"Server running at {connection_string} - No ParaView client")
+                    self.connection_label.setStyleSheet("color: blue; font-weight: bold;")
+            else:
+                error_msg = f"Server status is not running: {server_status}"
+                logger.error(error_msg)
+                self.connection_label.setText("Failed to start/connect to ParaView server")
+                self.connection_label.setStyleSheet("color: red; font-weight: bold;")
             
         except Exception as e:
             error_msg = f"Error with remote ParaView server: {str(e)}"
             logger.error(error_msg)
-            QMessageBox.critical(self, "Error", error_msg)
+            import traceback
+            logger.error(f"Full connection error traceback: {traceback.format_exc()}")
+            
+            # Try to provide user-friendly error messages
+            if "malformed" in str(e).lower() or "connection string" in str(e).lower():
+                user_msg = "Connection failed due to server configuration issue. Please check the server status and try again."
+            elif "refused" in str(e).lower():
+                user_msg = "Connection refused by server. The server may be busy or not accessible."
+            elif "timeout" in str(e).lower():
+                user_msg = "Connection timed out. Please check your network connection and server status."
+            else:
+                user_msg = f"Connection failed: {str(e)}"
+            
+            QMessageBox.critical(self, "Connection Error", user_msg)
             self.connection_label.setText("Remote ParaView server error")
             self.connection_label.setStyleSheet("color: red; font-weight: bold;")
+            
+            # Reset connection state
+            self.connected = False
     
     def _get_remote_host(self):
         """Extract the remote host from the server URL."""
         if not self.server_url:
+            logger.info("No server URL provided, using localhost")
             return "localhost"
+        
+        logger.info(f"Extracting remote host from server URL: {self.server_url}")
         
         try:
             from urllib.parse import urlparse
             parsed = urlparse(self.server_url)
-            # Return the hostname/IP from the server URL
-            remote_host = parsed.hostname or parsed.netloc.split(':')[0] or "localhost"
-            if remote_host != "localhost":
-                logger.info(f"Using remote host {remote_host} extracted from server URL {self.server_url}")
-            return remote_host
+            
+            logger.info(f"Parsed URL - hostname: {parsed.hostname}, netloc: {parsed.netloc}")
+            
+            # First try to get hostname (this should exclude port)
+            if parsed.hostname:
+                remote_host = parsed.hostname
+                logger.info(f"Using parsed hostname: {remote_host}")
+                
+                # Extra validation - ensure hostname doesn't contain port
+                if ':' in remote_host:
+                    logger.warning(f"Hostname contains colon: {remote_host} - this shouldn't happen")
+                    remote_host = remote_host.split(':')[0]
+                    logger.info(f"Cleaned hostname: {remote_host}")
+                
+                return remote_host
+            
+            # Fallback: extract host from netloc, ensuring we only get the host part
+            if parsed.netloc:
+                # Handle IPv6 addresses in brackets and regular host:port format
+                netloc = parsed.netloc
+                logger.info(f"Using netloc fallback: {netloc}")
+                
+                # Remove any user info (user:pass@host:port)
+                if '@' in netloc:
+                    netloc = netloc.split('@')[1]
+                    logger.info(f"Removed user info: {netloc}")
+                
+                # Handle IPv6 addresses [::1]:port
+                if netloc.startswith('[') and ']:' in netloc:
+                    remote_host = netloc.split(']:')[0][1:]  # Remove brackets
+                    logger.info(f"Extracted IPv6 host: {remote_host}")
+                elif ':' in netloc:
+                    # Regular host:port format - take only the host part
+                    original_netloc = netloc
+                    remote_host = netloc.split(':')[0]
+                    logger.info(f"Extracted host from netloc: {original_netloc} -> {remote_host}")
+                else:
+                    # No port specified
+                    remote_host = netloc
+                    logger.info(f"Using netloc as-is (no port): {remote_host}")
+                
+                # Final validation
+                if ':' in remote_host:
+                    logger.error(f"Host still contains colon after extraction: {remote_host}")
+                    remote_host = remote_host.split(':')[0]
+                    logger.info(f"Emergency cleanup: {remote_host}")
+                
+                return remote_host
+            
+            # Final fallback
+            logger.warning(f"Could not extract hostname from server URL {self.server_url}, using localhost")
+            return "localhost"
+            
         except Exception as e:
             logger.warning(f"Could not parse server URL {self.server_url}: {e}")
             return "localhost"
@@ -557,17 +698,59 @@ class ParaViewWidget(QWidget):
     def _try_paraview_connection(self, connection_string):
         """Try to establish ParaView connection with error handling."""
         try:
-            logger.info(f"Attempting ParaView connection to: {connection_string}")
+            # Validate connection string format before attempting connection
+            if not connection_string or ':' not in connection_string:
+                error_msg = f"Invalid connection string format: {connection_string}"
+                logger.error(error_msg)
+                return False
             
-            # Try to connect to ParaView server
-            pv.Connect(connection_string)
+            # Parse and validate host and port from connection string
+            try:
+                host, port_str = connection_string.rsplit(':', 1)  # rsplit to handle IPv6
+                port = int(port_str)
+                if not host or port <= 0 or port > 65535:
+                    raise ValueError(f"Invalid host or port: {host}:{port}")
+            except (ValueError, TypeError) as parse_error:
+                error_msg = f"Cannot parse connection string '{connection_string}': {parse_error}"
+                logger.error(error_msg)
+                return False
+            
+            logger.info(f"Attempting ParaView connection to: {connection_string} (host='{host}', port={port})")
+            
+            # Try to connect to ParaView server using separate host and port to avoid connection string parsing bug
+            pv.Connect(host, port)
             self.connected = True
             logger.info("ParaView connection successful")
+            
+            # Verify the connection was established correctly
+            try:
+                import paraview.servermanager as sm
+                if hasattr(sm, 'ActiveConnection') and sm.ActiveConnection:
+                    active_conn_str = str(sm.ActiveConnection)
+                    logger.info(f"Active connection verified: {active_conn_str}")
+                    
+                    # Check if the active connection string looks malformed
+                    if active_conn_str.count(':') > 2:  # More than expected colons (cs://host:port should have 2)
+                        logger.warning(f"Active connection string appears malformed: {active_conn_str}")
+                        logger.warning("This indicates a ParaView connection parsing bug")
+                        logger.warning("Keeping the working connection but will add extra protection for operations")
+                        
+                        # Don't disconnect - the connection is actually working
+                        # We'll handle the bug by being extra careful in data operations
+                else:
+                    logger.warning("No active connection found after Connect() succeeded")
+            except Exception as verify_error:
+                logger.warning(f"Could not verify connection: {verify_error}")
+            
             return True
                 
         except Exception as e:
             error_msg = str(e)
             logger.warning(f"ParaView connection failed: {error_msg}")
+            
+            # Log the full exception for debugging
+            import traceback
+            logger.debug(f"ParaView connection exception traceback: {traceback.format_exc()}")
             
             # Check for specific error types
             if "version hash mismatch" in error_msg.lower():
@@ -582,6 +765,11 @@ class ParaViewWidget(QWidget):
                 
             elif "refused" in error_msg.lower():
                 logger.warning("Connection refused - server may not be ready or port blocked")
+                return False
+                
+            elif "invalid" in error_msg.lower() or "malformed" in error_msg.lower():
+                logger.error(f"Connection string validation failed: {error_msg}")
+                return False
                 
             return False
     
@@ -589,6 +777,28 @@ class ParaViewWidget(QWidget):
         """Auto-load simulation data from remote server after successful connection."""
         if not self.connected or not self.server_url or not self.project_name:
             return
+        
+        # Additional safety check for malformed connections that could cause crashes
+        try:
+            import paraview.servermanager as sm
+            if hasattr(sm, 'ActiveConnection') and sm.ActiveConnection:
+                active_conn_str = str(sm.ActiveConnection)
+                if active_conn_str.count(':') > 2:
+                    logger.error(f"Cannot auto-load data: connection string is malformed: {active_conn_str}")
+                    logger.error("This will likely cause crashes in ParaView operations")
+                    
+                    # Update UI to show the issue
+                    if hasattr(self, 'visualization_area'):
+                        self.visualization_area.setText(
+                            "Connection established but ParaView has a known bug\n"
+                            "with the connection string format.\n\n"
+                            "This may cause crashes during data operations.\n\n"
+                            "Try disconnecting and reconnecting, or use a\n"
+                            "different ParaView version if the issue persists."
+                        )
+                    return
+        except Exception as check_error:
+            logger.warning(f"Could not check connection string: {check_error}")
         
         try:
             # Verify ParaView connection is fully ready
@@ -628,26 +838,139 @@ class ParaViewWidget(QWidget):
                 logger.warning(f"Could not verify ParaView connection: {conn_error}")
                 # Continue anyway - connection might work
             
-            # Clear any existing sources
-            if hasattr(self, 'current_source') and self.current_source:
-                from paraview.simple import Delete
-                try:
-                    Delete(self.current_source)
-                    logger.info("Cleared existing ParaView source")
-                except Exception as cleanup_error:
-                    logger.warning(f"Could not cleanup existing source: {cleanup_error}")
+            # ENHANCED MEMORY MANAGEMENT - Clear any existing sources and VTK objects
+            try:
+                logger.info("Performing enhanced memory management cleanup...")
+                
+                # Clear current ParaView source
+                if hasattr(self, 'current_source') and self.current_source:
+                    from paraview.simple import Delete
+                    try:
+                        Delete(self.current_source)
+                        logger.info("Deleted existing ParaView source")
+                    except Exception as cleanup_error:
+                        logger.warning(f"Could not delete existing source: {cleanup_error}")
+                    
+                    self.current_source = None
+                
+                # Clear VTK actors and rendering objects to free memory
+                if hasattr(self, 'renderer') and self.renderer:
+                    try:
+                        # Remove all actors to free VTK memory
+                        self.renderer.RemoveAllViewProps()
+                        
+                        # Clear 2D actors (color bars, text, etc.)
+                        actors_2d = self.renderer.GetActors2D()
+                        if actors_2d:
+                            actors_2d.InitTraversal()
+                            actors_to_remove = []
+                            for i in range(actors_2d.GetNumberOfItems()):
+                                actor = actors_2d.GetNextItem()
+                                if actor:
+                                    actors_to_remove.append(actor)
+                            
+                            for actor in actors_to_remove:
+                                self.renderer.RemoveActor2D(actor)
+                        
+                        logger.info("Cleared VTK actors and view props")
+                    except Exception as vtk_cleanup_error:
+                        logger.warning(f"VTK cleanup failed: {vtk_cleanup_error}")
+                
+                # Force Python garbage collection to free memory
+                import gc
+                collected = gc.collect()
+                logger.info(f"Garbage collection freed {collected} objects")
+                
+            except Exception as memory_cleanup_error:
+                logger.warning(f"Memory management cleanup failed: {memory_cleanup_error}")
             
             # Create OpenFOAM reader with server-local case path
             # The ParaView server will load this from its local filesystem
             logger.info("Creating OpenFOAM reader...")
-            reader = OpenFOAMReader(FileName=foam_file_path)
             
-            if not reader:
-                logger.error("Failed to create OpenFOAM reader - returned None")
+            # Wrap reader creation in multiple layers of error handling to prevent crashes
+            try:
+                logger.info("Creating OpenFOAM reader with enhanced error protection...")
+                
+                # First, try to create the reader with maximum protection
+                reader = None
+                try:
+                    reader = OpenFOAMReader(FileName=foam_file_path)
+                    logger.info("OpenFOAM reader created successfully")
+                except Exception as create_error:
+                    logger.error(f"OpenFOAM reader creation failed: {create_error}")
+                    
+                    # Check if this might be a connection-related issue
+                    try:
+                        import paraview.servermanager as sm
+                        if hasattr(sm, 'ActiveConnection') and sm.ActiveConnection:
+                            active_conn_str = str(sm.ActiveConnection)
+                            if active_conn_str.count(':') > 2:
+                                logger.error("Reader creation failed - likely due to malformed connection string bug")
+                                logger.error("This is a known ParaView 6.0.0 issue that can cause crashes")
+                                
+                                # Show a user-friendly message instead of crashing
+                                if hasattr(self, 'visualization_area'):
+                                    self.visualization_area.setText(
+                                        "⚠️ Connection established but data loading encountered issues.\n\n"
+                                        "This appears to be related to a known ParaView 6.0.0 bug\n"
+                                        "with connection string parsing.\n\n"
+                                        "The connection is working, but some data operations\n"
+                                        "may be unstable.\n\n"
+                                        "Suggestions:\n"
+                                        "• Try reloading the data manually\n"
+                                        "• Restart the application if issues persist\n"
+                                        "• Consider using a different ParaView version"
+                                    )
+                                return
+                    except Exception:
+                        pass
+                    
+                    # If not connection-related, show generic error
+                    logger.error("OpenFOAM reader creation failed for unknown reason")
+                    if hasattr(self, 'visualization_area'):
+                        self.visualization_area.setText(
+                            f"❌ Failed to load OpenFOAM data.\n\n"
+                            f"Error: {str(create_error)}\n\n"
+                            "Please check:\n"
+                            "• Server connection is stable\n"
+                            "• Case files exist on server\n"
+                            "• ParaView server is functioning properly"
+                        )
+                    return
+                
+                if not reader:
+                    logger.error("Failed to create OpenFOAM reader - returned None")
+                    if hasattr(self, 'visualization_area'):
+                        self.visualization_area.setText(
+                            "❌ Failed to create OpenFOAM reader.\n\n"
+                            "The reader returned None, which may indicate:\n"
+                            "• File not found on server\n"
+                            "• Insufficient permissions\n"
+                            "• ParaView server issues"
+                        )
+                    return
+                
+                logger.info(f"OpenFOAM reader created successfully: {reader}")
+                self.current_source = reader
+                
+            except Exception as reader_error:
+                logger.error(f"Critical error in reader creation: {reader_error}")
+                import traceback
+                logger.error(f"Reader creation traceback: {traceback.format_exc()}")
+                
+                # Provide user-friendly error message
+                if hasattr(self, 'visualization_area'):
+                    self.visualization_area.setText(
+                        f"❌ Critical error loading OpenFOAM data.\n\n"
+                        f"Error: {str(reader_error)}\n\n"
+                        "This error prevented the application from loading\n"
+                        "the simulation data. Please try:\n"
+                        "• Disconnecting and reconnecting\n"
+                        "• Restarting the application\n"
+                        "• Checking server logs for issues"
+                    )
                 return
-            
-            logger.info(f"OpenFOAM reader created successfully: {reader}")
-            self.current_source = reader
             
             # Configure reader for better data loading (ParaView 6.0.0 compatible)
             try:
@@ -756,8 +1079,22 @@ class ParaViewWidget(QWidget):
             try:
                 # CRITICAL: Force reader to apply all configuration changes
                 if hasattr(reader, 'UpdateVTKObjects'):
-                    reader.UpdateVTKObjects()
-                    logger.info("UpdateVTKObjects completed")
+                    try:
+                        reader.UpdateVTKObjects()
+                        logger.info("UpdateVTKObjects completed")
+                    except Exception as vtk_obj_error:
+                        logger.error(f"UpdateVTKObjects failed: {vtk_obj_error}")
+                        # Check if this is the connection string bug
+                        try:
+                            import paraview.servermanager as sm
+                            if hasattr(sm, 'ActiveConnection') and sm.ActiveConnection:
+                                active_conn_str = str(sm.ActiveConnection)
+                                if active_conn_str.count(':') > 2:
+                                    logger.error("UpdateVTKObjects failed due to malformed connection string")
+                                    raise Exception(f"ParaView connection bug detected: {active_conn_str}")
+                        except:
+                            pass
+                        raise vtk_obj_error
                 
                 # Force the reader to re-read with new configuration
                 if hasattr(reader, 'Modified'):
@@ -793,11 +1130,43 @@ class ParaViewWidget(QWidget):
                         
                     except Exception as update_error:
                         logger.warning(f"Pipeline update attempt {attempt + 1} failed: {update_error}")
+                        
+                        # Check if this is the connection string bug on the last attempt
                         if attempt == 2:  # Last attempt
                             logger.warning("All pipeline update attempts failed")
+                            try:
+                                import paraview.servermanager as sm
+                                if hasattr(sm, 'ActiveConnection') and sm.ActiveConnection:
+                                    active_conn_str = str(sm.ActiveConnection)
+                                    if active_conn_str.count(':') > 2:
+                                        logger.error("Pipeline updates failed due to malformed connection string")
+                                        raise Exception(f"ParaView connection bug prevents data loading: {active_conn_str}")
+                            except:
+                                pass
                     
             except Exception as pipeline_error:
                 logger.error(f"Pipeline update failed: {pipeline_error}")
+                
+                # Provide user-friendly error message
+                if "ParaView connection bug" in str(pipeline_error):
+                    if hasattr(self, 'visualization_area'):
+                        self.visualization_area.setText(
+                            "Pipeline update failed due to ParaView connection bug.\n\n"
+                            f"Error: {str(pipeline_error)}\n\n"
+                            "This is a known issue with ParaView 6.0.0.\n"
+                            "The connection succeeds but internal operations fail.\n\n"
+                            "Recommended solutions:\n"
+                            "• Disconnect and reconnect\n"
+                            "• Restart the application\n"
+                            "• Use ParaView 5.x or 6.1+ if available"
+                        )
+                else:
+                    if hasattr(self, 'visualization_area'):
+                        self.visualization_area.setText(
+                            f"Failed to update data pipeline.\n\n"
+                            f"Error: {str(pipeline_error)}\n\n"
+                            "Please check server connection and try again."
+                        )
                 return
             
             logger.info("Successfully auto-loaded remote OpenFOAM case")
@@ -995,30 +1364,48 @@ class ParaViewWidget(QWidget):
             return False
     
     def disconnect_from_remote_server(self):
-        """Disconnect from remote ParaView server."""
+        """Disconnect from remote ParaView server with comprehensive cleanup."""
         try:
+            logger.info("Starting comprehensive disconnection and cleanup...")
+            
+            # COMPREHENSIVE CLEANUP - Clear all ParaView state first
+            self._comprehensive_paraview_cleanup()
+            
+            # Disconnect from ParaView
             if PARAVIEW_AVAILABLE and self.connected:
-                pv.Disconnect()
-                self.connected = False
-                logger.info("Disconnected from remote ParaView server")
-            
-            # Optionally stop the remote server
-            if REMOTE_PARAVIEW_AVAILABLE and self.server_url and self.project_name:
-                reply = QMessageBox.question(
-                    self, 
-                    "Stop Server?", 
-                    "Do you want to stop the remote ParaView server for other users too?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No
-                )
+                try:
+                    pv.Disconnect()
+                    logger.info("Disconnected from remote ParaView server")
+                except Exception as disconnect_error:
+                    logger.warning(f"ParaView disconnect failed: {disconnect_error}")
                 
-                if reply == QMessageBox.StandardButton.Yes:
-                    result = stop_remote_paraview_server(self.server_url, self.project_name)
-                    if "error" in result:
-                        QMessageBox.warning(self, "Warning", f"Failed to stop remote server: {result['error']}")
-                    else:
-                        logger.info("Remote ParaView server stopped")
+                self.connected = False
             
+            # Clear all internal state
+            self._clear_internal_state()
+            
+            # Clear VTK rendering resources
+            self._clear_vtk_resources()
+            
+            # Always stop the remote server without asking user
+            if self.server_url and self.project_name:
+                logger.info("Stopping remote ParaView server via API...")
+                try:
+                    self._stop_remote_pvserver()
+                except Exception as e:
+                    logger.warning(f"Failed to stop remote server via API: {e}")
+                    # Fallback to old method if available
+                    if REMOTE_PARAVIEW_AVAILABLE:
+                        try:
+                            result = stop_remote_paraview_server(self.server_url, self.project_name)
+                            if "error" in result:
+                                logger.warning(f"Fallback stop failed: {result['error']}")
+                            else:
+                                logger.info("Remote ParaView server stopped via fallback")
+                        except Exception as fallback_error:
+                            logger.warning(f"Fallback stop also failed: {fallback_error}")
+            
+            # Update UI
             self.connection_label.setText("Disconnected from remote ParaView server")
             self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
             
@@ -1035,10 +1422,284 @@ class ParaViewWidget(QWidget):
             self.disable_controls()
             self.remote_paraview_info = None
             
+            logger.info("Comprehensive disconnection and cleanup completed")
+            
         except Exception as e:
             error_msg = f"Error disconnecting from remote server: {str(e)}"
             logger.error(error_msg)
+            import traceback
+            logger.error(f"Disconnect error traceback: {traceback.format_exc()}")
             QMessageBox.warning(self, "Warning", error_msg)
+    
+    def _comprehensive_paraview_cleanup(self):
+        """Comprehensive ParaView state cleanup to prevent resource accumulation."""
+        try:
+            logger.info("Performing comprehensive ParaView cleanup...")
+            
+            if not PARAVIEW_AVAILABLE:
+                return
+            
+            from paraview.simple import GetSources, Delete, GetViews
+            import paraview.servermanager as sm
+            
+            # Clear all ParaView sources
+            try:
+                sources = GetSources()
+                if sources:
+                    logger.info(f"Deleting {len(sources)} ParaView sources...")
+                    for source_key, source in sources.items():
+                        try:
+                            Delete(source)
+                            logger.debug(f"Deleted source: {source_key}")
+                        except Exception as source_error:
+                            logger.warning(f"Failed to delete source {source_key}: {source_error}")
+                else:
+                    logger.info("No ParaView sources to delete")
+            except Exception as sources_error:
+                logger.warning(f"Failed to cleanup ParaView sources: {sources_error}")
+            
+            # Clear all ParaView views (except our current one if using server-side rendering)
+            try:
+                views = GetViews()
+                if views:
+                    logger.info(f"Found {len(views)} ParaView views")
+                    # Keep only essential views, delete others
+                    views_to_delete = []
+                    for view in views:
+                        # Only delete views that aren't essential for our operation
+                        if hasattr(view, 'GetClassName') and 'RenderView' in view.GetClassName():
+                            views_to_delete.append(view)
+                    
+                    for view in views_to_delete:
+                        try:
+                            Delete(view)
+                            logger.debug(f"Deleted ParaView view: {view}")
+                        except Exception as view_error:
+                            logger.warning(f"Failed to delete view: {view_error}")
+                else:
+                    logger.info("No ParaView views found")
+            except Exception as views_error:
+                logger.warning(f"Failed to cleanup ParaView views: {views_error}")
+            
+            # Force garbage collection in ParaView
+            try:
+                if hasattr(sm, 'vtkProcessModule'):
+                    process_module = sm.vtkProcessModule.GetProcessModule()
+                    if process_module:
+                        process_module.GetGlobalController().TriggerRMIOnAllChildren()
+                        logger.info("Triggered ParaView garbage collection")
+            except Exception as gc_error:
+                logger.warning(f"Failed to trigger ParaView garbage collection: {gc_error}")
+            
+            logger.info("ParaView cleanup completed")
+            
+        except Exception as e:
+            logger.warning(f"Comprehensive ParaView cleanup failed: {e}")
+    
+    def _clear_internal_state(self):
+        """Clear all internal widget state."""
+        try:
+            logger.info("Clearing internal widget state...")
+            
+            # Clear data source references
+            self.current_source = None
+            
+            # Clear time step data
+            self.time_steps = []
+            self.time_directories = []
+            if hasattr(self, '_current_time_step'):
+                delattr(self, '_current_time_step')
+            if hasattr(self, '_foam_file_path'):
+                delattr(self, '_foam_file_path')
+            
+            # Clear field data
+            self.field_buttons = {}
+            self.available_fields = []
+            self.current_field = None
+            
+            # Clear global field ranges
+            self.global_field_ranges = {}
+            
+            # Clear camera state
+            if hasattr(self, '_saved_camera_position'):
+                delattr(self, '_saved_camera_position')
+            if hasattr(self, '_saved_camera_focal_point'):
+                delattr(self, '_saved_camera_focal_point')
+            if hasattr(self, '_saved_camera_view_up'):
+                delattr(self, '_saved_camera_view_up')
+            
+            # Stop any running animations
+            if hasattr(self, 'is_playing') and self.is_playing:
+                self.pause_playback()
+            
+            # Clear connection state flags
+            self.connected = False
+            
+            logger.info("Internal state cleared")
+            
+        except Exception as e:
+            logger.warning(f"Failed to clear internal state: {e}")
+    
+    def _clear_vtk_resources(self):
+        """Clear VTK rendering resources and actors."""
+        try:
+            logger.info("Clearing VTK rendering resources...")
+            
+            if not VTK_AVAILABLE or not hasattr(self, 'renderer') or not self.renderer:
+                logger.info("No VTK renderer to clear")
+                return
+            
+            # Clear all actors from renderer
+            try:
+                self.renderer.RemoveAllViewProps()
+                logger.info("Removed all VTK view props from renderer")
+            except Exception as props_error:
+                logger.warning(f"Failed to remove view props: {props_error}")
+            
+            # Clear all 2D actors (color bars, etc.)
+            try:
+                actors_2d = self.renderer.GetActors2D()
+                if actors_2d:
+                    actors_2d.InitTraversal()
+                    actors_to_remove = []
+                    for i in range(actors_2d.GetNumberOfItems()):
+                        actor = actors_2d.GetNextItem()
+                        if actor:
+                            actors_to_remove.append(actor)
+                    
+                    for actor in actors_to_remove:
+                        self.renderer.RemoveActor2D(actor)
+                    
+                    logger.info(f"Removed {len(actors_to_remove)} 2D actors")
+            except Exception as actors_2d_error:
+                logger.warning(f"Failed to clear 2D actors: {actors_2d_error}")
+            
+            # Reset camera to default position
+            try:
+                self.renderer.ResetCamera()
+                logger.info("Reset VTK camera")
+            except Exception as camera_error:
+                logger.warning(f"Failed to reset camera: {camera_error}")
+            
+            # Force render to clear the view
+            try:
+                if hasattr(self, 'vtk_widget') and self.vtk_widget:
+                    self.vtk_widget.GetRenderWindow().Render()
+                    logger.info("Cleared VTK render window")
+            except Exception as render_error:
+                logger.warning(f"Failed to clear render window: {render_error}")
+            
+            # Force VTK garbage collection
+            try:
+                import gc
+                gc.collect()
+                logger.info("Triggered Python garbage collection")
+            except Exception as gc_error:
+                logger.warning(f"Failed to trigger garbage collection: {gc_error}")
+            
+            logger.info("VTK resources cleared")
+            
+        except Exception as e:
+            logger.warning(f"Failed to clear VTK resources: {e}")
+    
+    def handle_connect_request(self, server_url: str, project_name: str):
+        """Handle connection request from simulation setup widget."""
+        logger.info(f"ParaView connection requested for server: {server_url}, project: {project_name}")
+        
+        # Set remote server configuration
+        self.set_remote_server(server_url, project_name)
+        
+        # Check if PVServer is already running for this project
+        try:
+            server_status = self._check_remote_pvserver_status()
+            if server_status.get("status") != "running":
+                logger.info("PVServer not running, starting it via API...")
+                self._start_remote_pvserver()
+            else:
+                logger.info("PVServer already running, connecting to it...")
+        except Exception as e:
+            logger.error(f"Failed to check/start PVServer: {e}")
+        
+        # Connect to the server
+        self.connect_to_remote_server()
+    
+    def handle_disconnect_request(self):
+        """Handle disconnection request from simulation setup widget."""
+        logger.info("ParaView disconnection requested")
+        
+        if self.server_url and self.project_name:
+            self.disconnect_from_remote_server()
+        else:
+            self.disconnect_from_server()
+    
+    def _start_remote_pvserver(self):
+        """Start a remote ParaView server via API"""
+        if not self.server_url or not self.project_name:
+            logger.error("Cannot start PVServer: missing server URL or project name")
+            return False
+        
+        try:
+            import requests
+            from urllib.parse import urlparse, urljoin
+            
+            # Extract base URL from server_url
+            parsed_url = urlparse(self.server_url)
+            api_base = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            
+            # Call the API endpoint to start PVServer
+            api_url = urljoin(api_base, f"/api/projects/{self.project_name}/pvserver/start")
+            response = requests.post(api_url, json={}, timeout=30)
+            
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"PVServer started successfully: {result}")
+                return True
+            else:
+                logger.error(f"Failed to start PVServer: HTTP {response.status_code} - {response.text}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error starting PVServer via API: {e}")
+            return False
+    
+    def _stop_remote_pvserver(self):
+        """Stop a remote ParaView server via API"""
+        if not self.server_url or not self.project_name:
+            logger.error("Cannot stop PVServer: missing server URL or project name")
+            return False
+        
+        try:
+            import requests
+            from urllib.parse import urlparse, urljoin
+            
+            # Extract base URL from server_url
+            parsed_url = urlparse(self.server_url)
+            api_base = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            
+            # Call the API endpoint to stop PVServer
+            api_url = urljoin(api_base, f"/api/projects/{self.project_name}/pvserver/stop")
+            response = requests.delete(api_url, timeout=10)
+            
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"PVServer stopped successfully: {result}")
+                return True
+            else:
+                logger.error(f"Failed to stop PVServer: HTTP {response.status_code} - {response.text}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error stopping PVServer via API: {e}")
+            return False
+    
+    def handle_load_mesh_request(self, file_path: str):
+        """Handle mesh loading request from simulation setup widget."""
+        logger.info(f"ParaView mesh loading requested: {file_path}")
+        
+        if self.connected:
+            self.load_foam_file(file_path)
+        else:
+            logger.warning("ParaView not connected, cannot load mesh")
     
     def setup_ui(self):
         """Setup the user interface"""
@@ -2346,7 +3007,7 @@ class ParaViewWidget(QWidget):
     def _display_vtk_data_with_field(self, vtk_data, field_info):
         """Display VTK data with specific field coloring"""
         try:
-            from paraview_widget import VTK_AVAILABLE, vtk
+            from .paraview_widget import VTK_AVAILABLE, vtk
             if not VTK_AVAILABLE or vtk is None:
                 print("❌ VTK not available for field visualization")
                 return
@@ -2483,7 +3144,7 @@ class ParaViewWidget(QWidget):
     
     def _create_field_lookup_table(self, field_info, data_range):
         """Create appropriate lookup table based on field type"""
-        from paraview_widget import vtk
+        from .paraview_widget import vtk
         
         lut = vtk.vtkLookupTable()
         lut.SetNumberOfTableValues(256)
@@ -3061,7 +3722,7 @@ class ParaViewWidget(QWidget):
     def _display_vtk_data(self, vtk_data):
         """Display VTK data with blue-gray-red color scheme"""
         try:
-            from paraview_widget import VTK_AVAILABLE, vtk
+            from .paraview_widget import VTK_AVAILABLE, vtk
             if not VTK_AVAILABLE or vtk is None:
                 print("❌ VTK not available for visualization")
                 return
@@ -3391,7 +4052,104 @@ class ParaViewWidget(QWidget):
     
     def is_connected(self) -> bool:
         """Check if connected to ParaView server"""
-        return self.connected
+        # First check if we have a local connection
+        if not self.connected:
+            return False
+        
+        # If we have remote server info, also check if server is actually running
+        if self.server_url and self.project_name:
+            try:
+                server_status = self._check_remote_pvserver_status()
+                return server_status.get("status") == "running"
+            except Exception as e:
+                logger.warning(f"Failed to check remote PVServer status: {e}")
+                return False
+        
+        return True
+    
+    def _has_malformed_connection(self) -> bool:
+        """Check if the current ParaView connection has the malformed connection string bug."""
+        try:
+            import paraview.servermanager as sm
+            if hasattr(sm, 'ActiveConnection') and sm.ActiveConnection:
+                active_conn_str = str(sm.ActiveConnection)
+                # Normal connection strings should have format: cs://host:port
+                # Malformed ones have: cs://host:port:port (extra port)
+                if active_conn_str.count(':') > 2:
+                    logger.debug(f"Detected malformed connection string: {active_conn_str}")
+                    return True
+            return False
+        except Exception as e:
+            logger.warning(f"Could not check connection string format: {e}")
+            return False
+    
+    def _get_connection_status_message(self) -> str:
+        """Get a user-friendly message about the current connection status."""
+        if not self.connected:
+            return "Not connected to ParaView server"
+        
+        if self._has_malformed_connection():
+            return ("Connected but ParaView has a connection string bug.\n"
+                   "Data operations may fail or cause crashes.\n"
+                   "Try disconnecting and reconnecting.")
+        
+        return "Connected successfully"
+    
+    def _check_remote_pvserver_status(self):
+        """Check the status of the remote ParaView server via API"""
+        if not self.server_url or not self.project_name:
+            logger.warning("Cannot check PVServer status: missing server_url or project_name")
+            return {"status": "not_configured"}
+        
+        try:
+            # Use the API to check PVServer status for the project
+            import requests
+            from urllib.parse import urlparse, urljoin
+            
+            # Extract base URL from server_url
+            parsed_url = urlparse(self.server_url)
+            api_base = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            
+            logger.info(f"Checking PVServer status via API: {self.server_url}")
+            logger.info(f"API base URL: {api_base}")
+            logger.info(f"Parsed URL components: scheme={parsed_url.scheme}, netloc={parsed_url.netloc}, hostname={parsed_url.hostname}, port={parsed_url.port}")
+            
+            # Call the API endpoint to check PVServer info
+            api_url = urljoin(api_base, f"/api/projects/{self.project_name}/pvserver/info")
+            logger.info(f"Making API call to: {api_url}")
+            
+            response = requests.get(api_url, timeout=5)
+            
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"API response received: {result}")
+                
+                # Validate the response data
+                if "port" in result and result["port"] is not None:
+                    port = result["port"]
+                    logger.info(f"PVServer port from API: {port} (type: {type(port)})")
+                    
+                    # Ensure port is a clean integer
+                    try:
+                        port_int = int(port)
+                        if port_int != port:
+                            logger.warning(f"Port converted from {port} ({type(port)}) to {port_int}")
+                            result["port"] = port_int
+                    except (ValueError, TypeError) as port_error:
+                        logger.error(f"Invalid port in API response: {port} - {port_error}")
+                        result["status"] = "error"
+                        result["error"] = f"Invalid port format: {port}"
+                
+                return result
+            else:
+                logger.warning(f"API call failed with status {response.status_code}: {response.text}")
+                return {"status": "error", "error": f"HTTP {response.status_code}"}
+                
+        except Exception as e:
+            logger.error(f"Failed to check PVServer status via API: {e}")
+            import traceback
+            logger.debug(f"API check exception traceback: {traceback.format_exc()}")
+            return {"status": "error", "error": str(e)}
     
     def validate_vtk(self) -> bool:
         """Validate VTK availability at runtime"""

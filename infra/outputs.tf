@@ -84,8 +84,8 @@ output "connection_tests" {
   value = {
     api_health_check    = "curl -f http://${aws_eip.foamai_eip.public_ip}:8000/ping"
     paraview_port_check = "nc -zv ${aws_eip.foamai_eip.public_ip} 11111"
-    ssh_test           = "ssh -i infra/keys/${var.key_name} -o ConnectTimeout=10 ubuntu@${aws_eip.foamai_eip.public_ip} 'echo Connected successfully'"
-    docker_status      = "ssh -i infra/keys/${var.key_name} ubuntu@${aws_eip.foamai_eip.public_ip} 'sudo docker ps'"
+    ssh_test            = "ssh -i infra/keys/${var.key_name} -o ConnectTimeout=10 ubuntu@${aws_eip.foamai_eip.public_ip} 'echo Connected successfully'"
+    docker_status       = "ssh -i infra/keys/${var.key_name} ubuntu@${aws_eip.foamai_eip.public_ip} 'sudo docker ps'"
   }
 }
 
@@ -93,57 +93,12 @@ output "connection_tests" {
 output "access_information" {
   description = "Important access information and URLs"
   value = {
-    public_ip           = aws_eip.foamai_eip.public_ip
-    api_url            = "http://${aws_eip.foamai_eip.public_ip}:8000"
-    api_docs_url       = "http://${aws_eip.foamai_eip.public_ip}:8000/docs"
-    paraview_server    = "${aws_eip.foamai_eip.public_ip}:11111"
-    ssh_command        = "ssh -i infra/keys/${var.key_name} ubuntu@${aws_eip.foamai_eip.public_ip}"
-    region             = var.aws_region
-    availability_zone  = aws_subnet.foamai_public_subnet.availability_zone
-  }
-}
-
-# ========================================================================
-# ECR Repository URLs (Alternative to Docker Hub)
-# ========================================================================
-
-output "ecr_repository_urls" {
-  description = "AWS ECR repository URLs for Docker images"
-  value = {
-    api       = aws_ecr_repository.foamai_api.repository_url
-    openfoam  = aws_ecr_repository.foamai_openfoam.repository_url
-    pvserver  = aws_ecr_repository.foamai_pvserver.repository_url
-  }
-}
-
-output "ecr_api_url" {
-  description = "ECR repository URL for API service"
-  value       = aws_ecr_repository.foamai_api.repository_url
-}
-
-output "ecr_openfoam_url" {
-  description = "ECR repository URL for OpenFOAM service"
-  value       = aws_ecr_repository.foamai_openfoam.repository_url
-}
-
-output "ecr_pvserver_url" {
-  description = "ECR repository URL for ParaView server"
-  value       = aws_ecr_repository.foamai_pvserver.repository_url
-}
-
-# ECR login helper
-output "ecr_login_command" {
-  description = "Command to authenticate Docker with ECR"
-  value       = "aws ecr get-login-password --region ${var.aws_region} | docker login --username AWS --password-stdin ${split("/", aws_ecr_repository.foamai_api.repository_url)[0]}"
-}
-
-# ECR push commands for development
-output "ecr_push_commands" {
-  description = "Commands to build and push Docker images to ECR"
-  value = {
-    login    = "aws ecr get-login-password --region ${var.aws_region} | docker login --username AWS --password-stdin ${split("/", aws_ecr_repository.foamai_api.repository_url)[0]}"
-    api      = "docker build -t foamai/api:latest ./docker/api && docker tag foamai/api:latest ${aws_ecr_repository.foamai_api.repository_url}:latest && docker push ${aws_ecr_repository.foamai_api.repository_url}:latest"
-    openfoam = "docker build -t foamai/openfoam:latest ./docker/openfoam && docker tag foamai/openfoam:latest ${aws_ecr_repository.foamai_openfoam.repository_url}:latest && docker push ${aws_ecr_repository.foamai_openfoam.repository_url}:latest"
-    pvserver = "docker build -t foamai/pvserver:latest ./docker/pvserver && docker tag foamai/pvserver:latest ${aws_ecr_repository.foamai_pvserver.repository_url}:latest && docker push ${aws_ecr_repository.foamai_pvserver.repository_url}:latest"
+    public_ip         = aws_eip.foamai_eip.public_ip
+    api_url           = "http://${aws_eip.foamai_eip.public_ip}:8000"
+    api_docs_url      = "http://${aws_eip.foamai_eip.public_ip}:8000/docs"
+    paraview_server   = "${aws_eip.foamai_eip.public_ip}:11111"
+    ssh_command       = "ssh -i infra/keys/${var.key_name} ubuntu@${aws_eip.foamai_eip.public_ip}"
+    region            = var.aws_region
+    availability_zone = aws_subnet.foamai_public_subnet.availability_zone
   }
 } 

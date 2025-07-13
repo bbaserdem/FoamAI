@@ -5,15 +5,15 @@ import sys
 import logging
 import os
 from pathlib import Path
-
+print(os.environ["PYTHONPATH"])
 # Import PySide6 components
 from PySide6.QtWidgets import QApplication, QMessageBox, QSplashScreen
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap, QIcon
 
 # Import application components
-from main_window import MainWindow
-from config import Config
+from .main_window import MainWindow
+from .config import Config
 
 def setup_logging():
     """Setup application logging"""
@@ -69,6 +69,43 @@ def check_dependencies():
     
     return missing_deps
 
+def ensure_env_file():
+    """Create .env file if it doesn't exist"""
+    env_file = Path('.env')
+    if not env_file.exists():
+        print("Creating .env file with default settings...")
+        env_content = """# OpenFOAM Desktop Application Configuration
+
+# OpenAI API Key
+OPENAI_API_KEY=sk-proj-
+
+# Server Configuration
+SERVER_HOST=localhost
+SERVER_PORT=8000
+
+# ParaView Server Configuration
+PARAVIEW_SERVER_HOST=localhost
+PARAVIEW_SERVER_PORT=11111
+
+# Application Settings
+WINDOW_WIDTH=1200
+WINDOW_HEIGHT=800
+
+# Chat Interface Settings
+CHAT_HISTORY_LIMIT=100
+
+# ParaView Settings
+PARAVIEW_TIMEOUT=30
+
+# Request Timeout (seconds)
+REQUEST_TIMEOUT=60
+"""
+        with open(env_file, 'w') as f:
+            f.write(env_content)
+        print(f"Created {env_file}")
+        print("You can modify these settings using File > Settings in the application.")
+        print()
+
 def create_splash_screen():
     """Create and return a splash screen"""
     # Create a simple splash screen
@@ -86,6 +123,9 @@ def create_splash_screen():
 
 def main():
     """Main application entry point"""
+    # Ensure .env file exists before setup
+    ensure_env_file()
+    
     # Setup logging
     logger = setup_logging()
     logger.info("Starting OpenFOAM Desktop Application")

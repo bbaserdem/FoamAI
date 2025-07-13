@@ -9,7 +9,6 @@ class CFDStep(str, Enum):
     START = "start"
     NL_INTERPRETATION = "nl_interpretation"
     MESH_GENERATION = "mesh_generation"
-    MESH_CONVERGENCE = "mesh_convergence"
     BOUNDARY_CONDITIONS = "boundary_conditions"
     SOLVER_SELECTION = "solver_selection"
     CASE_WRITING = "case_writing"
@@ -38,16 +37,13 @@ class SolverType(str, Enum):
     """Available OpenFOAM solvers."""
     SIMPLE_FOAM = "simpleFoam"
     PIMPLE_FOAM = "pimpleFoam"
-    PISO_FOAM = "pisoFoam"  # Transient incompressible flow using PISO algorithm
     INTER_FOAM = "interFoam"  # Multiphase flow solver
     RHO_PIMPLE_FOAM = "rhoPimpleFoam"  # Compressible transient solver
-    SONIC_FOAM = "sonicFoam"  # Transient compressible flow for trans-sonic/supersonic
     CHT_MULTI_REGION_FOAM = "chtMultiRegionFoam"  # Conjugate heat transfer
     REACTING_FOAM = "reactingFoam"  # Reactive flows with combustion
-    BUOYANT_SIMPLE_FOAM = "buoyantSimpleFoam"  # Heat transfer with buoyancy
-    MRF_SIMPLE_FOAM = "MRFSimpleFoam"  # Steady incompressible flow with rotating machinery
     # Future additions:
     # RHOSIMPLE_FOAM = "rhoSimpleFoam"  # Compressible steady
+    # BUOYANT_SIMPLE_FOAM = "buoyantSimpleFoam"  # Heat transfer with buoyancy
 
 
 class FlowType(str, Enum):
@@ -115,8 +111,9 @@ class CFDState(TypedDict):
     session_history: List[Dict[str, Any]]  # History of all runs in this session
     current_iteration: int  # Current iteration number (0-based)
     conversation_active: bool  # Whether to continue the conversation or exit
-    previous_results: Optional[Dict[str, Any]]  # Results from previous iteration for comparison
+    previous_results: Optional[Dict[str, Any]]  # Results from previous iteration for comparison 
     
+
     # Mesh convergence study
     mesh_convergence_active: bool = False
     mesh_convergence_levels: int = 4
@@ -129,3 +126,15 @@ class CFDState(TypedDict):
     # GPU acceleration
     use_gpu: bool = False
     gpu_info: Dict[str, Any] = {} 
+
+    # Remote execution configuration
+    execution_mode: str  # "local" or "remote"
+    server_url: Optional[str]  # URL of remote OpenFOAM server
+    project_name: Optional[str]  # Name of project on remote server
+    
+    # User approval workflow fields for desktop UI integration
+    awaiting_user_approval: bool  # True when workflow is paused for user approval
+    workflow_paused: bool  # True when workflow is paused waiting for external input
+    config_summary: Optional[Dict[str, Any]]  # Configuration summary for UI display 
+    config_only_mode: Optional[bool]  # True when running configuration phase only (no solver execution) 
+

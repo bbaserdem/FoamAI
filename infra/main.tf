@@ -175,25 +175,26 @@ resource "aws_instance" "foamai_instance" {
   ami           = data.aws_ami.ubuntu.id
   instance_type = var.instance_type
   key_name      = aws_key_pair.foamai_key.key_name
-  
+
   vpc_security_group_ids = [aws_security_group.foamai_sg.id]
   subnet_id              = aws_subnet.foamai_public_subnet.id
-  
-  # User data script with template variables for robust EBS volume mounting
-  user_data = templatefile("${path.module}/user_data.sh.tpl", {
+
+  # User data script - minimal bootstrap that downloads full deployment script
+  user_data = base64encode(templatefile("${path.module}/user_data.sh.tpl", {
     data_volume_size_gb = var.data_volume_size
     filesystem_type     = var.data_volume_filesystem
-    mount_point        = var.data_volume_mount_point
-    wait_timeout       = var.ebs_wait_timeout
-    deployment_profile = var.deployment_profile
-  })
+    mount_point         = var.data_volume_mount_point
+    wait_timeout        = var.ebs_wait_timeout
+    deployment_profile  = "mvp"
+    github_org          = var.github_org
+  }))
 
   # Storage configuration
   root_block_device {
     volume_type = "gp3"
     volume_size = var.root_volume_size
     encrypted   = true
-    
+
     tags = {
       Name        = "foamai-root-volume"
       Project     = "FoamAI"
@@ -207,7 +208,7 @@ resource "aws_instance" "foamai_instance" {
     volume_type = "gp3"
     volume_size = var.data_volume_size
     encrypted   = true
-    
+
     tags = {
       Name        = "foamai-data-volume"
       Project     = "FoamAI"
@@ -236,164 +237,4 @@ resource "aws_eip" "foamai_eip" {
     Project     = "FoamAI"
     Environment = "mvp"
   }
-}
-
-# ========================================================================
-# ECR (Elastic Container Registry) - Alternative to Docker Hub
-# ========================================================================
-
-# ECR Repository for FastAPI Backend
-resource "aws_ecr_repository" "foamai_api" {
-  name                 = "foamai/api"
-  image_tag_mutability = "MUTABLE"
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-
-  tags = {
-    Name        = "foamai-api-ecr"
-    Project     = "FoamAI"
-    Environment = "mvp"
-    Service     = "api"
-  }
-}
-
-# ECR Repository for OpenFOAM Solver
-resource "aws_ecr_repository" "foamai_openfoam" {
-  name                 = "foamai/openfoam"
-  image_tag_mutability = "MUTABLE"
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-
-  tags = {
-    Name        = "foamai-openfoam-ecr"
-    Project     = "FoamAI"
-    Environment = "mvp"
-    Service     = "openfoam"
-  }
-}
-
-# ECR Repository for ParaView Server
-resource "aws_ecr_repository" "foamai_pvserver" {
-  name                 = "foamai/pvserver"
-  image_tag_mutability = "MUTABLE"
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-
-  tags = {
-    Name        = "foamai-pvserver-ecr"
-    Project     = "FoamAI"
-    Environment = "mvp"
-    Service     = "pvserver"
-  }
-}
-
-# ECR Lifecycle Policy for API Repository
-resource "aws_ecr_lifecycle_policy" "foamai_api_policy" {
-  repository = aws_ecr_repository.foamai_api.name
-
-  policy = jsonencode({
-    rules = [
-      {
-        rulePriority = 1
-        description  = "Keep last 10 tagged images"
-        selection = {
-          tagStatus     = "tagged"
-          tagPrefixList = ["v"]
-          countType     = "imageCountMoreThan"
-          countNumber   = 10
-        }
-        action = {
-          type = "expire"
-        }
-      },
-      {
-        rulePriority = 2
-        description  = "Keep last 5 untagged images"
-        selection = {
-          tagStatus   = "untagged"
-          countType   = "imageCountMoreThan"
-          countNumber = 5
-        }
-        action = {
-          type = "expire"
-        }
-      }
-    ]
-  })
-}
-
-# ECR Lifecycle Policy for OpenFOAM Repository
-resource "aws_ecr_lifecycle_policy" "foamai_openfoam_policy" {
-  repository = aws_ecr_repository.foamai_openfoam.name
-
-  policy = jsonencode({
-    rules = [
-      {
-        rulePriority = 1
-        description  = "Keep last 5 tagged images"
-        selection = {
-          tagStatus     = "tagged"
-          tagPrefixList = ["v"]
-          countType     = "imageCountMoreThan"
-          countNumber   = 5
-        }
-        action = {
-          type = "expire"
-        }
-      },
-      {
-        rulePriority = 2
-        description  = "Keep last 3 untagged images"
-        selection = {
-          tagStatus   = "untagged"
-          countType   = "imageCountMoreThan"
-          countNumber = 3
-        }
-        action = {
-          type = "expire"
-        }
-      }
-    ]
-  })
-}
-
-# ECR Lifecycle Policy for PVServer Repository
-resource "aws_ecr_lifecycle_policy" "foamai_pvserver_policy" {
-  repository = aws_ecr_repository.foamai_pvserver.name
-
-  policy = jsonencode({
-    rules = [
-      {
-        rulePriority = 1
-        description  = "Keep last 5 tagged images"
-        selection = {
-          tagStatus     = "tagged"
-          tagPrefixList = ["v"]
-          countType     = "imageCountMoreThan"
-          countNumber   = 5
-        }
-        action = {
-          type = "expire"
-        }
-      },
-      {
-        rulePriority = 2
-        description  = "Keep last 3 untagged images"
-        selection = {
-          tagStatus   = "untagged"
-          countType   = "imageCountMoreThan"
-          countNumber = 3
-        }
-        action = {
-          type = "expire"
-        }
-      }
-    ]
-  })
 } 

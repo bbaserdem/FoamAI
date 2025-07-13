@@ -92,13 +92,9 @@ def get_ai_error_analysis(error_message: str, state: CFDState) -> Dict[str, Any]
     """Get AI-powered error analysis and suggestions."""
     
     try:
-        # Get OpenAI API key from settings
-        import sys
-        sys.path.append('src')
-        from foamai.config import get_settings
-        settings = get_settings()
-        
-        if not settings.openai_api_key:
+        # Get OpenAI API key
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
             logger.warning("Error Handler: No OpenAI API key found, using fallback analysis")
             return get_fallback_error_analysis(error_message, state)
         
@@ -137,7 +133,7 @@ Retry attempt: {context['retry_count']}
 Please provide a clear explanation and helpful suggestions."""
         
         # Call OpenAI API
-        client = openai.OpenAI(api_key=settings.openai_api_key)
+        client = openai.OpenAI(api_key=api_key)
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[

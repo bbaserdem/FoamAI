@@ -21,51 +21,122 @@ def user_approval_agent(state: CFDState) -> CFDState:
     
     Displays the selected solver, mesh configuration, and hyperparameters
     to the user and waits for approval or change requests.
+    
+    In remote execution mode, this creates a summary for the UI and
+    waits for user approval through the desktop interface.
     """
     try:
         if state["verbose"]:
             logger.info("User Approval: Displaying configuration for user review")
         
-        # Display configuration summary
-        display_configuration_summary(state)
+        # Check if we're in remote execution mode (desktop UI)
+        execution_mode = state.get("execution_mode", "local")
         
-        # Get user input
-        user_decision = get_user_decision()
-        
-        if user_decision == "approve":
+        if execution_mode == "remote":
+            # Remote execution - prepare data for desktop UI
             if state["verbose"]:
-                logger.info("User Approval: Configuration approved, proceeding to simulation")
+                logger.info("User Approval: Remote execution mode - preparing configuration for UI")
             
-            return {
-                **state,
-                "user_approved": True,
-                "errors": []
-            }
-        elif user_decision == "changes":
-            # User wants to make changes - collect feedback
-            change_requests = get_change_requests()
+            # Generate configuration summary for UI
+            config_summary = generate_configuration_summary(state)
+            
+            # Extract mesh and simulation information from config-only results
+            mesh_info = {}
+            simulation_results = state.get("simulation_results", {})
+            
+            # Get mesh information from the configuration phase results
+            if simulation_results.get("steps", {}).get("mesh_generation"):
+                mesh_gen_result = simulation_results["steps"]["mesh_generation"]
+                mesh_info = {
+                    "mesh_type": state.get("mesh_config", {}).get("type", "blockMesh"),
+                    "total_cells": mesh_gen_result.get("mesh_info", {}).get("total_cells", 0),
+                    "quality_score": mesh_gen_result.get("mesh_info", {}).get("quality_score", 0.0)
+                }
+                if state["verbose"]:
+                    logger.info(f"User Approval: Extracted mesh info from config results: {mesh_info}")
+            else:
+                # Fallback to mesh_config if simulation_results not available
+                mesh_config = state.get("mesh_config", {})
+                if mesh_config:
+                    mesh_info = {
+                        "mesh_type": mesh_config.get("type", "blockMesh"),
+                        "total_cells": mesh_config.get("total_cells", 0),
+                        "quality_score": 0.0  # Default if not available
+                    }
+                    if state["verbose"]:
+                        logger.info(f"User Approval: Using fallback mesh info from config: {mesh_info}")
+            
+            # Add case file information if available
+            case_info = {}
+            if state.get("project_name"):
+                case_info = {
+                    "project_name": state["project_name"],
+                    "foam_file_path": f"/home/ubuntu/foam_projects/{state['project_name']}/active_run/{state['project_name']}.foam"
+                }
+            
+            # Update config summary with mesh and case info
+            config_summary.update({
+                "mesh_info": mesh_info,
+                "case_info": case_info
+            })
             
             if state["verbose"]:
-                logger.info(f"User Approval: Change requests received: {change_requests}")
+                logger.info(f"User Approval: Generated config summary with keys: {list(config_summary.keys())}")
+                logger.info("User Approval: Workflow will pause for user review in desktop UI")
             
-            # For now, we'll go back to solver selection to re-process
-            # In a more sophisticated implementation, we could route to specific agents
-            # based on the type of change requested
+            # Set state to indicate waiting for user approval
+            # This will pause the workflow until the user clicks "Run Simulation"
             return {
                 **state,
                 "user_approved": False,
-                "current_step": CFDStep.SOLVER_SELECTION,
-                "warnings": state["warnings"] + [f"User requested changes: {change_requests}"],
+                "awaiting_user_approval": True,
+                "config_summary": config_summary,
+                "current_step": CFDStep.USER_APPROVAL,
+                "workflow_paused": True,
                 "errors": []
             }
         else:
-            # User cancelled
-            return {
-                **state,
-                "user_approved": False,
-                "current_step": CFDStep.ERROR,
-                "errors": state["errors"] + ["User cancelled the simulation"]
-            }
+            # Local execution - use CLI interface
+            display_configuration_summary(state)
+            
+            # Get user input
+            user_decision = get_user_decision()
+            
+            if user_decision == "approve":
+                if state["verbose"]:
+                    logger.info("User Approval: Configuration approved, proceeding to simulation")
+                
+                return {
+                    **state,
+                    "user_approved": True,
+                    "config_only_mode": False,  # Full simulation mode after approval
+                    "errors": []
+                }
+            elif user_decision == "changes":
+                # User wants to make changes - collect feedback
+                change_requests = get_change_requests()
+                
+                if state["verbose"]:
+                    logger.info(f"User Approval: Change requests received: {change_requests}")
+                
+                # For now, we'll go back to solver selection to re-process
+                # In a more sophisticated implementation, we could route to specific agents
+                # based on the type of change requested
+                return {
+                    **state,
+                    "user_approved": False,
+                    "current_step": CFDStep.SOLVER_SELECTION,
+                    "warnings": state["warnings"] + [f"User requested changes: {change_requests}"],
+                    "errors": []
+                }
+            else:
+                # User cancelled
+                return {
+                    **state,
+                    "user_approved": False,
+                    "current_step": CFDStep.ERROR,
+                    "errors": state["errors"] + ["User cancelled the simulation"]
+                }
         
     except Exception as e:
         logger.error(f"User Approval error: {str(e)}")
@@ -86,7 +157,7 @@ def generate_configuration_explanation(state: CFDState) -> str:
         # Get settings for API key
         import sys
         sys.path.append('src')
-        from foamai.config import get_settings
+        from .config import get_settings
         settings = get_settings()
         
         # Create LLM
@@ -157,6 +228,84 @@ def generate_configuration_explanation(state: CFDState) -> str:
     except Exception as e:
         logger.warning(f"Could not generate configuration explanation: {e}")
         return "Configuration explanation unavailable (OpenAI API error)."
+
+
+def generate_configuration_summary(state: CFDState) -> Dict[str, Any]:
+    """Generate a structured configuration summary for the desktop UI."""
+    summary = {
+        "solver_info": {},
+        "mesh_info": {},
+        "boundary_conditions": {},
+        "simulation_parameters": {},
+        "file_locations": {},
+        "ai_explanation": ""
+    }
+    
+    try:
+        # Generate AI explanation
+        summary["ai_explanation"] = generate_configuration_explanation(state)
+        
+        # Solver information
+        solver_settings = state.get("solver_settings", {})
+        if solver_settings:
+            control_dict = solver_settings.get("controlDict", {})
+            turbulence_props = solver_settings.get("turbulenceProperties", {})
+            
+            summary["solver_info"] = {
+                "solver_name": solver_settings.get("solver", "Unknown"),
+                "solver_type": solver_settings.get("solver_type", "Unknown"),
+                "start_time": control_dict.get("startTime", 0),
+                "end_time": control_dict.get("endTime", 10),
+                "time_step": control_dict.get("deltaT", 0.001),
+                "write_interval": control_dict.get("writeInterval", 1),
+                "turbulence_model": turbulence_props.get("simulationType", "Unknown")
+            }
+        
+        # Mesh information
+        mesh_config = state.get("mesh_config", {})
+        mesh_quality = state.get("mesh_quality", {})
+        if mesh_config:
+            summary["mesh_info"] = {
+                "mesh_type": mesh_config.get("type", "Unknown"),
+                "total_cells": mesh_config.get("total_cells", 0),
+                "geometry_type": str(mesh_config.get("geometry_type", "Unknown")),
+                "dimensions": mesh_config.get("dimensions", {}),
+                "quality_score": mesh_quality.get("quality_score", 0) if mesh_quality else 0
+            }
+        
+        # Boundary conditions
+        boundary_conditions = state.get("boundary_conditions", {})
+        if boundary_conditions:
+            summary["boundary_conditions"] = boundary_conditions
+        
+        # Simulation parameters
+        parsed_params = state.get("parsed_parameters", {})
+        if parsed_params:
+            summary["simulation_parameters"] = {
+                "flow_type": str(parsed_params.get("flow_type", "Unknown")),
+                "analysis_type": str(parsed_params.get("analysis_type", "Unknown")),
+                "velocity": parsed_params.get("velocity"),
+                "reynolds_number": parsed_params.get("reynolds_number"),
+                "pressure": parsed_params.get("pressure"),
+                "density": parsed_params.get("density"),
+                "viscosity": parsed_params.get("viscosity")
+            }
+        
+        # File locations
+        case_directory = state.get("case_directory", "")
+        if case_directory:
+            summary["file_locations"] = {
+                "case_directory": case_directory
+            }
+        
+        return summary
+        
+    except Exception as e:
+        logger.error(f"Error generating configuration summary: {str(e)}")
+        return {
+            "error": f"Failed to generate configuration summary: {str(e)}",
+            "ai_explanation": "Configuration summary unavailable due to error."
+        }
 
 
 def display_configuration_summary(state: CFDState) -> None:

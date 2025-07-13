@@ -14,7 +14,7 @@ instance_type = "c7i.large"  # Smaller instance for staging
 
 # SSH Key Configuration
 key_name = "foamai-key-staging"
-public_key_content = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... your-email@example.com"
+public_key_content = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINT+ODybW+Gt5lni1gOyUVlulMWI8zVxfjfmwFc/De9Z foamai-staging-deployment"
 
 # Storage Configuration
 root_volume_size = 30         # Smaller root volume for staging

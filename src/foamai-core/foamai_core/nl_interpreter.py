@@ -17,7 +17,7 @@ class FlowContext(BaseModel):
     """Context of the flow problem."""
     is_external_flow: bool = Field(description="True if flow around object (external), False if flow through object (internal)")
     domain_type: str = Field(description="Type of domain: 'unbounded' for external flow, 'channel' for bounded flow")
-    domain_size_multiplier: Optional[float] = Field(None, description="Multiplier for domain size relative to object size (e.g., 20 for 20x object diameter)")
+    domain_size_multiplier: float = Field(description="Multiplier for domain size relative to object size (e.g., 20 for 20x object diameter)")
 
 
 class CFDParameters(BaseModel):
@@ -110,39 +110,6 @@ def extract_dimensions_from_text(text: str, geometry_type: GeometryType) -> Dict
         'height': [
             r'(\d+\.?\d*)\s*(?:m|meter|metre)?\s*(?:high|tall)',
             r'height\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre)?'
-        ],
-        # Nozzle-specific patterns
-        'throat_diameter': [
-            r'(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?\s*throat\s*diameter',
-            r'throat\s*diameter\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?',
-            r'throat\s*(?:size|width)\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?'
-        ],
-        'inlet_diameter': [
-            r'(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?\s*inlet\s*diameter',
-            r'inlet\s*diameter\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?',
-            r'inlet\s*(?:size|width)\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?'
-        ],
-        'outlet_diameter': [
-            r'(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?\s*outlet\s*diameter',
-            r'outlet\s*diameter\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?',
-            r'outlet\s*(?:size|width)\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?',
-            r'exit\s*diameter\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:m|meter|metre|mm|cm|inch|inches)?'
-        ],
-        'expansion_ratio': [
-            r'expansion\s*ratio\s*(?:of|:)?\s*(\d+\.?\d*)',
-            r'area\s*ratio\s*(?:of|:)?\s*(\d+\.?\d*)',
-            r'(\d+\.?\d*)\s*(?::|to|-)?\s*1\s*expansion',
-            r'(\d+\.?\d*)\s*(?::|to|-)?\s*1\s*area\s*ratio'
-        ],
-        'convergence_angle': [
-            r'convergence\s*angle\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:deg|degree|degrees)?',
-            r'(\d+\.?\d*)\s*(?:deg|degree|degrees)?\s*convergence',
-            r'converging\s*(?:at|angle)\s*(\d+\.?\d*)\s*(?:deg|degree|degrees)?'
-        ],
-        'divergence_angle': [
-            r'divergence\s*angle\s*(?:of|:)?\s*(\d+\.?\d*)\s*(?:deg|degree|degrees)?',
-            r'(\d+\.?\d*)\s*(?:deg|degree|degrees)?\s*divergence',
-            r'diverging\s*(?:at|angle)\s*(\d+\.?\d*)\s*(?:deg|degree|degrees)?'
         ],
         # Angle of attack
         'angle_of_attack': [
@@ -551,16 +518,16 @@ def infer_flow_context(text: str, geometry_type: GeometryType, user_domain_multi
     
     # Determine if it's external or internal flow
     if any(keyword in text_lower for keyword in ["around", "over", "past", "external", "cylinder", "sphere", "airfoil", "cube"]):
-        if not any(keyword in text_lower for keyword in ["through", "in", "inside", "internal", "pipe", "channel", "duct", "nozzle"]):
+        if not any(keyword in text_lower for keyword in ["through", "in", "inside", "internal", "pipe", "channel", "duct"]):
             is_external = True
-    elif any(keyword in text_lower for keyword in ["through", "in", "inside", "internal", "pipe", "channel", "duct", "nozzle"]):
+    elif any(keyword in text_lower for keyword in ["through", "in", "inside", "internal", "pipe", "channel", "duct"]):
         is_external = False
     else:
         # Default based on geometry type
         if geometry_type in [GeometryType.CYLINDER, GeometryType.SPHERE, GeometryType.AIRFOIL, GeometryType.CUBE]:
             is_external = True
         else:
-            is_external = False  # Default to internal flow for pipes/channels/nozzles
+            is_external = False  # Default to internal flow for pipes/channels
     
     # Determine domain type and size
     if is_external:
@@ -578,8 +545,6 @@ def infer_flow_context(text: str, geometry_type: GeometryType, user_domain_multi
                 domain_size_multiplier = 20.0  # 20x diameter for sphere
             elif geometry_type == GeometryType.CUBE:
                 domain_size_multiplier = 20.0  # 20x side length for cube
-            elif geometry_type == GeometryType.NOZZLE:
-                domain_size_multiplier = 3.0   # 3x length for nozzle (smaller domain for internal flow)
             else:
                 domain_size_multiplier = 10.0  # Default
     else:
@@ -612,8 +577,8 @@ def apply_intelligent_defaults(geometry_type: GeometryType, dimensions: Dict[str
         
         if 'length' not in dimensions:
             if flow_context.is_external_flow:
-                # For external flow, use height equal to diameter by default
-                dimensions['length'] = dimensions['diameter']
+                # For 2D external flow, use thin slice
+                dimensions['length'] = dimensions['diameter'] * 0.1
             else:
                 # For internal flow (unlikely for cylinder), use longer length
                 dimensions['length'] = dimensions['diameter'] * 10
@@ -659,51 +624,6 @@ def apply_intelligent_defaults(geometry_type: GeometryType, dimensions: Dict[str
                 dimensions['side_length'] = 1.0   # Large cube for high Re
             else:
                 dimensions['side_length'] = 0.1   # Default 10cm cube
-    
-    elif geometry_type == GeometryType.NOZZLE:
-        # Nozzle geometry: converging-diverging nozzle with throat
-        if 'throat_diameter' not in dimensions or dimensions.get('throat_diameter') is None:
-            dimensions['throat_diameter'] = 0.05  # Default 5cm throat
-        
-        # If inlet diameter not specified, use 1.5x throat diameter (typical convergent ratio)
-        if 'inlet_diameter' not in dimensions or dimensions.get('inlet_diameter') is None:
-            dimensions['inlet_diameter'] = dimensions.get('throat_diameter', 0.05) * 1.5
-        
-        # If outlet diameter not specified, use 2x throat diameter (typical expansion ratio)
-        if 'outlet_diameter' not in dimensions or dimensions.get('outlet_diameter') is None:
-            dimensions['outlet_diameter'] = dimensions.get('throat_diameter', 0.05) * 2.0
-        
-        # Calculate expansion ratio if not provided
-        if 'expansion_ratio' not in dimensions or dimensions.get('expansion_ratio') is None:
-            throat_area = 3.14159 * (dimensions.get('throat_diameter', 0.05) / 2) ** 2
-            outlet_area = 3.14159 * (dimensions.get('outlet_diameter', 0.1) / 2) ** 2
-            dimensions['expansion_ratio'] = outlet_area / throat_area
-        
-        # Default convergence/divergence angles
-        if 'convergence_angle' not in dimensions or dimensions.get('convergence_angle') is None:
-            dimensions['convergence_angle'] = 15.0  # 15 degrees typical
-        
-        if 'divergence_angle' not in dimensions or dimensions.get('divergence_angle') is None:
-            dimensions['divergence_angle'] = 7.0   # 7 degrees typical (smaller than convergence)
-        
-        # Calculate nozzle length if not provided
-        if 'length' not in dimensions or dimensions.get('length') is None:
-            # Total length based on diameters and angles
-            inlet_radius = dimensions.get('inlet_diameter', 0.075) / 2
-            throat_radius = dimensions.get('throat_diameter', 0.05) / 2
-            outlet_radius = dimensions.get('outlet_diameter', 0.1) / 2
-            
-            # Convergent section length
-            conv_angle_rad = dimensions.get('convergence_angle', 15.0) * 3.14159 / 180
-            conv_length = (inlet_radius - throat_radius) / max(0.001, (conv_angle_rad / 2))
-            
-            # Divergent section length  
-            div_angle_rad = dimensions.get('divergence_angle', 7.0) * 3.14159 / 180
-            div_length = (outlet_radius - throat_radius) / max(0.001, (div_angle_rad / 2))
-            
-            dimensions['length'] = conv_length + div_length
-            dimensions['convergent_length'] = conv_length
-            dimensions['divergent_length'] = div_length
     
     return dimensions
 
@@ -784,146 +704,11 @@ def detect_rotation_request(prompt: str) -> Dict[str, Any]:
     elif re.search(r'\broll\b', prompt_lower):
         rotation_info["rotation_axis"] = "x"  # Roll is rotation around X
     
+    # If rotation detected but no axis specified, default to Z (most common for vehicles)
+    if rotation_info["rotate"] and not rotation_info["rotation_axis"]:
+        rotation_info["rotation_axis"] = "z"
+    
     return rotation_info
-
-
-def detect_mesh_convergence_request(prompt: str) -> Dict[str, Any]:
-    """Detect mesh convergence study request from the prompt."""
-    prompt_lower = prompt.lower()
-    
-    # Initialize mesh convergence info
-    mesh_convergence_info = {
-        "mesh_convergence_active": False,
-        "mesh_convergence_levels": 4,
-        "mesh_convergence_target_params": [],
-        "mesh_convergence_threshold": 1.0
-    }
-    
-    # Detect mesh convergence request
-    mesh_convergence_patterns = [
-        r'mesh\s+convergence\s+study',
-        r'mesh\s+convergence\s+analysis',
-        r'mesh\s+independence\s+study',
-        r'mesh\s+independence\s+analysis',
-        r'mesh\s+sensitivity\s+study',
-        r'mesh\s+sensitivity\s+analysis',
-        r'grid\s+convergence\s+study',
-        r'grid\s+independence\s+study',
-        r'check\s+mesh\s+convergence',
-        r'verify\s+mesh\s+independence',
-        r'test\s+mesh\s+sensitivity',
-        r'perform\s+mesh\s+study',
-        r'run\s+mesh\s+convergence',
-        r'mesh\s+refinement\s+study',
-        r'grid\s+refinement\s+study'
-    ]
-    
-    # Check for mesh convergence request
-    for pattern in mesh_convergence_patterns:
-        if re.search(pattern, prompt_lower):
-            mesh_convergence_info["mesh_convergence_active"] = True
-            break
-    
-    # Extract number of mesh levels
-    levels_patterns = [
-        r'(\d+)\s+mesh\s+levels',
-        r'(\d+)\s+refinement\s+levels',
-        r'(\d+)\s+grid\s+levels',
-        r'with\s+(\d+)\s+levels',
-        r'using\s+(\d+)\s+levels'
-    ]
-    
-    for pattern in levels_patterns:
-        match = re.search(pattern, prompt_lower)
-        if match:
-            levels = int(match.group(1))
-            if 2 <= levels <= 8:  # Reasonable range
-                mesh_convergence_info["mesh_convergence_levels"] = levels
-                break
-    
-    # Extract target parameters
-    param_patterns = [
-        r'monitor\s+([^.]+?)(?:\s+for\s+convergence|$)',
-        r'check\s+([^.]+?)(?:\s+convergence|$)',
-        r'target\s+parameters?\s*[:=]?\s*([^.]+?)(?:\s|$)',
-        r'convergence\s+of\s+([^.]+?)(?:\s|$)'
-    ]
-    
-    for pattern in param_patterns:
-        match = re.search(pattern, prompt_lower)
-        if match:
-            param_text = match.group(1)
-            # Extract parameter names
-            params = [p.strip() for p in re.split(r'[,\s]+', param_text) if p.strip()]
-            if params:
-                mesh_convergence_info["mesh_convergence_target_params"] = params
-                break
-    
-    # Extract convergence threshold
-    threshold_patterns = [
-        r'threshold\s+of\s+([\d.]+)\s*%',
-        r'convergence\s+threshold\s+([\d.]+)\s*%',
-        r'within\s+([\d.]+)\s*%',
-        r'accuracy\s+of\s+([\d.]+)\s*%'
-    ]
-    
-    for pattern in threshold_patterns:
-        match = re.search(pattern, prompt_lower)
-        if match:
-            threshold = float(match.group(1))
-            if 0.1 <= threshold <= 10.0:  # Reasonable range
-                mesh_convergence_info["mesh_convergence_threshold"] = threshold
-                break
-    
-    return mesh_convergence_info
-
-
-def detect_gpu_request(prompt: str) -> Dict[str, Any]:
-    """Detect explicit GPU acceleration request from the prompt."""
-    prompt_lower = prompt.lower()
-    
-    # Initialize GPU info
-    gpu_info = {
-        "use_gpu": False,
-        "gpu_explicit": False,
-        "gpu_backend": "petsc"
-    }
-    
-    # Detect explicit GPU requests - user must explicitly ask for GPU
-    gpu_patterns = [
-        r'use\s+(?:the\s+)?gpu',
-        r'use\s+my\s+gpu',
-        r'with\s+gpu',
-        r'gpu\s+acceleration',
-        r'accelerate\s+with\s+gpu',
-        r'run\s+on\s+gpu',
-        r'enable\s+gpu',
-        r'use\s+graphics\s+card',
-        r'leverage\s+gpu',
-        r'utilize\s+gpu',
-        r'gpu\s+computing',
-        r'gpu\s+solver',
-        r'cuda\s+acceleration',
-        r'use\s+cuda'
-    ]
-    
-    # Check for explicit GPU request
-    for pattern in gpu_patterns:
-        if re.search(pattern, prompt_lower):
-            gpu_info["use_gpu"] = True
-            gpu_info["gpu_explicit"] = True
-            break
-    
-    # Detect specific GPU backend preferences
-    if gpu_info["use_gpu"]:
-        if re.search(r'petsc', prompt_lower):
-            gpu_info["gpu_backend"] = "petsc"
-        elif re.search(r'amgx', prompt_lower):
-            gpu_info["gpu_backend"] = "amgx"
-        elif re.search(r'rapidcfd', prompt_lower):
-            gpu_info["gpu_backend"] = "rapidcfd"
-    
-    return gpu_info
 
 
 def detect_multiphase_flow(prompt: str) -> Dict[str, Any]:
@@ -1031,26 +816,7 @@ def nl_interpreter_agent(state: CFDState) -> CFDState:
         # Modify prompt template to handle STL files
         stl_instruction = ""
         if state.get("stl_file"):
-            # Check if this is a nozzle STL file
-            stl_filename = state.get("stl_file", "").lower()
-            user_prompt_lower = state["user_prompt"].lower()
-            
-            is_nozzle_stl = any(keyword in stl_filename for keyword in ["nozzle", "jet", "rocket", "throat"]) or \
-                           any(keyword in user_prompt_lower for keyword in ["nozzle", "jet nozzle", "rocket nozzle", "throat"])
-            
-            if is_nozzle_stl:
-                stl_instruction = f"""
-IMPORTANT: The user is providing a nozzle STL file for custom geometry: {state['stl_file']}
-- Set geometry_type to "nozzle" (this is a nozzle STL file)
-- Set is_custom_geometry to true
-- Set is_external_flow to false (nozzles are internal flow through the geometry)
-- Set domain_type to "channel"
-- Set domain_size_multiplier to 3.0 (smaller domain for internal nozzle flow)
-- The STL file defines the nozzle geometry (converging-diverging profile)
-- Focus on extracting flow parameters, boundary conditions, and simulation settings from the prompt
-"""
-            else:
-                stl_instruction = f"""
+            stl_instruction = f"""
 IMPORTANT: The user is providing an STL file for custom geometry: {state['stl_file']}
 - Set geometry_type to "custom" 
 - Set is_custom_geometry to true
@@ -1080,10 +846,10 @@ Extract all relevant information including:
 
 IMPORTANT RULES:
 1. For "flow around" objects (cylinder, sphere, airfoil), set is_external_flow=true and domain_type="unbounded"
-2. For "flow through" or "flow in" objects (pipe, channel, nozzle), set is_external_flow=false and domain_type="channel"
+2. For "flow through" or "flow in" objects (pipe, channel), set is_external_flow=false and domain_type="channel"
 3. If neither is specified, use these defaults:
    - Cylinder, Sphere, Airfoil → external flow (around object)
-   - Pipe, Channel, Nozzle → internal flow (through object)
+   - Pipe, Channel → internal flow (through object)
 4. Extract ALL numerical dimensions mentioned (with unit conversion to meters)
 5. For external flow, set domain_size_multiplier appropriately (typically 20-30x object size)
 6. DEFAULT TO UNSTEADY (TRANSIENT) ANALYSIS unless the user explicitly mentions "steady", "steady-state", or "stationary"
@@ -1094,11 +860,8 @@ Problem Description: {user_prompt}
 Examples of dimension extraction:
 - "10mm diameter cylinder" → diameter: 0.01 (converted to meters)
 - "5 inch pipe" → diameter: 0.127 (converted to meters)
-- "nozzle with 50mm throat diameter" → throat_diameter: 0.05 (converted to meters)
-- "expansion ratio 2.5" → expansion_ratio: 2.5
 - "flow around a cylinder" → is_external_flow: true, domain_type: "unbounded"
 - "flow through a pipe" → is_external_flow: false, domain_type: "channel"
-- "flow in a nozzle" → is_external_flow: false, domain_type: "channel"
 
 Examples of analysis type extraction:
 - "flow around a cylinder" → analysis_type: UNSTEADY (default)
@@ -1147,43 +910,20 @@ Return valid JSON that matches the schema exactly.
         
         # Handle STL file-specific logic
         if state.get("stl_file"):
-            # Check if this is a nozzle STL file
-            stl_filename = state.get("stl_file", "").lower()
-            user_prompt_lower = state["user_prompt"].lower()
+            # Force custom geometry settings for STL files
+            parsed_params["geometry_type"] = GeometryType.CUSTOM
+            parsed_params["is_custom_geometry"] = True
+            parsed_params["geometry_dimensions"] = {"is_3d": True}  # Mark as 3D
             
-            is_nozzle_stl = any(keyword in stl_filename for keyword in ["nozzle", "jet", "rocket", "throat"]) or \
-                           any(keyword in user_prompt_lower for keyword in ["nozzle", "jet nozzle", "rocket nozzle", "throat"])
+            # Set appropriate flow context for STL files (typically external flow)
+            parsed_params["flow_context"] = {
+                "is_external_flow": True,
+                "domain_type": "unbounded",
+                "domain_size_multiplier": 20.0
+            }
             
-            if is_nozzle_stl:
-                # Force nozzle geometry settings for nozzle STL files
-                parsed_params["geometry_type"] = GeometryType.NOZZLE
-                parsed_params["is_custom_geometry"] = True
-                parsed_params["geometry_dimensions"] = {"is_3d": True}  # Mark as 3D
-                
-                # Set appropriate flow context for nozzle STL files (internal flow)
-                parsed_params["flow_context"] = {
-                    "is_external_flow": False,
-                    "domain_type": "channel",
-                    "domain_size_multiplier": 3.0
-                }
-                
-                if state["verbose"]:
-                    logger.info("NL Interpreter: Nozzle STL file detected, configured for internal flow geometry")
-            else:
-                # Force custom geometry settings for non-nozzle STL files
-                parsed_params["geometry_type"] = GeometryType.CUSTOM
-                parsed_params["is_custom_geometry"] = True
-                parsed_params["geometry_dimensions"] = {"is_3d": True}  # Mark as 3D
-                
-                # Set appropriate flow context for STL files (typically external flow)
-                parsed_params["flow_context"] = {
-                    "is_external_flow": True,
-                    "domain_type": "unbounded",
-                    "domain_size_multiplier": 20.0
-                }
-                
-                if state["verbose"]:
-                    logger.info("NL Interpreter: STL file detected, configured for custom 3D geometry")
+            if state["verbose"]:
+                logger.info("NL Interpreter: STL file detected, configured for custom 3D geometry")
         else:
             # Extract dimensions from text (as backup/enhancement) for non-STL cases
             text_dimensions = extract_dimensions_from_text(state["user_prompt"], parsed_params["geometry_type"])
@@ -1266,44 +1006,6 @@ Return valid JSON that matches the schema exactly.
             if state["verbose"]:
                 logger.info(f"NL Interpreter: Detected rotation request: {rotation_info}")
         
-        # Detect mesh convergence request from prompt
-        mesh_convergence_info = detect_mesh_convergence_request(state["user_prompt"])
-        parsed_params["mesh_convergence_info"] = mesh_convergence_info
-        
-        # Log mesh convergence detection if found
-        if mesh_convergence_info["mesh_convergence_active"]:
-            if state["verbose"]:
-                logger.info(f"NL Interpreter: Detected mesh convergence request!")
-                logger.info(f"NL Interpreter: Mesh levels: {mesh_convergence_info['mesh_convergence_levels']}")
-                logger.info(f"NL Interpreter: Convergence threshold: {mesh_convergence_info['mesh_convergence_threshold']}%")
-                if mesh_convergence_info["mesh_convergence_target_params"]:
-                    logger.info(f"NL Interpreter: Target parameters: {mesh_convergence_info['mesh_convergence_target_params']}")
-        
-        # Detect GPU request from prompt
-        gpu_info = detect_gpu_request(state["user_prompt"])
-        
-        # Merge GPU info with existing flag from CLI
-        # Priority: CLI flag > prompt detection
-        final_gpu_info = {
-            "use_gpu": state.get("use_gpu", False) or gpu_info["use_gpu"],
-            "gpu_explicit": state.get("use_gpu", False) or gpu_info["gpu_explicit"],
-            "gpu_backend": gpu_info["gpu_backend"]
-        }
-        
-        # Log GPU detection if found
-        if final_gpu_info["use_gpu"]:
-            if state["verbose"]:
-                logger.info(f"NL Interpreter: GPU acceleration requested!")
-                logger.info(f"NL Interpreter: GPU explicit: {final_gpu_info['gpu_explicit']}")
-                logger.info(f"NL Interpreter: GPU backend: {final_gpu_info['gpu_backend']}")
-                if state.get("use_gpu", False):
-                    logger.info(f"NL Interpreter: GPU enabled via --use-gpu flag")
-                if gpu_info["use_gpu"]:
-                    logger.info(f"NL Interpreter: GPU requested in prompt")
-        
-        # Store GPU info in parsed parameters
-        parsed_params["gpu_info"] = final_gpu_info
-        
         # Detect advanced parameters from prompt and check for validation errors
         advanced_params = detect_advanced_parameters(state["user_prompt"])
         all_validation_errors = []
@@ -1340,15 +1042,7 @@ Return valid JSON that matches the schema exactly.
                     "warnings": state["warnings"] + [warning_message],
                     "parsed_parameters": parsed_params,
                     "geometry_info": geometry_info,
-                    "current_step": CFDStep.NL_INTERPRETATION,
-                    # Include mesh convergence parameters in state
-                    "mesh_convergence_active": mesh_convergence_info["mesh_convergence_active"],
-                    "mesh_convergence_levels": mesh_convergence_info["mesh_convergence_levels"],
-                    "mesh_convergence_threshold": mesh_convergence_info["mesh_convergence_threshold"],
-                    "mesh_convergence_target_params": mesh_convergence_info["mesh_convergence_target_params"],
-                    # Include GPU parameters in state
-                    "use_gpu": final_gpu_info["use_gpu"],
-                    "gpu_info": final_gpu_info
+                    "current_step": CFDStep.NL_INTERPRETATION
                 }
             else:
                 # Normal validation failure - stop execution with helpful error message
@@ -1365,15 +1059,7 @@ Return valid JSON that matches the schema exactly.
             "parsed_parameters": parsed_params,
             "geometry_info": geometry_info,
             "original_prompt": state["user_prompt"],  # Pass original prompt for AI solver selection
-            "errors": [],
-            # Include mesh convergence parameters in state
-            "mesh_convergence_active": mesh_convergence_info["mesh_convergence_active"],
-            "mesh_convergence_levels": mesh_convergence_info["mesh_convergence_levels"],
-            "mesh_convergence_threshold": mesh_convergence_info["mesh_convergence_threshold"],
-            "mesh_convergence_target_params": mesh_convergence_info["mesh_convergence_target_params"],
-            # Include GPU parameters in state
-            "use_gpu": final_gpu_info["use_gpu"],
-            "gpu_info": final_gpu_info
+            "errors": []
         }
         
     except Exception as e:
@@ -1433,184 +1119,18 @@ def get_characteristic_length(geometry_info: Dict[str, Any]) -> Optional[float]:
         return dimensions.get("side_length", 0.1)  # Default 0.1m side length
     elif geometry_type == GeometryType.CHANNEL:
         return dimensions.get("height", 0.1)  # Default 0.1m height
-    elif geometry_type == GeometryType.NOZZLE:
-        # For nozzles, characteristic length is the throat diameter
-        return dimensions.get('throat_diameter', dimensions.get('length', 0.1))
     else:
         return 0.1  # Default characteristic length
 
 
-
-def detect_mars_simulation(prompt: str) -> bool:
-    """Detect if the user is requesting a Mars simulation."""
-    mars_keywords = [
-        "mars", "martian", "red planet", "on mars", "mars atmosphere",
-        "mars surface", "mars conditions", "mars environment"
-    ]
-    
-    prompt_lower = prompt.lower()
-    return any(keyword in prompt_lower for keyword in mars_keywords)
-
-
-def detect_moon_simulation(prompt: str) -> bool:
-    """Detect if the user is requesting a Moon simulation."""
-    moon_keywords = [
-        "moon", "lunar", "on the moon", "moon surface", "moon conditions",
-        "moon environment", "lunar surface", "lunar conditions", "lunar environment"
-    ]
-    
-    prompt_lower = prompt.lower()
-    return any(keyword in prompt_lower for keyword in moon_keywords)
-
-
-def detect_custom_environment(prompt: str) -> Dict[str, Any]:
-    """Use OpenAI to detect and extract custom environmental conditions."""
-    try:
-        # Skip if it's already Mars/Moon/Earth
-        if detect_mars_simulation(prompt) or detect_moon_simulation(prompt):
-            return {"has_custom_environment": False}
-        
-        # Check for environmental indicators
-        environmental_keywords = [
-            "pluto", "venus", "jupiter", "saturn", "neptune", "uranus", "mercury",
-            "altitude", "elevation", "sea level", "underwater", "deep ocean", "high altitude",
-            "mountain", "stratosphere", "atmosphere", "pressure", "vacuum", "space",
-            "planet", "planetary", "conditions", "environment"
-        ]
-        
-        prompt_lower = prompt.lower()
-        has_environmental_context = any(keyword in prompt_lower for keyword in environmental_keywords)
-        
-        if not has_environmental_context:
-            return {"has_custom_environment": False}
-        
-        # Get settings for API key
-        import sys
-        sys.path.append('src')
-        from foamai.config import get_settings
-        settings = get_settings()
-        
-        if not settings.openai_api_key:
-            logger.warning("No OpenAI API key found for custom environment detection")
-            return {"has_custom_environment": False}
-        
-        # Use OpenAI to extract environmental parameters
-        import openai
-        client = openai.OpenAI(api_key=settings.openai_api_key)
-        
-        system_message = """You are an expert in planetary science and atmospheric physics. Analyze the given prompt to determine if it describes a specific environmental or planetary condition that would affect fluid dynamics simulation parameters.
-
-Your task is to:
-1. Identify if there's a specific environment mentioned (planet, altitude, etc.)
-2. Determine appropriate physical parameters for that environment
-3. Return the parameters in the specified JSON format
-
-Be accurate with scientific values. If unsure about specific parameters, use reasonable estimates based on known science."""
-
-        user_message = f"""Analyze this fluid dynamics scenario for custom environmental conditions:
-
-PROMPT: "{prompt}"
-
-If this describes a specific environment (planet, altitude, underwater, etc.) that differs from standard Earth sea-level conditions, extract the appropriate physical parameters.
-
-Respond with ONLY this JSON format:
-{{
-    "has_custom_environment": true/false,
-    "environment_name": "name of environment (e.g., 'Pluto', 'High Altitude', 'Underwater')",
-    "temperature": temperature_in_kelvin,
-    "pressure": pressure_in_pascals,
-    "density": density_in_kg_per_m3,
-    "viscosity": viscosity_in_pa_s,
-    "gravity": gravity_in_m_per_s2,
-    "explanation": "brief explanation of the environment and parameter choices"
-}}
-
-Examples:
-- "Flow on Pluto" → Pluto conditions (40K, very low pressure/density, 0.62 m/s² gravity)
-- "Flow at 10km altitude" → High altitude conditions (reduced pressure/density, same gravity)
-- "Flow 100m underwater" → Underwater conditions (high pressure, water density)
-- "Flow around cylinder" → has_custom_environment: false (standard conditions)
-
-If no specific environment is mentioned, return has_custom_environment: false."""
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message}
-            ],
-            max_tokens=500,
-            temperature=0.1
-        )
-        
-        # Parse JSON response
-        import json
-        try:
-            result = json.loads(response.choices[0].message.content)
-            if result.get("has_custom_environment", False):
-                logger.info(f"Detected custom environment: {result.get('environment_name', 'Unknown')}")
-                logger.info(f"Parameters: T={result.get('temperature')}K, P={result.get('pressure')}Pa, ρ={result.get('density')}kg/m³")
-            return result
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse OpenAI environment response: {e}")
-            return {"has_custom_environment": False}
-            
-    except Exception as e:
-        logger.warning(f"Custom environment detection failed: {e}")
-        return {"has_custom_environment": False}
-
-
 def set_default_fluid_properties(params: Dict[str, Any]) -> Dict[str, Any]:
     """Set default fluid properties if not specified."""
-    # Check if this is a Mars, Moon, or custom environment simulation
-    original_prompt = params.get("original_prompt", "")
-    is_mars_simulation = detect_mars_simulation(original_prompt)
-    is_moon_simulation = detect_moon_simulation(original_prompt)
-    
-    # Check for custom environment if not Mars/Moon
-    custom_environment = None
-    if not is_mars_simulation and not is_moon_simulation:
-        custom_environment = detect_custom_environment(original_prompt)
-    
-    if is_mars_simulation:
-        # Mars atmospheric conditions
-        defaults = {
-            "density": 0.02,  # Mars atmosphere density (kg/m³)
-            "viscosity": 1.0e-5,  # Mars atmosphere viscosity (Pa·s) 
-            "temperature": 210.0,  # Mars surface temperature (K) - approximately -63°C
-            "pressure": 610.0,  # Mars atmospheric pressure (Pa) - about 0.6% of Earth's
-        }
-        logger.info("Using Mars atmospheric conditions for simulation")
-    elif is_moon_simulation:
-        # Moon atmospheric conditions (essentially vacuum)
-        defaults = {
-            "density": 1e-14,  # Moon trace atmosphere density (kg/m³)
-            "viscosity": 1.0e-5,  # Moon atmosphere viscosity (Pa·s) - similar to Mars for numerical stability
-            "temperature": 250.0,  # Moon surface temperature (K) - approximately -23°C (day side)
-            "pressure": 3e-15,  # Moon atmospheric pressure (Pa) - essentially vacuum
-        }
-        logger.info("Using Moon atmospheric conditions for simulation")
-    elif custom_environment and custom_environment.get("has_custom_environment", False):
-        # Custom environment conditions (detected by OpenAI)
-        defaults = {
-            "density": custom_environment.get("density", 1.225),
-            "viscosity": custom_environment.get("viscosity", 1.81e-5),
-            "temperature": custom_environment.get("temperature", 293.15),
-            "pressure": custom_environment.get("pressure", 101325),
-        }
-        env_name = custom_environment.get("environment_name", "Unknown")
-        explanation = custom_environment.get("explanation", "No explanation provided")
-        logger.info(f"Using custom environment conditions for simulation: {env_name}")
-        logger.info(f"Environment details: {explanation}")
-    else:
-        # Earth atmospheric conditions (default)
-        defaults = {
-            "density": 1.225,  # Air at sea level (kg/m³)
-            "viscosity": 1.81e-5,  # Air at 20°C (Pa·s)
-            "temperature": 293.15,  # 20°C in Kelvin
-            "pressure": 101325,  # Atmospheric pressure (Pa)
-        }
-
+    defaults = {
+        "density": 1.225,  # Air at sea level (kg/m³)
+        "viscosity": 1.81e-5,  # Air at 20°C (Pa·s)
+        "temperature": 293.15,  # 20°C in Kelvin
+        "pressure": 101325,  # Atmospheric pressure (Pa)
+    }
     
     for key, value in defaults.items():
         if key not in params or params[key] is None:

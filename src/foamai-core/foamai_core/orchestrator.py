@@ -521,18 +521,10 @@ def create_initial_state(
         user_approval_enabled: bool = True,
         stl_file: Optional[str] = None,
         force_validation: bool = False,
-
-        mesh_convergence_active: bool = False,
-        mesh_convergence_levels: int = 4,
-        mesh_convergence_target_params: List[str] = None,
-        mesh_convergence_threshold: float = 1.0,
-        use_gpu: bool = False
-
         # Remote execution parameters
         execution_mode: str = "local",
         server_url: Optional[str] = None,
         project_name: Optional[str] = None
-
     ) -> CFDState:
     """
     Create initial state for the CFD workflow.
@@ -593,21 +585,6 @@ def create_initial_state(
         current_iteration=0,
         conversation_active=True,
         previous_results=None,
-        mesh_convergence_active=mesh_convergence_active,
-        mesh_convergence_levels=mesh_convergence_levels,
-        mesh_convergence_target_params=mesh_convergence_target_params or [],
-        mesh_convergence_threshold=mesh_convergence_threshold,
-        mesh_convergence_results={},
-        mesh_convergence_report={},
-        recommended_mesh_level=0,
-        use_gpu=use_gpu,
-        gpu_info={
-            "use_gpu": use_gpu,
-            "gpu_explicit": False,
-            "gpu_backend": "petsc"
-        }
-    ) 
-
         # Remote execution fields
         execution_mode=execution_mode,
         server_url=server_url,
@@ -941,4 +918,3 @@ def execute_solver_only(state: CFDState) -> CFDState:
             "errors": state.get("errors", []) + [f"Solver execution failed: {str(e)}"],
             "current_step": CFDStep.ERROR
         } 
-

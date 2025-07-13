@@ -29,7 +29,6 @@ class GeometryType(str, Enum):
     CHANNEL = "channel"
     SPHERE = "sphere"
     CUBE = "cube"
-    NOZZLE = "nozzle"
     CUSTOM = "custom"
 
 
@@ -113,20 +112,6 @@ class CFDState(TypedDict):
     conversation_active: bool  # Whether to continue the conversation or exit
     previous_results: Optional[Dict[str, Any]]  # Results from previous iteration for comparison 
     
-
-    # Mesh convergence study
-    mesh_convergence_active: bool = False
-    mesh_convergence_levels: int = 4
-    mesh_convergence_threshold: float = 1.0
-    mesh_convergence_target_params: List[str] = []
-    mesh_convergence_results: Dict[str, Any] = {}
-    mesh_convergence_report: Dict[str, Any] = {}
-    recommended_mesh_level: int = 0
-    
-    # GPU acceleration
-    use_gpu: bool = False
-    gpu_info: Dict[str, Any] = {} 
-
     # Remote execution configuration
     execution_mode: str  # "local" or "remote"
     server_url: Optional[str]  # URL of remote OpenFOAM server
@@ -137,4 +122,3 @@ class CFDState(TypedDict):
     workflow_paused: bool  # True when workflow is paused waiting for external input
     config_summary: Optional[Dict[str, Any]]  # Configuration summary for UI display 
     config_only_mode: Optional[bool]  # True when running configuration phase only (no solver execution) 
-

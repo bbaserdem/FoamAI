@@ -3,914 +3,9 @@
 from typing import Dict, Any, Optional, List
 from loguru import logger
 import re
-import os
 
 from .state import CFDState, CFDStep, GeometryType, FlowType, AnalysisType, SolverType
 
-
-# Enhanced keyword detection with context analysis and weighting
-KEYWORD_WEIGHTS = {
-    "compressible": {
-        # Core compressible flow keywords
-        "shock": 3.0,
-        "supersonic": 2.5,
-        "transonic": 2.0,
-        "hypersonic": 2.5,
-        "mach": 2.0,
-        "compressible": 2.0,
-        "gas dynamics": 1.5,
-        "high-speed": 1.5,
-        "high speed": 1.5,
-        "sonic boom": 2.0,
-        # Applications and phenomena
-        "nozzle": 1.5,
-        "jet": 1.5,
-        "rocket": 1.5,
-        "blast": 2.0,
-        "explosion": 2.0,
-        "expansion": 1.0,
-        "compression": 1.0,
-        "rarefaction": 2.0,
-        "oblique shock": 2.5,
-        "normal shock": 2.5,
-        "prandtl-meyer": 2.0,
-        "fanno": 1.5,
-        "rayleigh": 1.5,
-        # Aerospace applications
-        "aircraft": 1.0,
-        "airfoil supersonic": 2.0,
-        "wind tunnel": 1.0,
-        "ballistics": 2.0,
-        "projectile": 1.5,
-        # Negative weights for conflicting contexts
-        "wave": -1.0,  # "shock wave" vs "water wave"
-        "water": -2.0,  # Compressible flows rarely involve water
-        "liquid": -2.0,
-        "free surface": -1.5,
-        "dam break": -2.0,
-        "sloshing": -2.0,
-        "marine": -2.0,
-        "naval": -2.0
-    },
-    "multiphase": {
-        # Fluid types
-        "water": 2.0,
-        "liquid": 1.5,
-        "gas": 1.0,
-        "oil": 2.0,
-        "steam": 1.5,
-        "vapor": 1.5,
-        "mist": 2.0,
-        "fog": 1.5,
-        "spray": 2.0,
-        # Interface phenomena
-        "interface": 2.0,
-        "free surface": 2.5,
-        "meniscus": 2.0,
-        "contact line": 2.0,
-        "wetting": 1.5,
-        "dewetting": 1.5,
-        "surface tension": 2.5,
-        "capillary": 2.0,
-        # Methods and models
-        "vof": 3.0,
-        "volume of fluid": 3.0,
-        "level set": 2.5,
-        "multiphase": 3.0,
-        "two-phase": 2.5,
-        "three-phase": 2.5,
-        "eulerian": 1.5,
-        "lagrangian": 1.5,
-        # Phenomena and applications
-        "dam break": 2.5,
-        "wave": 1.5,  # Water waves, not shock waves
-        "tsunami": 2.5,
-        "breaking wave": 2.5,
-        "droplet": 2.0,
-        "bubble": 2.0,
-        "cavitation": 2.5,
-        "boiling": 2.0,
-        "condensation": 2.0,
-        "evaporation": 2.0,
-        "splash": 2.0,
-        "impact": 1.5,
-        "filling": 1.5,
-        "draining": 1.5,
-        "sloshing": 2.0,
-        "coating": 1.5,
-        "inkjet": 2.0,
-        "atomization": 2.0,
-        # Applications
-        "marine": 1.5,
-        "naval": 1.5,
-        "offshore": 1.5,
-        "ship": 1.0,
-        "hull": 1.0,
-        "tank": 1.0,
-        "reservoir": 1.0,
-        "pipeline": 1.0,
-        "microfluidics": 2.0,
-        "air": 0.5,  # Only when combined with other fluids
-        # Negative weights for conflicting contexts
-        "shock": -2.0,  # Shock waves are compressible phenomena
-        "supersonic": -2.0,
-        "hypersonic": -2.0,
-        "mach": -2.0,
-        "compressible": -2.0,
-        "gas dynamics": -1.5,
-        "ballistics": -2.0
-    },
-    "heat_transfer": {
-        # Core thermal keywords
-        "heat": 2.0,
-        "thermal": 2.0,
-        "temperature": 1.5,
-        "cooling": 1.5,
-        "heating": 1.5,
-        "hot": 1.0,
-        "cold": 1.0,
-        "warm": 1.0,
-        # Heat transfer mechanisms
-        "heat transfer": 3.0,
-        "conduction": 2.0,
-        "convection": 2.0,
-        "radiation": 1.5,
-        "natural convection": 2.5,
-        "forced convection": 2.5,
-        "mixed convection": 2.5,
-        "free convection": 2.5,
-        # Multi-physics coupling
-        "conjugate": 2.5,
-        "conjugate heat transfer": 3.0,
-        "cht": 3.0,
-        "cfd-cht": 3.0,
-        "fluid-solid": 2.5,
-        "solid-fluid": 2.0,
-        "solid fluid": 2.0,
-        "coupling": 1.5,
-        "thermal coupling": 2.5,
-        "multi-region": 2.5,
-        "multi region": 2.5,
-        "multiregion": 2.5,
-        # Boundaries and conditions
-        "heat flux": 2.0,
-        "thermal boundary": 2.0,
-        "wall temperature": 1.5,
-        "wall conduction": 2.0,
-        "solid wall": 1.5,
-        "thermal contact": 2.0,
-        "interface temperature": 2.0,
-        # Applications and equipment
-        "heat exchanger": 2.5,
-        "radiator": 2.0,
-        "heat sink": 2.0,
-        "cooling system": 2.0,
-        "thermal management": 2.0,
-        "hvac": 2.0,
-        "boiler": 2.0,
-        "furnace": 2.0,
-        "oven": 1.5,
-        "chimney": 1.5,
-        "stack": 1.0,
-        "insulation": 1.5,
-        "thermal insulation": 2.0,
-        # Phase change
-        "melting": 2.0,
-        "solidification": 2.0,
-        "freezing": 2.0,
-        "phase change": 2.5,
-        "latent heat": 2.0,
-        # Electronics cooling
-        "electronics": 1.5,
-        "cpu": 1.5,
-        "chip": 1.5,
-        "pcb": 1.5,
-        "thermal interface": 2.0
-    },
-    "reactive": {
-        # Core combustion keywords
-        "combustion": 3.0,
-        "burning": 2.5,
-        "flame": 2.5,
-        "fire": 2.0,
-        "ignition": 2.0,
-        "autoignition": 2.5,
-        "quenching": 2.0,
-        "extinction": 2.0,
-        "flashback": 2.5,
-        "blowoff": 2.5,
-        # Chemical processes
-        "reaction": 2.0,
-        "chemical": 2.0,
-        "chemistry": 2.0,
-        "kinetics": 2.0,
-        "mechanism": 1.5,
-        "species": 2.0,
-        "concentration": 1.5,
-        "mass fraction": 2.0,
-        "mole fraction": 2.0,
-        "mixture fraction": 2.0,
-        "progress variable": 2.0,
-        # Fuel types
-        "fuel": 2.0,
-        "oxidizer": 2.0,
-        "methane": 2.0,
-        "propane": 2.0,
-        "hydrogen": 2.0,
-        "ethane": 2.0,
-        "gasoline": 2.0,
-        "diesel": 2.0,
-        "kerosene": 2.0,
-        "natural gas": 2.0,
-        "biogas": 2.0,
-        "syngas": 2.0,
-        "ammonia": 2.0,
-        # Combustion modes
-        "premixed": 2.5,
-        "non-premixed": 2.5,
-        "partially premixed": 2.5,
-        "diffusion flame": 2.5,
-        "laminar flame": 2.5,
-        "turbulent flame": 2.5,
-        "stratified": 2.0,
-        # Combustion phenomena
-        "detonation": 2.5,
-        "deflagration": 2.5,
-        "knock": 2.0,
-        "auto-ignition": 2.5,
-        "flame speed": 2.0,
-        "flame front": 2.0,
-        "flame propagation": 2.0,
-        "flame stabilization": 2.0,
-        # Applications
-        "burner": 2.0,
-        "combustor": 2.0,
-        "engine": 1.5,
-        "gas turbine": 1.0,  # Reduced score to avoid confusion with MRF
-        "furnace": 2.0,
-        "boiler": 1.5,
-        "incinerator": 2.0,
-        "flare": 2.0,
-        "torch": 1.5,
-        "propulsion": 1.5,
-        "rocket": 1.5,
-        "jet engine": 2.0,
-        "combustion turbine": 2.0,  # More specific to avoid MRF confusion
-        "internal combustion": 2.5,
-        # Modeling approaches
-        "reacting": 3.0,
-        "reactive": 3.0,
-        "eddy dissipation": 2.0,
-        "flamelet": 2.5,
-        "pdf": 1.5,
-        "les combustion": 2.5,
-        "rans combustion": 2.5,
-        # Negative weights to avoid confusion
-        "shock wave": -2.0,  # Compressible, not reactive
-        "supersonic": -2.0,
-        "hypersonic": -2.0,
-        "mach": -2.0,
-        "compressible": -1.5,
-        "gas dynamics": -2.0,
-        "nozzle": -1.5,
-        "pump": -1.5,  # MRF, not reactive
-        "impeller": -1.5,
-        "centrifugal": -1.5,
-        "rotating": -1.5,
-        "rotation": -1.5,
-        "mrf": -2.0,
-        "multiple reference frame": -2.0,
-        "steady rotating": -2.0,
-        "free surface": -1.5,  # Multiphase, not reactive
-        "dam break": -1.5,
-        "multiphase": -1.5,
-        "vof": -1.5,
-        "volume of fluid": -1.5
-    },
-    "steady": {
-        "steady": 2.0,
-        "steady-state": 2.5,
-        "steady state": 2.5,
-        "equilibrium": 2.0,
-        "final": 1.5,
-        "converged": 2.0,
-        "time-independent": 2.0,
-        "stationary": 2.0,
-        "constant": 1.0,
-        # Performance metrics (often steady-state)
-        "pressure drop": 2.0,
-        "drag coefficient": 1.5,
-        "lift coefficient": 1.5,
-        "efficiency": 1.0,
-        "performance": 1.0,
-        "design point": 1.5,
-        "operating point": 1.5,
-        # Negative weights for conflicting contexts
-        "transient": -2.0,
-        "time": -1.0,
-        "unsteady": -2.0,
-        "vortex": -1.5,
-        "shedding": -2.0,
-        "oscillat": -2.0,
-        "frequency": -2.0,
-        "startup": -2.0,
-        "development": -1.5,
-        "periodic": -2.0,
-        "pulsating": -2.0,
-        "fluctuating": -2.0
-    },
-    "transient": {
-        "transient": 2.5,
-        "unsteady": 2.5,
-        "time": 1.5,
-        "time-dependent": 2.5,
-        "time dependent": 2.5,
-        "temporal": 2.0,
-        "dynamic": 1.5,
-        "evolution": 1.5,
-        # Vortex phenomena
-        "vortex": 2.0,
-        "shedding": 2.5,
-        "vortex shedding": 3.0,
-        "karman": 2.5,
-        "von karman": 2.5,
-        "wake": 1.5,
-        "instability": 2.0,
-        # Oscillatory phenomena
-        "oscillat": 2.0,
-        "oscillating": 2.0,
-        "oscillation": 2.0,
-        "frequency": 2.0,
-        "periodic": 2.0,
-        "pulsating": 2.0,
-        "pulsation": 2.0,
-        "fluctuating": 2.0,
-        "fluctuation": 2.0,
-        "vibration": 1.5,
-        "resonance": 2.0,
-        # Flow development
-        "startup": 2.0,
-        "start-up": 2.0,
-        "development": 1.5,
-        "developing": 1.5,
-        "transient response": 2.5,
-        "impulse": 2.0,
-        "step response": 2.0,
-        # Turbulence
-        "turbulent": 1.0,
-        "turbulence": 1.0,
-        "eddy": 1.0,
-        "les": 1.5,  # Large Eddy Simulation
-        "dns": 2.0,  # Direct Numerical Simulation
-        # Dimensionless numbers
-        "strouhal": 2.0,
-        "strouhal number": 2.5,
-        "reduced frequency": 2.0,
-        # Negative weights for conflicting contexts
-        "steady": -2.0,
-        "steady-state": -2.5,
-        "steady state": -2.5,
-        "equilibrium": -2.0,
-        "final": -1.5,
-        "converged": -2.0,
-        "stationary": -2.0
-    },
-    "piso": {
-        # PISO algorithm preferences
-        "piso": 3.0,
-        "accurate": 2.0,
-        "precision": 2.0,
-        "accuracy": 2.0,
-        "high precision": 2.5,
-        "high accuracy": 2.5,
-        "temporal accuracy": 2.5,
-        "time accuracy": 2.5,
-        "temporal precision": 2.5,
-        "time precision": 2.5,
-        # Biomedical applications
-        "pulsatile": 2.5,
-        "pulsating": 2.5,
-        "arterial": 2.0,
-        "cardiovascular": 2.0,
-        "biomedical": 2.0,
-        "blood flow": 2.0,
-        "medical": 2.0,
-        "physiological": 2.0,
-        "heart": 2.0,
-        "artery": 2.0,
-        "vein": 2.0,
-        "cardiac": 2.0,
-        "vascular": 2.0,
-        # Oscillatory flows
-        "oscillatory": 2.0,
-        "oscillating": 2.0,
-        "womersley": 2.0,
-        "periodic": 1.5,
-        "cyclic": 1.5,
-        "sinusoidal": 2.0,
-        "harmonic": 2.0,
-        # High fidelity simulations
-        "high fidelity": 2.0,
-        "detailed": 1.5,
-        "fine": 1.5,
-        "resolved": 1.5,
-        "dns": 2.0,
-        "direct numerical": 2.0,
-        "well resolved": 2.0,
-        "high resolution": 2.0,
-        # Negative weights for less suitable cases
-        "coarse": -1.0,
-        "rough": -1.0,
-        "approximate": -1.0,
-        "fast": -1.0,
-        "quick": -1.0,
-        "rans": -1.0,
-        "reynolds averaged": -1.0
-    },
-    "sonic": {
-        # Supersonic flow indicators
-        "sonic": 2.5,
-        "supersonic": 3.0,
-        "hypersonic": 3.0,
-        "trans-sonic": 2.5,
-        "transonic": 2.5,
-        "sonic boom": 2.5,
-        "mach": 2.5,
-        "high mach": 2.5,
-        "mach number": 2.5,
-        # Shock phenomena
-        "shock": 3.0,
-        "shockwave": 3.0,
-        "shock wave": 3.0,
-        "shock waves": 3.0,
-        "oblique shock": 2.5,
-        "normal shock": 2.5,
-        "bow shock": 2.5,
-        "detached shock": 2.5,
-        "attached shock": 2.5,
-        "shock interaction": 2.5,
-        "shock reflection": 2.5,
-        "shock diffraction": 2.5,
-        # Expansion phenomena
-        "expansion": 2.0,
-        "expansion fan": 2.0,
-        "expansion wave": 2.0,
-        "prandtl-meyer": 2.0,
-        "rarefaction": 2.0,
-        "rarefaction wave": 2.0,
-        # Compressible flow theory
-        "fanno flow": 2.0,
-        "rayleigh flow": 2.0,
-        "isentropic": 2.0,
-        "adiabatic": 1.5,
-        "polytropic": 1.5,
-        "compressibility": 2.0,
-        "density variation": 2.0,
-        "pressure wave": 2.0,
-        "acoustic": 1.5,
-        "sound": 1.5,
-        "sound wave": 1.5,
-        # Aerospace applications
-        "aerodynamics": 2.0,
-        "aerospace": 2.0,
-        "aircraft": 2.0,
-        "fighter": 2.0,
-        "missile": 2.0,
-        "rocket": 2.0,
-        "spacecraft": 2.0,
-        "reentry": 2.0,
-        "ballistic": 2.0,
-        "projectile": 2.0,
-        "bullet": 2.0,
-        "artillery": 2.0,
-        # High-speed facilities
-        "wind tunnel": 2.0,
-        "shock tunnel": 2.5,
-        "blow-down": 2.0,
-        "hypersonic tunnel": 2.5,
-        "supersonic tunnel": 2.5,
-        "ludwieg tube": 2.0,
-        # Nozzle types
-        "nozzle": 2.0,
-        "de laval": 2.0,
-        "convergent-divergent": 2.0,
-        "cd nozzle": 2.0,
-        "rocket nozzle": 2.0,
-        "jet nozzle": 2.0,
-        "exhaust nozzle": 2.0,
-        "propelling nozzle": 2.0,
-        # Negative weights for less suitable cases
-        "subsonic": -1.0,
-        "low speed": -1.0,
-        "low mach": -1.0,
-        "incompressible": -2.0,
-        "water": -2.0,
-        "liquid": -2.0,
-        "multiphase": -1.0
-    },
-    "mrf": {
-        # MRF core keywords
-        "mrf": 3.0,
-        "multiple reference frame": 3.0,
-        "multiple reference frames": 3.0,
-        "multi reference frame": 3.0,
-        "rotating reference frame": 2.5,
-        "reference frame": 2.0,
-        "rotating frame": 2.5,
-        "moving reference frame": 2.5,
-        # Rotation keywords
-        "rotating": 2.5,
-        "rotation": 2.5,
-        "rotational": 2.5,
-        "rotary": 2.0,
-        "spinning": 2.0,
-        "angular": 2.0,
-        "angular velocity": 2.0,
-        "angular speed": 2.0,
-        "omega": 2.0,
-        "rpm": 2.0,
-        "revolutions per minute": 2.0,
-        "rad/s": 2.0,
-        "radians per second": 2.0,
-        # Rotating machinery
-        "rotating machinery": 2.5,
-        "turbomachinery": 2.5,
-        "machinery": 2.0,
-        "rotor": 2.5,
-        "stator": 2.0,
-        "rotating equipment": 2.5,
-        "rotating device": 2.5,
-        # Pumps
-        "pump": 2.0,
-        "centrifugal pump": 2.5,
-        "axial pump": 2.5,
-        "mixed flow pump": 2.5,
-        "radial pump": 2.5,
-        "impeller": 2.5,
-        "pump impeller": 2.5,
-        "centrifugal impeller": 2.5,
-        "axial impeller": 2.5,
-        "mixed flow impeller": 2.5,
-        "circulation pump": 2.0,
-        "cooling pump": 2.0,
-        "water pump": 2.0,
-        "oil pump": 2.0,
-        "chemical pump": 2.0,
-        "process pump": 2.0,
-        "fire pump": 2.0,
-        "booster pump": 2.0,
-        "multistage pump": 2.0,
-        "single stage pump": 2.0,
-        "double suction pump": 2.0,
-        "end suction pump": 2.0,
-        "split case pump": 2.0,
-        "volute pump": 2.0,
-        "diffuser pump": 2.0,
-        # Turbines
-        "turbine": 2.0,
-        "gas turbine": 2.0,
-        "steam turbine": 2.0,
-        "water turbine": 2.0,
-        "wind turbine": 2.0,
-        "hydroelectric turbine": 2.0,
-        "hydro turbine": 2.0,
-        "kaplan turbine": 2.0,
-        "francis turbine": 2.0,
-        "pelton turbine": 2.0,
-        "axial turbine": 2.0,
-        "radial turbine": 2.0,
-        "mixed flow turbine": 2.0,
-        "turbine runner": 2.0,
-        "turbine blade": 2.0,
-        "turbine vane": 2.0,
-        "guide vane": 2.0,
-        "wicket gate": 2.0,
-        "stay vane": 2.0,
-        "draft tube": 2.0,
-        "spiral case": 2.0,
-        "scroll case": 2.0,
-        "penstock": 2.0,
-        # Fans and blowers
-        "fan": 2.0,
-        "centrifugal fan": 2.5,
-        "axial fan": 2.5,
-        "mixed flow fan": 2.5,
-        "radial fan": 2.5,
-        "cooling fan": 2.0,
-        "exhaust fan": 2.0,
-        "supply fan": 2.0,
-        "ventilation fan": 2.0,
-        "industrial fan": 2.0,
-        "blower": 2.0,
-        "centrifugal blower": 2.5,
-        "axial blower": 2.5,
-        "roots blower": 2.0,
-        "screw blower": 2.0,
-        "air blower": 2.0,
-        "gas blower": 2.0,
-        # Compressors
-        "compressor": 2.0,
-        "centrifugal compressor": 2.5,
-        "axial compressor": 2.5,
-        "mixed flow compressor": 2.5,
-        "radial compressor": 2.5,
-        "air compressor": 2.0,
-        "gas compressor": 2.0,
-        "refrigeration compressor": 2.0,
-        "compressor stage": 2.0,
-        "compressor wheel": 2.0,
-        "compressor impeller": 2.5,
-        "compressor rotor": 2.5,
-        "compressor stator": 2.0,
-        "compressor blade": 2.0,
-        "compressor vane": 2.0,
-        "diffuser": 2.0,
-        "volute": 2.0,
-        "scroll": 2.0,
-        "vaneless diffuser": 2.0,
-        "vaned diffuser": 2.0,
-        # Propellers
-        "propeller": 2.0,
-        "prop": 2.0,
-        "screw": 2.0,
-        "marine propeller": 2.0,
-        "aircraft propeller": 2.0,
-        "ship propeller": 2.0,
-        "propeller blade": 2.0,
-        "propeller hub": 2.0,
-        "propeller boss": 2.0,
-        "ducted propeller": 2.0,
-        "open propeller": 2.0,
-        "fixed pitch propeller": 2.0,
-        "variable pitch propeller": 2.0,
-        "controllable pitch propeller": 2.0,
-        # Mixers and agitators
-        "mixer": 2.0,
-        "agitator": 2.0,
-        "impeller mixer": 2.5,
-        "stirrer": 2.0,
-        "mixing impeller": 2.5,
-        "agitator impeller": 2.5,
-        "rushton turbine": 2.5,
-        "pitched blade turbine": 2.5,
-        "axial flow impeller": 2.5,
-        "radial flow impeller": 2.5,
-        "marine impeller": 2.5,
-        "hydrofoil impeller": 2.5,
-        "anchor impeller": 2.5,
-        "helical impeller": 2.5,
-        "ribbon impeller": 2.5,
-        "paddle impeller": 2.5,
-        "propeller impeller": 2.5,
-        # Geometric components
-        "blade": 2.0,
-        "vane": 2.0,
-        "rotor blade": 2.0,
-        "stator blade": 2.0,
-        "guide blade": 2.0,
-        "runner blade": 2.0,
-        "impeller blade": 2.0,
-        "rotor vane": 2.0,
-        "stator vane": 2.0,
-        "guide vane": 2.0,
-        "inlet guide vane": 2.0,
-        "outlet guide vane": 2.0,
-        "hub": 2.0,
-        "shroud": 2.0,
-        "casing": 2.0,
-        "housing": 2.0,
-        "volute casing": 2.0,
-        "spiral casing": 2.0,
-        "scroll casing": 2.0,
-        "eye": 1.5,
-        "inlet eye": 1.5,
-        "suction eye": 1.5,
-        "discharge": 1.5,
-        "outlet": 1.5,
-        "suction": 1.5,
-        "inlet": 1.5,
-        # Performance characteristics
-        "head": 1.5,
-        "pressure head": 1.5,
-        "total head": 1.5,
-        "dynamic head": 1.5,
-        "static head": 1.5,
-        "flow rate": 1.0,
-        "discharge rate": 1.0,
-        "capacity": 1.0,
-        "efficiency": 1.5,
-        "performance": 1.5,
-        "characteristic": 1.5,
-        "performance curve": 1.5,
-        "characteristic curve": 1.5,
-        "operating point": 1.5,
-        "duty point": 1.5,
-        "best efficiency point": 1.5,
-        "bep": 1.5,
-        "npsh": 1.5,
-        "cavitation": 1.5,
-        "surge": 1.5,
-        "stall": 1.5,
-        "off-design": 1.5,
-        "part load": 1.5,
-        "overload": 1.5,
-        # Forces and moments
-        "torque": 2.0,
-        "moment": 2.0,
-        "power": 1.5,
-        "work": 1.5,
-        "shaft power": 1.5,
-        "hydraulic power": 1.5,
-        "mechanical power": 1.5,
-        "brake power": 1.5,
-        "input power": 1.5,
-        "output power": 1.5,
-        "coriolis": 2.0,
-        "centrifugal force": 2.0,
-        "centripetal force": 2.0,
-        "angular momentum": 2.0,
-        "moment of momentum": 2.0,
-        "euler equation": 2.0,
-        "euler turbine equation": 2.0,
-        # Steady-state indicators
-        "steady rotating": 2.5,
-        "steady state rotating": 2.5,
-        "steady rotation": 2.5,
-        "constant rotation": 2.5,
-        "constant angular velocity": 2.5,
-        "constant rpm": 2.5,
-        "design speed": 2.0,
-        "rated speed": 2.0,
-        "nominal speed": 2.0,
-        "operating speed": 2.0,
-        # Negative weights for unsuitable cases
-        "stationary": -2.0,
-        "non-rotating": -2.0,
-        "fixed": -1.0,
-        "static": -1.0,
-        "no rotation": -2.0,
-        "transient": -1.0,  # MRF is typically steady-state
-        "startup": -1.0,
-        "acceleration": -1.0,
-        "deceleration": -1.0,
-        "variable speed": -1.0,
-        "speed variation": -1.0,
-        "unsteady rotation": -1.0,
-        "time dependent rotation": -1.0,
-        "oscillating rotation": -1.0,
-        "reciprocating": -2.0,
-        "linear": -2.0,
-        "translational": -2.0,
-        "sliding": -2.0,
-        "combustion": -1.0,  # Avoid confusion with reactive flows
-        "reacting": -1.0,
-        "reactive": -1.0,
-        "burning": -1.0,
-        "flame": -1.0
-    }
-}
-
-# Context-aware phrase detection
-CONTEXT_PHRASES = {
-    "compressible": [
-        "shock wave",
-        "sonic boom",
-        "gas dynamics",
-        "high-speed flow",
-        "high speed flow",
-        "mach number",
-        "compressible flow"
-    ],
-    "multiphase": [
-        "free surface",
-        "dam break",
-        "volume of fluid",
-        "air-water interface",
-        "liquid-gas interface",
-        "two-phase flow",
-        "multiphase flow"
-    ],
-    "heat_transfer": [
-        "heat transfer",
-        "conjugate heat transfer",
-        "thermal boundary",
-        "heat exchanger",
-        "heat sink",
-        "thermal management",
-        "multi-region",
-        "solid-fluid coupling"
-    ]
-}
-
-# Parameter validation requirements for each solver
-SOLVER_PARAMETER_REQUIREMENTS = {
-    SolverType.SIMPLE_FOAM: {
-        "required": ["reynolds_number", "velocity"],
-        "optional": ["pressure", "turbulence_intensity"],
-        "physics_checks": ["incompressible", "steady_state_compatible"]
-    },
-    SolverType.PIMPLE_FOAM: {
-        "required": ["reynolds_number", "velocity"],
-        "optional": ["pressure", "turbulence_intensity", "end_time"],
-        "physics_checks": ["incompressible", "transient_compatible"]
-    },
-    SolverType.INTER_FOAM: {
-        "required": ["velocity", "phases"],
-        "optional": ["surface_tension", "gravity", "contact_angle"],
-        "physics_checks": ["multiphase", "transient_only"]
-    },
-    SolverType.RHO_PIMPLE_FOAM: {
-        "required": ["velocity", "temperature", "pressure"],
-        "optional": ["mach_number", "turbulence_intensity"],
-        "physics_checks": ["compressible", "density_varying"]
-    },
-    SolverType.CHT_MULTI_REGION_FOAM: {
-        "required": ["velocity", "temperature"],
-        "optional": ["heat_flux", "thermal_conductivity", "solid_regions"],
-        "physics_checks": ["heat_transfer", "multi_region", "conjugate"]
-    },
-    SolverType.REACTING_FOAM: {
-        "required": ["velocity", "temperature", "species"],
-        "optional": ["reaction_rate", "mixture_fraction", "fuel_composition"],
-        "physics_checks": ["combustion", "chemical_reactions"]
-    },
-    SolverType.BUOYANT_SIMPLE_FOAM: {
-        "required": ["temperature", "gravity"],
-        "optional": ["velocity", "thermal_expansion", "prandtl_number"],
-        "physics_checks": ["heat_transfer", "buoyancy", "steady_state_compatible"]
-    },
-    SolverType.PISO_FOAM: {
-        "required": ["reynolds_number", "velocity"],
-        "optional": ["pressure", "turbulence_intensity", "end_time"],
-        "physics_checks": ["incompressible", "transient_only"]
-    },
-    SolverType.SONIC_FOAM: {
-        "required": ["velocity", "temperature", "pressure", "mach_number"],
-        "optional": ["turbulence_intensity", "gas_properties"],
-        "physics_checks": ["compressible", "supersonic_compatible", "transient_only"]
-    },
-    SolverType.MRF_SIMPLE_FOAM: {
-        "required": ["reynolds_number", "velocity", "rotation_rate"],
-        "optional": ["pressure", "turbulence_intensity", "mrf_zones"],
-        "physics_checks": ["incompressible", "steady_state_compatible", "rotating_machinery"]
-    }
-}
-
-# Intelligent defaults for missing parameters
-INTELLIGENT_DEFAULTS = {
-    "reynolds_number": {
-        "cylinder": {"low": 100, "medium": 1000, "high": 10000},
-        "sphere": {"low": 300, "medium": 3000, "high": 30000},
-        "airfoil": {"low": 100000, "medium": 1000000, "high": 10000000}
-    },
-    "velocity": {
-        "low_speed": 1.0,
-        "medium_speed": 10.0,
-        "high_speed": 100.0
-    },
-    "temperature": {
-        "ambient": 293.15,  # 20°C
-        "cold": 273.15,     # 0°C
-        "hot": 373.15,      # 100°C
-        "mars": 210.0,      # Mars surface temperature (-63°C)
-        "moon": 250.0       # Moon surface temperature (day side, -23°C)
-    },
-    "pressure": {
-        "atmospheric": 101325.0,
-        "low": 50000.0,
-        "high": 200000.0,
-        "mars": 610.0,      # Mars atmospheric pressure (0.6% of Earth's)
-        "moon": 3e-15       # Moon atmospheric pressure (essentially vacuum)
-    },
-    "gravity": {
-        "earth": 9.81,      # m/s²
-        "mars": 3.71,       # m/s²
-        "moon": 1.62        # m/s²
-    },
-    "density": {
-        "earth": 1.225,     # kg/m³ (Earth atmosphere at sea level)
-        "mars": 0.02,       # kg/m³ (Mars atmosphere)
-        "moon": 1e-14       # kg/m³ (Moon trace atmosphere)
-    },
-    "viscosity": {
-        "earth": 1.81e-5,   # Pa·s (Earth atmosphere)
-        "mars": 1.0e-5,     # Pa·s (Mars atmosphere)
-        "moon": 1.0e-5      # Pa·s (Moon trace atmosphere - similar to Mars)
-    },
-    "thermal_expansion": {
-        "air": 3.43e-3,     # 1/K for air at 20°C
-        "water": 2.1e-4,    # 1/K for water at 20°C
-        "typical": 3.0e-3   # 1/K typical for gases
-    },
-    "rotation_rate": {
-        "low": 100.0,       # rad/s (about 950 RPM)
-        "medium": 500.0,    # rad/s (about 4775 RPM)
-        "high": 1000.0,     # rad/s (about 9550 RPM)
-        "fan": 314.0,       # rad/s (about 3000 RPM - typical fan)
-        "pump": 157.0,      # rad/s (about 1500 RPM - typical pump)
-        "turbine": 628.0    # rad/s (about 6000 RPM - typical turbine)
-    }
-}
 
 # Solver Registry - defines available solvers and their characteristics
 SOLVER_REGISTRY = {
@@ -1230,8 +325,6 @@ def extract_problem_features(state: CFDState) -> Dict[str, Any]:
             char_length = geometry.get("diameter", 0.1)
         elif geometry_type == GeometryType.CHANNEL:
             char_length = geometry.get("height", 0.1)
-        elif geometry_type == GeometryType.NOZZLE:
-            char_length = geometry.get("throat_diameter", geometry.get("length", 0.1))
         else:
             char_length = 0.1  # Default
         
@@ -1460,267 +553,23 @@ def extract_keywords(prompt: str) -> List[str]:
                         r"\bpropane\b", r"\bhydrogen\b", r"\bethane\b", r"\bgasoline\b"]
     
     found_keywords = []
-
-    for category, score in physics_scores.items():
-        if score > 0.5:  # Threshold for keyword detection
-            found_keywords.append(f"{category}:{score:.1f}")
     
-    return found_keywords
-
-
-def validate_solver_parameters(solver_type: SolverType, params: Dict[str, Any], 
-                              geometry_info: Dict[str, Any]) -> Tuple[List[str], Dict[str, Any]]:
-    """
-    Validate and suggest missing parameters for solver type.
-    Returns (missing_params, suggested_defaults).
-    """
-    requirements = SOLVER_PARAMETER_REQUIREMENTS.get(solver_type, {})
-    required_params = requirements.get("required", [])
+    for keyword in steady_keywords:
+        if re.search(keyword, prompt_lower):
+            found_keywords.append(f"steady:{keyword}")
     
-    missing_params = []
-    suggested_defaults = {}
+    for keyword in transient_keywords:
+        if re.search(keyword, prompt_lower):
+            found_keywords.append(f"transient:{keyword}")
     
-    for param in required_params:
-        if param not in params or params[param] is None:
-            missing_params.append(param)
-            default_value = get_intelligent_default(param, solver_type, params, geometry_info)
-            if default_value is not None:
-                suggested_defaults[param] = default_value
-    
-    return missing_params, suggested_defaults
-
-
-def detect_mars_simulation(prompt: str) -> bool:
-    """Detect if the user is requesting a Mars simulation."""
-    mars_keywords = [
-        "mars", "martian", "red planet", "on mars", "mars atmosphere",
-        "mars surface", "mars conditions", "mars environment"
-    ]
-    
-    prompt_lower = prompt.lower()
-    return any(keyword in prompt_lower for keyword in mars_keywords)
-
-
-def detect_moon_simulation(prompt: str) -> bool:
-    """Detect if the user is requesting a Moon simulation."""
-    moon_keywords = [
-        "moon", "lunar", "on the moon", "moon surface", "moon conditions",
-        "moon environment", "lunar surface", "lunar conditions", "lunar environment"
-    ]
-    
-    prompt_lower = prompt.lower()
-    return any(keyword in prompt_lower for keyword in moon_keywords)
-
-
-def detect_custom_environment(prompt: str) -> Dict[str, Any]:
-    """Use OpenAI to detect and extract custom environmental conditions."""
-    try:
-        # Skip if it's already Mars/Moon/Earth
-        if detect_mars_simulation(prompt) or detect_moon_simulation(prompt):
-            return {"has_custom_environment": False}
-        
-        # Check for environmental indicators
-        environmental_keywords = [
-            "pluto", "venus", "jupiter", "saturn", "neptune", "uranus", "mercury",
-            "altitude", "elevation", "sea level", "underwater", "deep ocean", "high altitude",
-            "mountain", "stratosphere", "atmosphere", "pressure", "vacuum", "space",
-            "planet", "planetary", "conditions", "environment"
-        ]
-        
-        prompt_lower = prompt.lower()
-        has_environmental_context = any(keyword in prompt_lower for keyword in environmental_keywords)
-        
-        if not has_environmental_context:
-            return {"has_custom_environment": False}
-        
-        # Get settings for API key
-        import sys
-        sys.path.append('src')
-        from foamai.config import get_settings
-        settings = get_settings()
-        
-        if not settings.openai_api_key:
-            logger.warning("No OpenAI API key found for custom environment detection")
-            return {"has_custom_environment": False}
-        
-        # Use OpenAI to extract environmental parameters
-        import openai
-        client = openai.OpenAI(api_key=settings.openai_api_key)
-        
-        system_message = """You are an expert in planetary science and atmospheric physics. Analyze the given prompt to determine if it describes a specific environmental or planetary condition that would affect fluid dynamics simulation parameters.
-
-Your task is to:
-1. Identify if there's a specific environment mentioned (planet, altitude, etc.)
-2. Determine appropriate physical parameters for that environment
-3. Return the parameters in the specified JSON format
-
-Be accurate with scientific values. If unsure about specific parameters, use reasonable estimates based on known science."""
-
-        user_message = f"""Analyze this fluid dynamics scenario for custom environmental conditions:
-
-PROMPT: "{prompt}"
-
-If this describes a specific environment (planet, altitude, underwater, etc.) that differs from standard Earth sea-level conditions, extract the appropriate physical parameters.
-
-Respond with ONLY this JSON format:
-{{
-    "has_custom_environment": true/false,
-    "environment_name": "name of environment (e.g., 'Pluto', 'High Altitude', 'Underwater')",
-    "temperature": temperature_in_kelvin,
-    "pressure": pressure_in_pascals,
-    "density": density_in_kg_per_m3,
-    "viscosity": viscosity_in_pa_s,
-    "gravity": gravity_in_m_per_s2,
-    "explanation": "brief explanation of the environment and parameter choices"
-}}
-
-Examples:
-- "Flow on Pluto" → Pluto conditions (40K, very low pressure/density, 0.62 m/s² gravity)
-- "Flow at 10km altitude" → High altitude conditions (reduced pressure/density, same gravity)
-- "Flow 100m underwater" → Underwater conditions (high pressure, water density)
-- "Flow around cylinder" → has_custom_environment: false (standard conditions)
-
-If no specific environment is mentioned, return has_custom_environment: false."""
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message}
-            ],
-            max_tokens=500,
-            temperature=0.1
-        )
-        
-        # Parse JSON response
-        import json
-        try:
-            result = json.loads(response.choices[0].message.content)
-            if result.get("has_custom_environment", False):
-                logger.info(f"Detected custom environment: {result.get('environment_name', 'Unknown')}")
-                logger.info(f"Parameters: T={result.get('temperature')}K, P={result.get('pressure')}Pa, ρ={result.get('density')}kg/m³")
-            return result
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse OpenAI environment response: {e}")
-            return {"has_custom_environment": False}
-            
-    except Exception as e:
-        logger.warning(f"Custom environment detection failed: {e}")
-        return {"has_custom_environment": False}
-
-
-def get_intelligent_default(param: str, solver_type: SolverType, params: Dict[str, Any], 
-                          geometry_info: Dict[str, Any]) -> Any:
-    """
-    Generate intelligent default values for missing parameters.
-    """
-    geometry_type = geometry_info.get("type", GeometryType.CYLINDER)
-    
-    # Check if this is a Mars, Moon, or custom environment simulation
-    original_prompt = params.get("original_prompt", "")
-    is_mars_simulation = detect_mars_simulation(original_prompt)
-    is_moon_simulation = detect_moon_simulation(original_prompt)
-    
-    # Check for custom environment if not Mars/Moon
-    custom_environment = None
-    if not is_mars_simulation and not is_moon_simulation:
-        custom_environment = detect_custom_environment(original_prompt)
-        if custom_environment.get("has_custom_environment", False):
-            logger.info(f"Using custom environment parameters: {custom_environment.get('environment_name', 'Unknown')}")
-    
-    if param == "reynolds_number":
-        # Base Reynolds number on geometry type and flow regime
-        geometry_name = geometry_type.value if hasattr(geometry_type, 'value') else str(geometry_type).lower()
-        
-        if geometry_name in INTELLIGENT_DEFAULTS["reynolds_number"]:
-            defaults = INTELLIGENT_DEFAULTS["reynolds_number"][geometry_name]
-            # Choose based on solver type
-            if solver_type == SolverType.SIMPLE_FOAM:
-                return defaults["low"]  # Conservative for steady-state
-            elif solver_type in [SolverType.PIMPLE_FOAM, SolverType.INTER_FOAM]:
-                return defaults["medium"]  # Moderate for transient
-            else:
-                return defaults["high"]  # Higher for complex physics
-        else:
-            return 1000  # Generic default
-    
-    elif param == "velocity":
-        # Base velocity on flow regime and solver
-        if solver_type == SolverType.RHO_PIMPLE_FOAM:
-            return INTELLIGENT_DEFAULTS["velocity"]["high_speed"]  # Compressible flows
-        elif solver_type == SolverType.INTER_FOAM:
-            return INTELLIGENT_DEFAULTS["velocity"]["low_speed"]   # Multiphase flows
-        else:
-            return INTELLIGENT_DEFAULTS["velocity"]["medium_speed"]  # General flows
-    
-    elif param == "temperature":
-        # Base temperature on solver type and application
-        if solver_type in [SolverType.RHO_PIMPLE_FOAM, SolverType.CHT_MULTI_REGION_FOAM, SolverType.REACTING_FOAM, SolverType.BUOYANT_SIMPLE_FOAM, SolverType.SONIC_FOAM]:
-            if is_mars_simulation:
-                return INTELLIGENT_DEFAULTS["temperature"]["mars"]
-            elif is_moon_simulation:
-                return INTELLIGENT_DEFAULTS["temperature"]["moon"]
-            elif custom_environment and custom_environment.get("has_custom_environment", False):
-                return custom_environment.get("temperature", INTELLIGENT_DEFAULTS["temperature"]["ambient"])
-            else:
-                return INTELLIGENT_DEFAULTS["temperature"]["ambient"]
-        else:
-            return None  # Not required for incompressible solvers
-    
-    elif param == "pressure":
-        # Base pressure on solver type
-        if solver_type in [SolverType.RHO_PIMPLE_FOAM, SolverType.SONIC_FOAM]:
-            if is_mars_simulation:
-                return INTELLIGENT_DEFAULTS["pressure"]["mars"]
-            elif is_moon_simulation:
-                return INTELLIGENT_DEFAULTS["pressure"]["moon"]
-            elif custom_environment and custom_environment.get("has_custom_environment", False):
-                return custom_environment.get("pressure", INTELLIGENT_DEFAULTS["pressure"]["atmospheric"])
-            else:
-                return INTELLIGENT_DEFAULTS["pressure"]["atmospheric"]
-        else:
-            return None  # Usually relative pressure for incompressible
-    
-    elif param == "gravity":
-        # Base gravity on simulation environment
-        if is_mars_simulation:
-            return INTELLIGENT_DEFAULTS["gravity"]["mars"]
-        elif is_moon_simulation:
-            return INTELLIGENT_DEFAULTS["gravity"]["moon"]
-        elif custom_environment and custom_environment.get("has_custom_environment", False):
-            return custom_environment.get("gravity", INTELLIGENT_DEFAULTS["gravity"]["earth"])
-        else:
-            return INTELLIGENT_DEFAULTS["gravity"]["earth"]
-    
-    elif param == "density":
-        # Base density on simulation environment
-        if is_mars_simulation:
-            return INTELLIGENT_DEFAULTS["density"]["mars"]
-        elif is_moon_simulation:
-            return INTELLIGENT_DEFAULTS["density"]["moon"]
-        elif custom_environment and custom_environment.get("has_custom_environment", False):
-            return custom_environment.get("density", INTELLIGENT_DEFAULTS["density"]["earth"])
-        else:
-            return INTELLIGENT_DEFAULTS["density"]["earth"]
-    
-    elif param == "viscosity":
-        # Base viscosity on simulation environment
-        if is_mars_simulation:
-            return INTELLIGENT_DEFAULTS["viscosity"]["mars"]
-        elif is_moon_simulation:
-            return INTELLIGENT_DEFAULTS["viscosity"]["moon"]
-        elif custom_environment and custom_environment.get("has_custom_environment", False):
-            return custom_environment.get("viscosity", INTELLIGENT_DEFAULTS["viscosity"]["earth"])
-        else:
-            return INTELLIGENT_DEFAULTS["viscosity"]["earth"]
-    
-    elif param == "thermal_expansion":
-        # Base thermal expansion on fluid type
-        if solver_type == SolverType.BUOYANT_SIMPLE_FOAM:
-            return INTELLIGENT_DEFAULTS["thermal_expansion"]["typical"]
-        else:
-            return None
-
+    # Special handling for "air" in multiphase context
+    air_pattern = r"\bair\b"
+    if re.search(air_pattern, prompt_lower):
+        # Only include as multiphase if there's clear multiphase context
+        # Include compound words like "underwater"
+        other_fluids = [r"\bwater\b", r"water", r"\bliquid\b", r"liquid", r"\boil\b"]
+        if any(re.search(fluid, prompt_lower) for fluid in other_fluids):
+            found_keywords.append("multiphase:air")
     
     for keyword in multiphase_keywords:
         if re.search(keyword, prompt_lower):
@@ -2075,7 +924,6 @@ def generate_solver_config(solver_settings: Dict[str, Any], parsed_params: Dict[
         p_field = state.get("boundary_conditions", {}).get("p", {}) if state else {}
         p_rgh_boundary_field = p_field.get("boundaryField", {})
         
-        # Create p_rgh with same boundary conditions as p, but will be remapped to actual mesh patches later
         solver_config["p_rgh"] = {
             "dimensions": "[1 -1 -2 0 0 0 0]",  # Kinematic pressure for interFoam
             "internalField": "uniform 0",
@@ -2084,27 +932,6 @@ def generate_solver_config(solver_settings: Dict[str, Any], parsed_params: Dict[
     
     if solver_settings.get("solver_type") == SolverType.RHO_PIMPLE_FOAM:
         # Add compressible flow properties
-        solver_config["thermophysicalProperties"] = generate_thermophysical_properties(solver_settings, parsed_params)
-        
-        # Only generate temperature field if it doesn't already exist with proper boundary conditions
-        if state and "boundary_conditions" in state and "T" in state["boundary_conditions"]:
-            # Use existing temperature field from boundary condition agent (it has correct boundary conditions)
-            existing_temp_field = state["boundary_conditions"]["T"]
-            solver_config["T"] = {
-                "dimensions": "[0 0 0 1 0 0 0]",  # Temperature in Kelvin
-                "internalField": f"uniform {parsed_params.get('temperature', 293.15)}",  # Default 20°C
-                "boundaryField": existing_temp_field["boundaryField"]
-            }
-        else:
-            # Fallback - create basic temperature field (shouldn't happen with good boundary conditions)
-            solver_config["T"] = {
-                "dimensions": "[0 0 0 1 0 0 0]",  # Temperature in Kelvin
-                "internalField": f"uniform {parsed_params.get('temperature', 293.15)}",  # Default 20°C
-                "boundaryField": {}
-            }
-
-    if solver_settings.get("solver_type") == SolverType.SONIC_FOAM:
-        # Add compressible flow properties for sonicFoam
         solver_config["thermophysicalProperties"] = generate_thermophysical_properties(solver_settings, parsed_params)
         
         # Only generate temperature field if it doesn't already exist with proper boundary conditions
@@ -2206,8 +1033,6 @@ def generate_control_dict(solver: str, analysis_type: AnalysisType, parsed_param
                 char_length = geometry_info.get("diameter", 0.1)
             elif geometry_info["type"] == GeometryType.CHANNEL:
                 char_length = geometry_info.get("height", 0.1)
-            elif geometry_info["type"] == GeometryType.NOZZLE:
-                char_length = geometry_info.get("throat_diameter", geometry_info.get("length", 0.1))
             else:
                 char_length = 0.1  # Default
             
@@ -2499,15 +1324,14 @@ def generate_fv_schemes(solver_settings: Dict[str, Any], parsed_params: Dict[str
             "pcorr": "",
             "alpha.water": ""
         }
-    elif solver_type in [SolverType.RHO_PIMPLE_FOAM, SolverType.SONIC_FOAM]:
-        # Compressible solver specific schemes (rhoPimpleFoam, sonicFoam)
+    elif solver_type == SolverType.RHO_PIMPLE_FOAM:
+        # rhoPimpleFoam specific schemes for compressible flow
         fv_schemes["divSchemes"].update({
             "div(phi,U)": "Gauss linearUpwindV grad(U)",
             "div(phi,K)": "Gauss upwind",
             "div(phi,h)": "Gauss upwind", 
             "div(phi,e)": "Gauss upwind",
             "div(phiv,p)": "Gauss upwind",
-            "div(phid,p)": "Gauss upwind",  # sonicFoam specific scheme
             "div(phi,k)": "Gauss upwind",
             "div(phi,omega)": "Gauss upwind",
             "div(phi,epsilon)": "Gauss upwind",
@@ -2563,27 +1387,6 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
     flow_type = solver_settings.get("flow_type", FlowType.LAMINAR)
     solver_type = solver_settings.get("solver_type", SolverType.PIMPLE_FOAM)
     
-    # Check if GPU acceleration is requested
-    gpu_info = parsed_params.get("gpu_info", {})
-    use_gpu = gpu_info.get("use_gpu", False)
-    gpu_backend = gpu_info.get("gpu_backend", "petsc")
-
-    # Validate GPU libraries are available before enabling GPU solvers
-    gpu_libs_available = False
-    if use_gpu:
-        import os
-        home_dir = os.path.expanduser("~")
-        petsc_dir = f"{home_dir}/gpu_libs/petsc-3.20.6"
-        petsc_arch = "linux-gnu-cuda-opt"
-        gpu_libs_available = os.path.exists(petsc_dir) and os.path.exists(f"{petsc_dir}/{petsc_arch}")
-        
-        if not gpu_libs_available:
-            # GPU requested but libraries not available - fall back to CPU
-            use_gpu = False
-            gpu_backend = "cpu"
-            logger.warning("GPU acceleration requested but PETSc libraries not found - falling back to CPU solvers")
- 
-    
     # Base solution settings
     fv_solution = {
         "solvers": {},
@@ -2592,13 +1395,6 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
         "relaxationFactors": {},
         "residualControl": {}
     }
-    
-    # GPU-specific library loading - only if libraries are available
-    if use_gpu and gpu_libs_available:
-    if use_gpu:
-        fv_solution["libs"] = ["libpetscFoam.so"]
-        if gpu_backend == "amgx":
-            fv_solution["libs"].append("libamgxFoam.so")
     
     # Solver-specific pressure and velocity solvers
     if solver_type == SolverType.INTER_FOAM:
@@ -2638,8 +1434,8 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
             "tolerance": 1e-08,
             "relTol": 0
         }
-    elif solver_type in [SolverType.RHO_PIMPLE_FOAM, SolverType.SONIC_FOAM]:
-        # Compressible solver pressure solver (rhoPimpleFoam, sonicFoam)
+    elif solver_type == SolverType.RHO_PIMPLE_FOAM:
+        # rhoPimpleFoam pressure solver
         fv_solution["solvers"]["p"] = {
             "solver": "GAMG",
             "tolerance": 1e-06,
@@ -2655,7 +1451,7 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
         fv_solution["solvers"]["pFinal"] = fv_solution["solvers"]["p"].copy()
         fv_solution["solvers"]["pFinal"]["relTol"] = 0
         
-        # Density solver for compressible flows (required for both rhoPimpleFoam and sonicFoam)
+        # Density solver for compressible flows
         fv_solution["solvers"]["rho"] = {
             "solver": "smoothSolver",
             "smoother": "GaussSeidel",
@@ -2739,40 +1535,18 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
         }
     else:
         # Standard pressure solver for incompressible flows
-        if use_gpu and gpu_libs_available and gpu_backend == "petsc":
-            fv_solution["solvers"]["p"] = {
-                "solver": "petsc",
-                "petsc": {
-                    "options": {
-                        "ksp_type": "cg",
-                        "mat_type": "aijcusparse",
-                        "pc_type": "gamg"
-                    }
-                },
-                "tolerance": 1e-06,
-                "relTol": 0.1
-            }
-        elif use_gpu and gpu_libs_available and gpu_backend == "amgx":
-            fv_solution["solvers"]["p"] = {
-                "solver": "amgx",
-                "amgx": {},
-                "tolerance": 1e-06,
-                "relTol": 0.1
-            }
-        else:
-            # Standard CPU solver
-            fv_solution["solvers"]["p"] = {
-                "solver": "GAMG",
-                "tolerance": 1e-06,
-                "relTol": 0.1,
-                "smoother": "GaussSeidel",
-                "nPreSweeps": 0,
-                "nPostSweeps": 2,
-                "cacheAgglomeration": "true",
-                "nCellsInCoarsestLevel": 10,
-                "agglomerator": "faceAreaPair",
-                "mergeLevels": 1
-            }
+        fv_solution["solvers"]["p"] = {
+            "solver": "GAMG",
+            "tolerance": 1e-06,
+            "relTol": 0.1,
+            "smoother": "GaussSeidel",
+            "nPreSweeps": 0,
+            "nPostSweeps": 2,
+            "cacheAgglomeration": "true",
+            "nCellsInCoarsestLevel": 10,
+            "agglomerator": "faceAreaPair",
+            "mergeLevels": 1
+        }
     
     # Velocity solver (common for all)
     fv_solution["solvers"]["U"] = {
@@ -2791,41 +1565,18 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
             "relTol": 0
         }
         if solver_type != SolverType.INTER_FOAM and "pFinal" not in fv_solution["solvers"]:
-            # Apply same GPU settings to pFinal solver
-            if use_gpu and gpu_libs_available and gpu_backend == "petsc":
-                fv_solution["solvers"]["pFinal"] = {
-                    "solver": "petsc",
-                    "petsc": {
-                        "options": {
-                            "ksp_type": "cg",
-                            "mat_type": "aijcusparse",
-                            "pc_type": "gamg"
-                        }
-                    },
-                    "tolerance": 1e-06,
-                    "relTol": 0
-                }
-            elif use_gpu and gpu_libs_available and gpu_backend == "amgx":
-                fv_solution["solvers"]["pFinal"] = {
-                    "solver": "amgx",
-                    "amgx": {},
-                    "tolerance": 1e-06,
-                    "relTol": 0
-                }
-            else:
-                # Standard CPU solver
-                fv_solution["solvers"]["pFinal"] = {
-                    "solver": "GAMG",
-                    "tolerance": 1e-06,
-                    "relTol": 0,
-                    "smoother": "GaussSeidel",
-                    "nPreSweeps": 0,
-                    "nPostSweeps": 2,
-                    "cacheAgglomeration": "true",
-                    "nCellsInCoarsestLevel": 10,
-                    "agglomerator": "faceAreaPair",
-                    "mergeLevels": 1
-                }
+            fv_solution["solvers"]["pFinal"] = {
+                "solver": "GAMG",
+                "tolerance": 1e-06,
+                "relTol": 0,
+                "smoother": "GaussSeidel",
+                "nPreSweeps": 0,
+                "nPostSweeps": 2,
+                "cacheAgglomeration": "true",
+                "nCellsInCoarsestLevel": 10,
+                "agglomerator": "faceAreaPair",
+                "mergeLevels": 1
+            }
     
     # Turbulence field solvers
     if flow_type == FlowType.TURBULENT:
@@ -2924,8 +1675,8 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
                 "pRefCell": 0,
                 "pRefValue": 0
             }
-        elif solver_type in [SolverType.RHO_PIMPLE_FOAM, SolverType.SONIC_FOAM]:
-            # Compressible solver specific settings (rhoPimpleFoam, sonicFoam)
+        elif solver_type == SolverType.RHO_PIMPLE_FOAM:
+            # rhoPimpleFoam specific settings
             fv_solution["PIMPLE"] = {
                 "nOuterCorrectors": 2,
                 "nCorrectors": 2,
@@ -2963,7 +1714,7 @@ def generate_turbulence_properties(solver_settings: Dict[str, Any], parsed_param
     flow_type = solver_settings.get("flow_type", FlowType.LAMINAR)
     turbulence_model = solver_settings.get("turbulence_model", "laminar")
     
-    if flow_type == FlowType.LAMINAR or turbulence_model == "laminar":
+    if flow_type == FlowType.LAMINAR:
         return {
             "simulationType": "laminar"
         }
@@ -3035,32 +1786,9 @@ def generate_transport_properties(solver_settings: Dict[str, Any], parsed_params
 
 def generate_thermophysical_properties(solver_settings: Dict[str, Any], parsed_params: Dict[str, Any]) -> Dict[str, Any]:
     """Generate thermophysicalProperties file for compressible solvers."""
-
-    # Check if this is a Mars, Moon, or custom environment simulation
-    original_prompt = parsed_params.get("original_prompt", "")
-    is_mars_simulation = detect_mars_simulation(original_prompt)
-    is_moon_simulation = detect_moon_simulation(original_prompt)
-    
-    # Check for custom environment
-    custom_environment = None
-    if not is_mars_simulation and not is_moon_simulation:
-        custom_environment = detect_custom_environment(original_prompt)
-    
     # Default temperature and pressure if not specified
-    if is_mars_simulation:
-        temperature = parsed_params.get("temperature", 210.0)  # Mars surface temperature
-        pressure = parsed_params.get("pressure", 610.0)  # Mars atmospheric pressure
-    elif is_moon_simulation:
-        temperature = parsed_params.get("temperature", 250.0)  # Moon surface temperature
-        pressure = parsed_params.get("pressure", 3e-15)  # Moon atmospheric pressure (vacuum)
-    elif custom_environment and custom_environment.get("has_custom_environment", False):
-        temperature = parsed_params.get("temperature", custom_environment.get("temperature", 293.15))
-        pressure = parsed_params.get("pressure", custom_environment.get("pressure", 101325))
-        logger.info(f"Using custom environment thermophysical properties: {custom_environment.get('environment_name', 'Unknown')}")
-    else:
-        temperature = parsed_params.get("temperature", 293.15)  # 20°C in Kelvin
-        pressure = parsed_params.get("pressure", 101325)  # 1 atm in Pa
-
+    temperature = parsed_params.get("temperature", 293.15)  # 20°C in Kelvin
+    pressure = parsed_params.get("pressure", 101325)  # 1 atm in Pa
     
     # Gas properties (default to air)
     cp = parsed_params.get("specific_heat", 1005)  # J/(kg·K) for air
@@ -3071,18 +1799,15 @@ def generate_thermophysical_properties(solver_settings: Dict[str, Any], parsed_p
     mu = parsed_params.get("viscosity", 1.81e-5)  # Pa·s
     pr = parsed_params.get("prandtl_number", 0.72)  # Prandtl number for air
     
-    # Get properties from solver_settings if available
-    properties = solver_settings.get("properties", {})
-    
     return {
         "thermoType": {
-            "type": properties.get("thermo_type", "hePsiThermo"),
-            "mixture": properties.get("mixture", "pureMixture"),
-            "transport": properties.get("transport_model", "const"),
+            "type": solver_settings.get("thermo_type", "hePsiThermo"),
+            "mixture": solver_settings.get("mixture", "pureMixture"),
+            "transport": solver_settings.get("transport_model", "const"),
             "thermo": "hConst",
-            "equationOfState": properties.get("equation_of_state", "perfectGas"),
-            "specie": properties.get("specie", "specie"),
-            "energy": properties.get("energy", "sensibleInternalEnergy")
+            "equationOfState": solver_settings.get("equation_of_state", "perfectGas"),
+            "specie": solver_settings.get("specie", "specie"),
+            "energy": solver_settings.get("energy", "sensibleInternalEnergy")
         },
         "mixture": {
             "specie": {
@@ -3103,32 +1828,9 @@ def generate_thermophysical_properties(solver_settings: Dict[str, Any], parsed_p
 
 def generate_reactive_thermophysical_properties(solver_settings: Dict[str, Any], parsed_params: Dict[str, Any]) -> Dict[str, Any]:
     """Generate thermophysicalProperties file for reactive flow solvers."""
-
-    # Check if this is a Mars, Moon, or custom environment simulation
-    original_prompt = parsed_params.get("original_prompt", "")
-    is_mars_simulation = detect_mars_simulation(original_prompt)
-    is_moon_simulation = detect_moon_simulation(original_prompt)
-    
-    # Check for custom environment
-    custom_environment = None
-    if not is_mars_simulation and not is_moon_simulation:
-        custom_environment = detect_custom_environment(original_prompt)
-    
     # Default temperature and pressure if not specified
-    if is_mars_simulation:
-        temperature = parsed_params.get("temperature", 210.0)  # Mars surface temperature
-        pressure = parsed_params.get("pressure", 610.0)  # Mars atmospheric pressure
-    elif is_moon_simulation:
-        temperature = parsed_params.get("temperature", 250.0)  # Moon surface temperature
-        pressure = parsed_params.get("pressure", 3e-15)  # Moon atmospheric pressure (vacuum)
-    elif custom_environment and custom_environment.get("has_custom_environment", False):
-        temperature = parsed_params.get("temperature", custom_environment.get("temperature", 300))
-        pressure = parsed_params.get("pressure", custom_environment.get("pressure", 101325))
-        logger.info(f"Using custom environment reactive properties: {custom_environment.get('environment_name', 'Unknown')}")
-    else:
-        temperature = parsed_params.get("temperature", 300)  # 300K for combustion
-        pressure = parsed_params.get("pressure", 101325)  # 1 atm in Pa
-
+    temperature = parsed_params.get("temperature", 300)  # 300K for combustion
+    pressure = parsed_params.get("pressure", 101325)  # 1 atm in Pa
     
     # Get species list
     species = solver_settings.get("species", ["CH4", "O2", "CO2", "H2O", "N2"])
@@ -3189,339 +1891,27 @@ def validate_solver_config(solver_config: Dict[str, Any], parsed_params: Dict[st
         if solver_config.get("analysis_type") == AnalysisType.STEADY:
             errors.append("interFoam does not support steady-state analysis")
     
-
-    if "sigma" not in fields and "sigma" not in solver_config:
-        errors.append("Surface tension 'sigma' not specified for interFoam")
-        suggestions.append("Add surface tension value (typical: 0.07 N/m for water-air)")
-    
-    # Check phases
-    phases = properties.get("phases", solver_config.get("phases", []))
-    if not phases or len(phases) < 2:
-        errors.append("interFoam requires at least 2 phases")
-        suggestions.append("Specify phases like ['water', 'air']")
-    
-    # Check phase properties
-    phase_props = properties.get("phase_properties", {})
-    for phase in phases:
-        if phase not in phase_props:
-            warnings.append(f"Missing properties for phase '{phase}'")
-            suggestions.append(f"Add density and viscosity for phase '{phase}'")
-    
-    # interFoam cannot be steady state
-    if solver_config.get("analysis_type") == AnalysisType.STEADY:
-        errors.append("interFoam does not support steady-state analysis")
-        suggestions.append("Use transient analysis for multiphase flows")
-
-
-def _validate_rhopimplefoam_config(solver_config: Dict[str, Any], fields: Dict[str, Any], 
-                                  properties: Dict[str, Any], parsed_params: Dict[str, Any],
-                                  errors: List[str], warnings: List[str], suggestions: List[str]) -> None:
-    """Validate rhoPimpleFoam-specific configuration."""
-    # Check for required compressible properties
-    # Note: For compressible solvers, boundary conditions and thermophysical properties 
-    # are handled by other agents in the workflow, so we skip these validation checks
-    
-    # Check thermophysical properties - this should be generated by the solver selector
-    if "thermophysicalProperties" not in solver_config:
-        # This is expected to be generated by the solver selector based on solver type
-        # The case writer will actually write the file, so we don't need to error here
-        pass  # Remove the error for now as it's handled in the workflow
-    
-    # Check Mach number consistency
-    mach_number = parsed_params.get("mach_number", 0)
-    if mach_number is not None and isinstance(mach_number, (int, float)):
-        if mach_number < 0.3:
+    elif solver == "rhoPimpleFoam":
+        # Check for required compressible properties
+        if "thermophysicalProperties" not in solver_config:
+            errors.append("Missing thermophysicalProperties for compressible solver")
+        if "T" not in solver_config:
+            warnings.append("Temperature field 'T' not initialized for rhoPimpleFoam")
+        # Check Mach number
+        mach_number = parsed_params.get("mach_number", 0)
+        if mach_number is not None and isinstance(mach_number, (int, float)) and mach_number < 0.3:
             warnings.append(f"Low Mach number ({mach_number:.2f}) - consider using incompressible solver")
-            suggestions.append("Use pimpleFoam or simpleFoam for Mach < 0.3")
-        elif mach_number > 5.0:
-            warnings.append(f"Very high Mach number ({mach_number:.2f}) - ensure proper shock capturing")
-            suggestions.append("Consider specialized high-Mach solvers or adjust numerical schemes")
     
-    # Check thermophysical model consistency
-    thermo_model = properties.get("thermophysical_model")
-    if thermo_model and thermo_model not in ["perfectGas", "incompressiblePerfectGas", "rhoConst"]:
-        warnings.append(f"Unusual thermophysical model: {thermo_model}")
-
-
-def _validate_chtmultiregion_config(solver_config: Dict[str, Any], fields: Dict[str, Any], 
-                                   properties: Dict[str, Any], errors: List[str], 
-                                   warnings: List[str], suggestions: List[str]) -> None:
-    """Validate chtMultiRegionFoam-specific configuration."""
-    # Check for required multi-region properties
-    if not properties.get("multi_region", False):
-        errors.append("Multi-region flag not set for chtMultiRegionFoam")
-    
-    regions = properties.get("regions", [])
-    if len(regions) < 2:
-        errors.append("chtMultiRegionFoam requires at least 2 regions (fluid and solid)")
-        suggestions.append("Define regions like ['fluid', 'solid']")
-    
-    # Check for typical region types
-    fluid_regions = properties.get("fluidRegions", [])
-    solid_regions = properties.get("solidRegions", [])
-    
-    if not fluid_regions:
-        warnings.append("No fluid regions detected - ensure proper region naming")
-    if not solid_regions:
-        warnings.append("No solid regions detected - ensure proper region naming")
-    
-    # Check thermal coupling
-    if not properties.get("thermal_coupling", False):
-        warnings.append("Thermal coupling not enabled - check if intended")
-        suggestions.append("Enable thermal coupling for conjugate heat transfer")
-    
-    # Check temperature field
-    if "T" not in fields and "T" not in solver_config:
-        errors.append("Temperature field 'T' required for chtMultiRegionFoam")
-        suggestions.append("Initialize temperature field for all regions")
-
-
-def _validate_reactingfoam_config(solver_config: Dict[str, Any], fields: Dict[str, Any], 
-                                 properties: Dict[str, Any], errors: List[str], 
-                                 warnings: List[str], suggestions: List[str]) -> None:
-    """Validate reactingFoam-specific configuration."""
-    # Check for required reactive flow properties
-    if not properties.get("chemistry", False):
-        errors.append("Chemistry not enabled for reactingFoam")
-        suggestions.append("Enable chemistry for reactive flows")
-    
-    species = properties.get("species", [])
-    if not species or len(species) < 2:
-        errors.append("reactingFoam requires chemical species")
-        suggestions.append("Define species list (e.g., ['CH4', 'O2', 'CO2', 'H2O', 'N2'])")
-    
-    # Check combustion model
-    combustion_model = properties.get("combustion_model")
-    if not combustion_model:
-        warnings.append("No combustion model specified - will use default")
-        suggestions.append("Specify combustion model (e.g., 'PaSR', 'EDC', 'laminar')")
-    
-    # Check required fields
-    if "T" not in fields and "T" not in solver_config:
-        errors.append("Temperature field 'T' required for reactingFoam")
-    
-    # Check species fields - they should now be in the fields dict
-    for species_name in species:
-        if species_name not in fields:
-            warnings.append(f"Species field '{species_name}' not initialized")
-            suggestions.append(f"Initialize species field '{species_name}' with appropriate mass fraction")
-    
-    # reactingFoam is always transient
-    if solver_config.get("analysis_type") == AnalysisType.STEADY:
-        errors.append("reactingFoam does not support steady-state analysis")
-        suggestions.append("Use transient analysis for reactive flows")
-
-
-def _validate_buoyant_simple_foam_config(solver_config: Dict[str, Any], fields: Dict[str, Any], 
-                                        properties: Dict[str, Any], parsed_params: Dict[str, Any],
-                                        errors: List[str], warnings: List[str], suggestions: List[str]) -> None:
-    """Validate buoyantSimpleFoam-specific configuration."""
-    # Check for required temperature field
-    if "T" not in fields and "T" not in solver_config:
-        errors.append("Temperature field 'T' required for buoyantSimpleFoam")
-        suggestions.append("Initialize temperature field (typical: 293.15 K)")
-    
-    # Check for gravity vector
-    if "g" not in fields and "g" not in solver_config and "gravity" not in parsed_params:
-        errors.append("Gravity vector 'g' required for buoyantSimpleFoam")
-        suggestions.append("Set gravity vector (typical: (0 -9.81 0) m/s²)")
-    
-    # Check for thermal expansion coefficient
-    if "beta" not in fields and "beta" not in solver_config and "thermal_expansion" not in parsed_params:
-        warnings.append("Thermal expansion coefficient 'beta' not specified")
-        suggestions.append("Set thermal expansion coefficient (typical: 3.43e-3 1/K for air)")
-    
-    # Check for transport properties
-    if "transportProperties" not in solver_config:
-        warnings.append("Transport properties not specified for buoyantSimpleFoam")
-        suggestions.append("Add transport properties with density, viscosity, and thermal properties")
-    
-    # Check Prandtl number
-    prandtl_number = parsed_params.get("prandtl_number")
-    if prandtl_number is not None and (prandtl_number < 0.1 or prandtl_number > 100):
-        warnings.append(f"Unusual Prandtl number ({prandtl_number}) - typical range is 0.1-100")
-        suggestions.append("Check Prandtl number value (typical: 0.71 for air, 7.0 for water)")
-    
-    # Check reference temperature
-    ref_temp = parsed_params.get("reference_temperature")
-    if ref_temp is not None and (ref_temp < 200 or ref_temp > 600):
-        warnings.append(f"Reference temperature ({ref_temp} K) outside typical range")
-        suggestions.append("Check reference temperature (typical: 293.15 K)")
-    
-    # buoyantSimpleFoam is steady-state only
-    if solver_config.get("analysis_type") == AnalysisType.UNSTEADY:
-        errors.append("buoyantSimpleFoam only supports steady-state analysis")
-        suggestions.append("Use buoyantPimpleFoam for transient natural convection")
-    
-    # Check for heat transfer consistency
-    if not properties.get("heat_transfer", False):
-        warnings.append("Heat transfer not enabled - this may not be appropriate for buoyantSimpleFoam")
-        suggestions.append("Enable heat transfer for natural convection simulations")
-
-
-def _validate_piso_foam_config(solver_config: Dict[str, Any], fields: Dict[str, Any], 
-                              properties: Dict[str, Any], parsed_params: Dict[str, Any],
-                              errors: List[str], warnings: List[str], suggestions: List[str]) -> None:
-    """Validate pisoFoam-specific configuration."""
-    # Check required fields for incompressible flow
-    if "U" not in fields and "U" not in solver_config:
-        errors.append("Velocity field 'U' required for pisoFoam")
-        suggestions.append("Initialize velocity field (typical: (1 0 0) m/s)")
-    
-    if "p" not in fields and "p" not in solver_config:
-        errors.append("Pressure field 'p' required for pisoFoam")
-        suggestions.append("Initialize pressure field (typical: 0 Pa relative)")
-    
-    # Check for transient compatibility
-    if solver_config.get("analysis_type") == AnalysisType.STEADY:
-        errors.append("pisoFoam only supports transient analysis")
-        suggestions.append("Use simpleFoam for steady-state analysis")
-    
-    # Check Reynolds number for appropriateness
-    reynolds_number = parsed_params.get("reynolds_number")
-    if reynolds_number is not None and reynolds_number > 100000:
-        warnings.append(f"High Reynolds number ({reynolds_number}) - consider pimpleFoam for better stability")
-        suggestions.append("pimpleFoam may be more stable for high Re flows")
-    
-    # Check time step settings
-    control_dict = solver_config.get("controlDict", {})
-    delta_t = control_dict.get("deltaT", 0)
-    if delta_t is not None and delta_t <= 0:
-        errors.append("Invalid time step for pisoFoam")
-        suggestions.append("Set positive time step (typical: 0.001 s)")
-    
-    # Suggest temporal accuracy considerations
-    suggestions.append("pisoFoam provides good temporal accuracy - ensure CFL < 1 for stability")
-
-
-def _validate_sonic_foam_config(solver_config: Dict[str, Any], fields: Dict[str, Any], 
-                               properties: Dict[str, Any], parsed_params: Dict[str, Any],
-                               errors: List[str], warnings: List[str], suggestions: List[str]) -> None:
-    """Validate sonicFoam-specific configuration."""
-    # Check required fields for compressible flow
-    # Note: For sonicFoam, boundary conditions should be provided by the boundary condition agent
-    # and thermophysical properties should be provided by the case writer
-    # So we skip these validation checks as they are handled by other agents
-    
-    # Check thermophysical properties - this should be generated by the solver selector
-    if "thermophysicalProperties" not in solver_config:
-        # This is expected to be generated by the solver selector based on solver type
-        # The case writer will actually write the file, so we don't need to error here
-        pass  # Remove the error for now as it's handled in the workflow
-    
-    # Validate Mach number
-    mach_number = parsed_params.get("mach_number")
-    if mach_number is None:
-        warnings.append("Mach number not specified - assuming supersonic flow")
-        suggestions.append("Specify Mach number for better solver configuration")
-    elif mach_number < 0.8:
-        warnings.append(f"Low Mach number ({mach_number}) for sonicFoam - consider rhoPimpleFoam")
-        suggestions.append("sonicFoam is optimized for trans-sonic/supersonic flows")
-    elif mach_number > 5.0:
-        warnings.append(f"Very high Mach number ({mach_number}) - ensure proper shock capturing")
-        suggestions.append("Use specialized high-Mach schemes and fine mesh near shocks")
-    
-    # Check for transient compatibility
-    if solver_config.get("analysis_type") == AnalysisType.STEADY:
-        errors.append("sonicFoam only supports transient analysis")
-        suggestions.append("Use appropriate steady compressible solver for steady-state")
-    
-    # Check pressure and temperature consistency
-    pressure = parsed_params.get("pressure")
-    temperature = parsed_params.get("temperature")
-    if pressure is not None and temperature is not None:
-        if pressure <= 0:
-            errors.append("Pressure must be positive for compressible flows")
-        if temperature <= 0:
-            errors.append("Temperature must be positive")
-    
-    # Suggest appropriate numerical schemes
-    suggestions.append("Use appropriate shock-capturing schemes (e.g., Kurganov) for supersonic flows")
-    suggestions.append("Consider adaptive time stepping for stability")
-
-
-def _validate_mrf_simple_foam_config(solver_config: Dict[str, Any], fields: Dict[str, Any], 
-                                    properties: Dict[str, Any], parsed_params: Dict[str, Any],
-                                    errors: List[str], warnings: List[str], suggestions: List[str]) -> None:
-    """Validate MRFSimpleFoam-specific configuration."""
-    # Check required fields for incompressible flow
-    if "U" not in fields and "U" not in solver_config:
-        errors.append("Velocity field 'U' required for MRFSimpleFoam")
-        suggestions.append("Initialize velocity field (typical: (1 0 0) m/s)")
-    
-    if "p" not in fields and "p" not in solver_config:
-        errors.append("Pressure field 'p' required for MRFSimpleFoam")
-        suggestions.append("Initialize pressure field (typical: 0 Pa relative)")
-    
-    # Check for MRF properties
-    if "MRFProperties" not in solver_config:
-        errors.append("MRFProperties required for MRFSimpleFoam")
-        suggestions.append("Add MRFProperties file defining rotating zones")
-    
-    # Validate rotation rate
-    rotation_rate = parsed_params.get("rotation_rate")
-    if rotation_rate is None:
-        warnings.append("Rotation rate not specified - using default value")
-        suggestions.append("Specify rotation rate in rad/s (e.g., 314 rad/s = 3000 RPM)")
-    elif rotation_rate <= 0:
-        errors.append("Rotation rate must be positive")
-    elif rotation_rate > 10000:
-        warnings.append(f"Very high rotation rate ({rotation_rate} rad/s) - check units and stability")
-        suggestions.append("Ensure rotation rate is in rad/s, not RPM")
-    
-    # Check for steady-state compatibility
-    if solver_config.get("analysis_type") == AnalysisType.UNSTEADY:
-        errors.append("MRFSimpleFoam only supports steady-state analysis")
-        suggestions.append("Use pimpleFoam with MRF for transient rotating flows")
-    
-    # Check Reynolds number for rotating machinery
-    reynolds_number = parsed_params.get("reynolds_number")
-    if reynolds_number is not None:
-        if reynolds_number < 1000:
-            warnings.append(f"Low Reynolds number ({reynolds_number}) for rotating machinery - check flow regime")
-            suggestions.append("Rotating machinery typically operates at high Reynolds numbers")
-    
-    # Check for turbulence modeling
-    turbulence_props = solver_config.get("turbulenceProperties", {})
-    if turbulence_props.get("simulationType") == "laminar":
-        warnings.append("Laminar simulation for rotating machinery - consider turbulent modeling")
-        suggestions.append("Rotating machinery flows are typically turbulent")
-    
-    # Suggest MRF configuration
-    suggestions.append("Define MRF zones carefully - ensure rotating regions are properly specified")
-    suggestions.append("Consider mesh refinement in high-gradient regions near rotating zones")
-    suggestions.append("Use appropriate wall functions for rotating walls")
-
-
-def _validate_incompressible_config(solver_config: Dict[str, Any], fields: Dict[str, Any], 
-                                   properties: Dict[str, Any], parsed_params: Dict[str, Any],
-                                   errors: List[str], warnings: List[str], suggestions: List[str]) -> None:
-    """Validate incompressible solver configuration."""
-    solver = solver_config.get("solver")
-    
-    # Check for compressible properties in incompressible solver
-    if "thermophysicalProperties" in solver_config:
-        warnings.append(f"Thermophysical properties specified for incompressible solver {solver}")
-        suggestions.append("Remove thermophysical properties or use compressible solver")
-    
-    # Check Reynolds number vs solver choice
-    reynolds_number = parsed_params.get("reynolds_number", 0)
-    if reynolds_number and reynolds_number > 100000:
-        if solver == "simpleFoam":
-            warnings.append("Very high Reynolds number with steady solver - consider transient")
-            suggestions.append("Use pimpleFoam for high Re flows to capture unsteady effects")
-
-
-def _validate_physics_consistency(solver_config: Dict[str, Any], parsed_params: Dict[str, Any], 
-                                 errors: List[str], warnings: List[str], suggestions: List[str]) -> None:
-    """Validate physics consistency across configuration."""
-    solver = solver_config.get("solver")
-    
-    # Check Reynolds number vs turbulence model
-    reynolds_number = parsed_params.get("reynolds_number", 0)
-    turbulence_props = solver_config.get("turbulenceProperties", {})
-    simulation_type = turbulence_props.get("simulationType", "")
-
+    elif solver == "chtMultiRegionFoam":
+        # Check for required multi-region properties
+        if "regionProperties" not in solver_config:
+            errors.append("Missing regionProperties for chtMultiRegionFoam")
+        else:
+            regions = solver_config.get("regionProperties", {}).get("regions", [])
+            if len(regions) < 2:
+                errors.append("chtMultiRegionFoam requires at least 2 regions (fluid and solid)")
+        if "thermophysicalProperties" not in solver_config:
+            errors.append("Missing thermophysicalProperties for chtMultiRegionFoam")
     
     elif solver == "reactingFoam":
         # Check for required reactive flow properties

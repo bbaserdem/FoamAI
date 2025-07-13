@@ -6,7 +6,7 @@ import logging
 from typing import Optional, Dict, Any
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                                QLabel, QMessageBox, QGroupBox, QSlider, QSpinBox, QGridLayout,
-                               QDoubleSpinBox, QCheckBox, QStyle)
+                               QDoubleSpinBox, QCheckBox, QStyle, QFrame)
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap, QImage
 
@@ -1704,6 +1704,13 @@ class ParaViewWidget(QWidget):
     def setup_ui(self):
         """Setup the user interface"""
         layout = QVBoxLayout(self)
+        layout.setSpacing(self.get_responsive_spacing(10))
+        layout.setContentsMargins(
+            self.get_responsive_spacing(10),
+            self.get_responsive_spacing(5),
+            self.get_responsive_spacing(10),
+            self.get_responsive_spacing(5)
+        )
         
         # Initialize VTK when UI is being set up (deferred initialization)
         global VTK_AVAILABLE, VTK_QT_AVAILABLE, vtk, QVTKRenderWindowInteractor
@@ -1717,20 +1724,60 @@ class ParaViewWidget(QWidget):
                 import traceback
                 traceback.print_exc()
         
+        # Header with connection status and controls
+        header_frame = QFrame()
+        header_layout = QHBoxLayout(header_frame)
+        header_layout.setContentsMargins(5, 5, 5, 5)
+        header_layout.setSpacing(10)
+        
         # Connection status
         if VTK_QT_AVAILABLE and QVTKRenderWindowInteractor:
             if PARAVIEW_AVAILABLE:
-                self.connection_label = QLabel("VTK + ParaView available - best performance")
+                self.connection_label = QLabel("VTK + ParaView available")
             else:
-                self.connection_label = QLabel("Embedded VTK rendering ready")
-            self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
+                self.connection_label = QLabel("Embedded VTK ready")
+            self.connection_label.setStyleSheet("color: orange; font-weight: bold; font-size: 11px;")
         elif PARAVIEW_AVAILABLE:
-            self.connection_label = QLabel("ParaView server mode - connect to view")
-            self.connection_label.setStyleSheet("color: orange; font-weight: bold;")
+            self.connection_label = QLabel("ParaView server mode")
+            self.connection_label.setStyleSheet("color: orange; font-weight: bold; font-size: 11px;")
         else:
             self.connection_label = QLabel("Visualization not available")
-            self.connection_label.setStyleSheet("color: red; font-weight: bold;")
-        layout.addWidget(self.connection_label)
+            self.connection_label.setStyleSheet("color: red; font-weight: bold; font-size: 11px;")
+        
+        header_layout.addWidget(self.connection_label)
+        header_layout.addStretch()
+        
+        # Connection controls in header (moved from bottom to save space)
+        if hasattr(self, 'server_url') and self.server_url and hasattr(self, 'project_name') and self.project_name:
+            button_text = "Connect to Remote"
+        elif VTK_QT_AVAILABLE:
+            if PARAVIEW_AVAILABLE:
+                button_text = "Connect to Server"
+            else:
+                button_text = "Initialize"
+        elif PARAVIEW_AVAILABLE:
+            button_text = "Connect to Server"
+        else:
+            button_text = "Not Available"
+            
+        self.connect_btn = QPushButton(button_text)
+        self.connect_btn.setMaximumHeight(25)
+        self.connect_btn.setStyleSheet("font-size: 10px; padding: 4px 8px;")
+        
+        if not (VTK_QT_AVAILABLE or PARAVIEW_AVAILABLE):
+            self.connect_btn.setEnabled(False)
+            
+        self.connect_btn.clicked.connect(self.connect_to_server)
+        header_layout.addWidget(self.connect_btn)
+        
+        self.disconnect_btn = QPushButton("Disconnect")
+        self.disconnect_btn.setMaximumHeight(25)
+        self.disconnect_btn.setStyleSheet("font-size: 10px; padding: 4px 8px;")
+        self.disconnect_btn.clicked.connect(self.disconnect_from_server)
+        self.disconnect_btn.setEnabled(False)
+        header_layout.addWidget(self.disconnect_btn)
+        
+        layout.addWidget(header_frame)
         
         # Create horizontal layout for view buttons and visualization area
         viz_horizontal_layout = QHBoxLayout()
@@ -1746,7 +1793,10 @@ class ParaViewWidget(QWidget):
                 
                 # Create VTK widget with explicit OpenGL context
                 self.vtk_widget = QVTKRenderWindowInteractor(self)
-                self.vtk_widget.setMinimumSize(600, 400)
+                
+                # Use responsive minimum size
+                min_width, min_height = self.get_responsive_visualization_size()
+                self.vtk_widget.setMinimumSize(min_width, min_height)
                 
                 # Set format for OpenGL context
                 from PySide6.QtGui import QSurfaceFormat
@@ -1813,7 +1863,10 @@ class ParaViewWidget(QWidget):
             if PARAVIEW_AVAILABLE:
                 # Fallback to ParaView server connection with image display
                 self.visualization_area = QLabel("Connect to ParaView server to view visualizations")
-                self.visualization_area.setMinimumSize(600, 400)
+                
+                # Use responsive minimum size
+                min_width, min_height = self.get_responsive_visualization_size()
+                self.visualization_area.setMinimumSize(min_width, min_height)
                 self.visualization_area.setStyleSheet("""
                     QLabel {
                         border: 2px solid #ccc;
@@ -1829,7 +1882,10 @@ class ParaViewWidget(QWidget):
             else:
                 # No visualization available
                 self.visualization_area = QLabel("Visualization not available.\n\nInstall options:\n• pip install vtk (for embedded rendering)\n• Install ParaView (for server rendering)")
-                self.visualization_area.setMinimumSize(600, 400)
+                
+                # Use responsive minimum size
+                min_width, min_height = self.get_responsive_visualization_size()
+                self.visualization_area.setMinimumSize(min_width, min_height)
                 self.visualization_area.setStyleSheet("""
                     QLabel {
                         border: 2px solid #ccc;
@@ -1864,19 +1920,23 @@ class ParaViewWidget(QWidget):
     
     def setup_controls(self, layout):
         """Setup control buttons and widgets"""
-        # Visualization controls group
-        viz_group = QGroupBox("Visualization Controls")
+        # Visualization controls group (more compact)
+        viz_group = QGroupBox("Fields")
         viz_layout = QVBoxLayout(viz_group)
+        viz_layout.setSpacing(self.get_responsive_spacing(5))
+        viz_layout.setContentsMargins(5, 5, 5, 5)
         
-        # Create a container for dynamic field buttons
+        # Create a label to show current field info (more compact)
+        self.field_info_label = QLabel("No fields detected")
+        font_size = 9 if self.get_screen_height_class() == "small" else 10
+        self.field_info_label.setStyleSheet(f"color: gray; font-style: italic; font-size: {font_size}px;")
+        viz_layout.addWidget(self.field_info_label)
+        
+        # Create a container for dynamic field buttons (always visible as requested)
         self.field_buttons_container = QWidget()
         self.field_buttons_layout = QGridLayout(self.field_buttons_container)
         self.field_buttons_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Create a label to show current field info
-        self.field_info_label = QLabel("No fields detected - load data first")
-        self.field_info_label.setStyleSheet("color: gray; font-style: italic;")
-        viz_layout.addWidget(self.field_info_label)
+        self.field_buttons_layout.setSpacing(3)  # Tighter spacing for buttons
         
         # Add the dynamic field buttons container
         viz_layout.addWidget(self.field_buttons_container)
@@ -1888,15 +1948,21 @@ class ParaViewWidget(QWidget):
         
         layout.addWidget(viz_group)
         
-        # Enhanced time controls group
+        # Enhanced time controls group (more compact)
         time_group = QGroupBox("Time Controls")
         time_layout = QVBoxLayout(time_group)
+        time_layout.setSpacing(self.get_responsive_spacing(5))
+        time_layout.setContentsMargins(5, 5, 5, 5)
         
-        # Top row with main time controls
+        # Main time controls in compact layout
         time_controls_layout = QHBoxLayout()
+        time_controls_layout.setSpacing(3)  # Tighter spacing
         
         # Get Qt style for standard icons
         style = self.style()
+        
+        # Responsive button size
+        button_size = 30 if self.get_screen_height_class() != "small" else 25
         
         # First frame button
         self.first_frame_btn = QPushButton()
@@ -1904,7 +1970,7 @@ class ParaViewWidget(QWidget):
         self.first_frame_btn.clicked.connect(self.first_time_step)
         self.first_frame_btn.setEnabled(False)
         self.first_frame_btn.setToolTip("Go to first time step")
-        self.first_frame_btn.setMaximumWidth(40)
+        self.first_frame_btn.setMaximumSize(button_size, button_size)
         time_controls_layout.addWidget(self.first_frame_btn)
         
         # Previous frame button  
@@ -1913,7 +1979,7 @@ class ParaViewWidget(QWidget):
         self.prev_time_btn.clicked.connect(self.previous_time_step)
         self.prev_time_btn.setEnabled(False)
         self.prev_time_btn.setToolTip("Previous time step")
-        self.prev_time_btn.setMaximumWidth(40)
+        self.prev_time_btn.setMaximumSize(button_size, button_size)
         time_controls_layout.addWidget(self.prev_time_btn)
         
         # Play/Pause button
@@ -1922,7 +1988,7 @@ class ParaViewWidget(QWidget):
         self.play_pause_btn.clicked.connect(self.play_pause_toggle)
         self.play_pause_btn.setEnabled(False)
         self.play_pause_btn.setToolTip("Play/Pause animation")
-        self.play_pause_btn.setMaximumWidth(40)
+        self.play_pause_btn.setMaximumSize(button_size, button_size)
         time_controls_layout.addWidget(self.play_pause_btn)
         
         # Next frame button
@@ -1931,7 +1997,7 @@ class ParaViewWidget(QWidget):
         self.next_time_btn.clicked.connect(self.next_time_step)
         self.next_time_btn.setEnabled(False)
         self.next_time_btn.setToolTip("Next time step")
-        self.next_time_btn.setMaximumWidth(40)
+        self.next_time_btn.setMaximumSize(button_size, button_size)
         time_controls_layout.addWidget(self.next_time_btn)
         
         # Last frame button
@@ -1940,49 +2006,83 @@ class ParaViewWidget(QWidget):
         self.last_frame_btn.clicked.connect(self.last_time_step)
         self.last_frame_btn.setEnabled(False)
         self.last_frame_btn.setToolTip("Go to last time step")
-        self.last_frame_btn.setMaximumWidth(40)
+        self.last_frame_btn.setMaximumSize(button_size, button_size)
         time_controls_layout.addWidget(self.last_frame_btn)
         
         # Time slider
         self.time_slider = QSlider(Qt.Horizontal)
         self.time_slider.valueChanged.connect(self.set_time_step)
         self.time_slider.setEnabled(False)
+        self.time_slider.setMaximumHeight(button_size)
         time_controls_layout.addWidget(self.time_slider)
         
-        # Time label
+        # Time label (more compact)
         self.time_label = QLabel("Time: 0.0")
-        self.time_label.setMinimumWidth(80)
+        label_width = 60 if self.get_screen_height_class() == "small" else 80
+        font_size = 9 if self.get_screen_height_class() == "small" else 10
+        self.time_label.setMinimumWidth(label_width)
+        self.time_label.setStyleSheet(f"font-size: {font_size}px;")
         time_controls_layout.addWidget(self.time_label)
         
         time_layout.addLayout(time_controls_layout)
         
-        # Bottom row with playback settings
-        playback_settings_layout = QHBoxLayout()
-        
-        # Speed control
-        speed_label = QLabel("Speed:")
-        playback_settings_layout.addWidget(speed_label)
-        
-        self.speed_control = QDoubleSpinBox()
-        self.speed_control.setRange(0.1, 2.0)
-        self.speed_control.setValue(1.0)
-        self.speed_control.setSingleStep(0.1)
-        self.speed_control.setSuffix(" s/frame")
-        self.speed_control.setToolTip("Animation speed in seconds per frame")
-        self.speed_control.setMaximumWidth(120)
-        self.speed_control.valueChanged.connect(self.update_playback_speed)
-        playback_settings_layout.addWidget(self.speed_control)
-        
-        # Loop checkbox
-        self.loop_checkbox = QCheckBox("Loop")
-        self.loop_checkbox.setChecked(False)
-        self.loop_checkbox.setToolTip("Loop animation when it reaches the end")
-        playback_settings_layout.addWidget(self.loop_checkbox)
-        
-        # Add stretch to push controls to the left
-        playback_settings_layout.addStretch()
-        
-        time_layout.addLayout(playback_settings_layout)
+        # Compact playback settings (only show on medium/large screens, or make very compact on small)
+        height_class = self.get_screen_height_class()
+        if height_class != "small":  # Only show full settings on medium/large screens
+            playback_settings_layout = QHBoxLayout()
+            playback_settings_layout.setSpacing(5)
+            
+            # Speed control
+            speed_label = QLabel("Speed:")
+            speed_label.setStyleSheet(f"font-size: {9 if height_class == 'medium' else 10}px;")
+            playback_settings_layout.addWidget(speed_label)
+            
+            self.speed_control = QDoubleSpinBox()
+            self.speed_control.setRange(0.1, 2.0)
+            self.speed_control.setValue(1.0)
+            self.speed_control.setSingleStep(0.1)
+            self.speed_control.setSuffix(" s/frame")
+            self.speed_control.setToolTip("Animation speed in seconds per frame")
+            self.speed_control.setMaximumWidth(100)
+            self.speed_control.setMaximumHeight(button_size)
+            self.speed_control.valueChanged.connect(self.update_playback_speed)
+            playback_settings_layout.addWidget(self.speed_control)
+            
+            # Loop checkbox
+            self.loop_checkbox = QCheckBox("Loop")
+            self.loop_checkbox.setChecked(False)
+            self.loop_checkbox.setToolTip("Loop animation when it reaches the end")
+            self.loop_checkbox.setStyleSheet(f"font-size: {9 if height_class == 'medium' else 10}px;")
+            playback_settings_layout.addWidget(self.loop_checkbox)
+            
+            # Add stretch to push controls to the left
+            playback_settings_layout.addStretch()
+            
+            time_layout.addLayout(playback_settings_layout)
+        else:
+            # For small screens, create minimal speed/loop controls inline
+            compact_settings_layout = QHBoxLayout()
+            compact_settings_layout.setSpacing(3)
+            
+            self.speed_control = QDoubleSpinBox()
+            self.speed_control.setRange(0.1, 2.0)
+            self.speed_control.setValue(1.0)
+            self.speed_control.setSingleStep(0.1)
+            self.speed_control.setSuffix("s")
+            self.speed_control.setToolTip("Speed in seconds per frame")
+            self.speed_control.setMaximumWidth(70)
+            self.speed_control.setMaximumHeight(20)
+            self.speed_control.valueChanged.connect(self.update_playback_speed)
+            compact_settings_layout.addWidget(self.speed_control)
+            
+            self.loop_checkbox = QCheckBox("Loop")
+            self.loop_checkbox.setChecked(False)
+            self.loop_checkbox.setStyleSheet("font-size: 8px;")
+            compact_settings_layout.addWidget(self.loop_checkbox)
+            
+            compact_settings_layout.addStretch()
+            
+            time_layout.addLayout(compact_settings_layout)
         
         # Initialize playback system
         self.playback_timer = QTimer()
@@ -1990,38 +2090,6 @@ class ParaViewWidget(QWidget):
         self.is_playing = False
         
         layout.addWidget(time_group)
-        
-        # Connection controls
-        conn_group = QGroupBox("Connection Controls")
-        conn_layout = QHBoxLayout(conn_group)
-        
-        # Determine initial button text based on configuration
-        if hasattr(self, 'server_url') and self.server_url and hasattr(self, 'project_name') and self.project_name:
-            button_text = "Connect to Remote ParaView Server"
-        elif VTK_QT_AVAILABLE:
-            if PARAVIEW_AVAILABLE:
-                button_text = "Connect to ParaView Server"
-            else:
-                button_text = "Initialize Visualization"
-        elif PARAVIEW_AVAILABLE:
-            button_text = "Connect to ParaView Server"
-        else:
-            button_text = "Visualization Unavailable"
-            
-        self.connect_btn = QPushButton(button_text)
-        
-        if not (VTK_QT_AVAILABLE or PARAVIEW_AVAILABLE):
-            self.connect_btn.setEnabled(False)
-            
-        self.connect_btn.clicked.connect(self.connect_to_server)
-        conn_layout.addWidget(self.connect_btn)
-        
-        self.disconnect_btn = QPushButton("Disconnect")
-        self.disconnect_btn.clicked.connect(self.disconnect_from_server)
-        self.disconnect_btn.setEnabled(False)
-        conn_layout.addWidget(self.disconnect_btn)
-        
-        layout.addWidget(conn_group)
     
     def connect_to_server(self):
         """Connect to visualization (remote server, embedded VTK, or ParaView server)"""
@@ -4602,82 +4670,102 @@ class ParaViewWidget(QWidget):
     
     def setup_view_buttons(self, parent_layout):
         """Setup view orientation buttons column"""
-        # Create a vertical layout for view buttons
+        # Create a vertical layout for view buttons with responsive sizing
         view_buttons_widget = QWidget()
-        view_buttons_widget.setMaximumWidth(80)
-        view_buttons_layout = QVBoxLayout(view_buttons_widget)
-        view_buttons_layout.setContentsMargins(5, 5, 5, 5)
-        view_buttons_layout.setSpacing(5)
         
-        # View orientation buttons
+        # Responsive button column width
+        height_class = self.get_screen_height_class()
+        column_width = 60 if height_class == "small" else 70 if height_class == "medium" else 80
+        view_buttons_widget.setMaximumWidth(column_width)
+        
+        view_buttons_layout = QVBoxLayout(view_buttons_widget)
+        margin = self.get_responsive_spacing(5)
+        spacing = self.get_responsive_spacing(5) 
+        view_buttons_layout.setContentsMargins(margin, margin, margin, margin)
+        view_buttons_layout.setSpacing(spacing)
+        
+        # Get responsive button height
+        button_height = self.get_responsive_button_size()
+        
+        # View orientation buttons with responsive sizing
         self.view_pos_x_btn = QPushButton("+X")
         self.view_pos_x_btn.clicked.connect(self.view_pos_x)
         self.view_pos_x_btn.setToolTip("View along positive X axis")
+        self.view_pos_x_btn.setMaximumHeight(button_height)
         view_buttons_layout.addWidget(self.view_pos_x_btn)
         
         self.view_neg_x_btn = QPushButton("-X")
         self.view_neg_x_btn.clicked.connect(self.view_neg_x)
         self.view_neg_x_btn.setToolTip("View along negative X axis")
+        self.view_neg_x_btn.setMaximumHeight(button_height)
         view_buttons_layout.addWidget(self.view_neg_x_btn)
         
         self.view_pos_y_btn = QPushButton("+Y")
         self.view_pos_y_btn.clicked.connect(self.view_pos_y)
         self.view_pos_y_btn.setToolTip("View along positive Y axis")
+        self.view_pos_y_btn.setMaximumHeight(button_height)
         view_buttons_layout.addWidget(self.view_pos_y_btn)
         
         self.view_neg_y_btn = QPushButton("-Y")
         self.view_neg_y_btn.clicked.connect(self.view_neg_y)
         self.view_neg_y_btn.setToolTip("View along negative Y axis")
+        self.view_neg_y_btn.setMaximumHeight(button_height)
         view_buttons_layout.addWidget(self.view_neg_y_btn)
         
         self.view_pos_z_btn = QPushButton("+Z")
         self.view_pos_z_btn.clicked.connect(self.view_pos_z)
         self.view_pos_z_btn.setToolTip("View along positive Z axis")
+        self.view_pos_z_btn.setMaximumHeight(button_height)
         view_buttons_layout.addWidget(self.view_pos_z_btn)
         
         self.view_neg_z_btn = QPushButton("-Z")
         self.view_neg_z_btn.clicked.connect(self.view_neg_z)
         self.view_neg_z_btn.setToolTip("View along negative Z axis")
+        self.view_neg_z_btn.setMaximumHeight(button_height)
         view_buttons_layout.addWidget(self.view_neg_z_btn)
         
-        # Add separator
-        view_buttons_layout.addSpacing(10)
+        # Add responsive separator
+        separator_spacing = self.get_responsive_spacing(10)
+        view_buttons_layout.addSpacing(separator_spacing)
         
-        # Rotation buttons
+        # Rotation buttons with responsive sizing
         self.rotate_cw_btn = QPushButton("↻")
         self.rotate_cw_btn.clicked.connect(self.rotate_clockwise_90)
         self.rotate_cw_btn.setToolTip("Rotate view 90° clockwise")
+        self.rotate_cw_btn.setMaximumHeight(button_height)
         view_buttons_layout.addWidget(self.rotate_cw_btn)
         
         self.rotate_ccw_btn = QPushButton("↺")
         self.rotate_ccw_btn.clicked.connect(self.rotate_counterclockwise_90)
         self.rotate_ccw_btn.setToolTip("Rotate view 90° counterclockwise")
+        self.rotate_ccw_btn.setMaximumHeight(button_height)
         view_buttons_layout.addWidget(self.rotate_ccw_btn)
         
         # Add stretch to push buttons to top
         view_buttons_layout.addStretch()
         
-        # Style the buttons
-        button_style = """
-            QPushButton {
-                font-size: 12px;
+        # Style the buttons with responsive sizing
+        font_size = 10 if height_class == "small" else 11 if height_class == "medium" else 12
+        button_style = f"""
+            QPushButton {{
+                font-size: {font_size}px;
                 font-weight: bold;
-                min-height: 30px;
+                min-height: {button_height}px;
                 background-color: #4CAF50;
                 color: white;
                 border: none;
                 border-radius: 5px;
-            }
-            QPushButton:hover {
+            }}
+            QPushButton:hover {{
                 background-color: #45a049;
-            }
-            QPushButton:pressed {
+            }}
+            QPushButton:pressed {{
                 background-color: #3d8b40;
-            }
-            QPushButton:disabled {
+            }}
+            QPushButton:disabled {{
                 background-color: #cccccc;
                 color: #666666;
-            }
+            }}
         """
         
         # Apply style to all view buttons
@@ -4950,3 +5038,48 @@ class ParaViewWidget(QWidget):
             self.playback_timer.start(interval)
             print(f"🎬 Updated playback speed to {self.speed_control.value()} s/frame")
     
+    def get_screen_height_class(self):
+        """Determine screen height class for responsive design"""
+        # Import QApplication here to avoid circular imports
+        from PySide6.QtWidgets import QApplication
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_height = screen.size().height()
+            if screen_height < 768:
+                return "small"
+            elif screen_height < 1080:
+                return "medium"
+            else:
+                return "large"
+        return "medium"  # default fallback
+    
+    def get_responsive_spacing(self, base_spacing=20):
+        """Get responsive spacing based on screen height"""
+        height_class = self.get_screen_height_class()
+        if height_class == "small":
+            return int(base_spacing * 0.5)  # 50% reduction
+        elif height_class == "medium":
+            return int(base_spacing * 0.75)  # 25% reduction
+        else:
+            return base_spacing  # full spacing
+    
+    def get_responsive_visualization_size(self):
+        """Get responsive visualization area minimum size"""
+        height_class = self.get_screen_height_class()
+        if height_class == "small":
+            return (400, 250)  # Smaller minimum size
+        elif height_class == "medium":
+            return (500, 300)  # Medium size
+        else:
+            return (600, 400)  # Original size
+    
+    def get_responsive_button_size(self):
+        """Get responsive button size for view controls"""
+        height_class = self.get_screen_height_class()
+        if height_class == "small":
+            return 25  # Smaller buttons
+        elif height_class == "medium":
+            return 30  # Medium buttons
+        else:
+            return 35  # Larger buttons
+

@@ -11,9 +11,9 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QSplitter, QMenuBar, QMenu, QMessageBox, QStatusBar,
                                QLabel, QFrame, QApplication, QFileDialog, QDialog,
                                QDialogButtonBox, QFormLayout, QLineEdit, QPushButton,
-                               QComboBox, QTextEdit, QGroupBox)
+                               QComboBox, QTextEdit, QGroupBox, QProgressBar)
 from PySide6.QtCore import Qt, QTimer, Signal, QSettings, QThread
-from PySide6.QtGui import QAction, QIcon, QFont
+from PySide6.QtGui import QAction, QIcon, QFont, QScreen
 
 from .simulation_setup_widget import SimulationSetupWidget
 from .paraview_widget import ParaViewWidget
@@ -391,18 +391,83 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1000, self.load_projects)
         QTimer.singleShot(2000, self.test_connections)
     
+    def get_screen_height_class(self):
+        """Determine screen height class for responsive design"""
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_height = screen.size().height()
+            if screen_height < 768:
+                return "small"
+            elif screen_height < 1080:
+                return "medium"
+            else:
+                return "large"
+        return "medium"  # default fallback
+    
+    def get_responsive_spacing(self, base_spacing=20):
+        """Get responsive spacing based on screen height"""
+        height_class = self.get_screen_height_class()
+        if height_class == "small":
+            return int(base_spacing * 0.5)  # 50% reduction
+        elif height_class == "medium":
+            return int(base_spacing * 0.75)  # 25% reduction
+        else:
+            return base_spacing  # full spacing
+    
+    def get_responsive_font_size(self, base_size=12):
+        """Get responsive font size based on screen height"""
+        height_class = self.get_screen_height_class()
+        if height_class == "small":
+            return max(10, int(base_size * 0.8))  # 20% smaller, min 10pt
+        elif height_class == "medium":
+            return max(11, int(base_size * 0.9))  # 10% smaller, min 11pt
+        else:
+            return base_size
+    
+    def get_responsive_height_percentage(self, percentage=0.2):
+        """Get height based on percentage of available screen height"""
+        screen = QApplication.primaryScreen()
+        if screen:
+            available_height = screen.availableSize().height()
+            return int(available_height * percentage)
+        return 200  # fallback
+    
+    def get_dynamic_minimum_size(self):
+        """Calculate dynamic minimum window size based on screen"""
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_size = screen.availableSize()
+            # Use 80% of screen width, 70% of screen height as max
+            max_width = int(screen_size.width() * 0.8)
+            max_height = int(screen_size.height() * 0.7)
+            
+            # But ensure minimum usable size
+            min_width = max(800, min(max_width, Config.WINDOW_WIDTH))
+            min_height = max(600, min(max_height, Config.WINDOW_HEIGHT))
+            
+            return min_width, min_height
+        return Config.WINDOW_WIDTH, Config.WINDOW_HEIGHT
+    
     def setup_ui(self):
         """Setup the main user interface"""
-        # Set window properties
+        # Set window properties with dynamic sizing
         self.setWindowTitle("OpenFOAM Desktop Assistant")
-        self.setMinimumSize(Config.WINDOW_WIDTH, Config.WINDOW_HEIGHT)
+        min_width, min_height = self.get_dynamic_minimum_size()
+        self.setMinimumSize(min_width, min_height)
         
         # Create central widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-        # Create main layout
+        # Create main layout with responsive spacing
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setSpacing(self.get_responsive_spacing(10))
+        main_layout.setContentsMargins(
+            self.get_responsive_spacing(10),
+            self.get_responsive_spacing(5),
+            self.get_responsive_spacing(10),
+            self.get_responsive_spacing(5)
+        )
         
         # Add project selection bar
         self.setup_project_bar(main_layout)
@@ -433,8 +498,16 @@ class MainWindow(QMainWindow):
         
         splitter.addWidget(self.paraview_widget)
         
-        # Set splitter proportions (40% chat, 60% visualization)
-        splitter.setSizes([400, 600])
+        # Set responsive splitter proportions based on screen height
+        height_class = self.get_screen_height_class()
+        if height_class == "small":
+            # More space for visualization on small screens
+            splitter.setSizes([300, 700])
+        elif height_class == "medium":
+            splitter.setSizes([350, 650])
+        else:
+            # Default larger screen proportions
+            splitter.setSizes([400, 600])
         
         # Style the application
         self.setStyleSheet("""
@@ -470,30 +543,51 @@ class MainWindow(QMainWindow):
     def setup_project_bar(self, main_layout):
         """Setup the project selection and management bar"""
         project_frame = QGroupBox("Project Management")
-        project_frame.setMaximumHeight(80)  # Constrain height to be compact
+        
+        # Dynamic height based on screen size
+        height_class = self.get_screen_height_class()
+        if height_class == "small":
+            project_frame.setMaximumHeight(60)  # More compact
+        elif height_class == "medium":
+            project_frame.setMaximumHeight(70)  # Slightly reduced
+        else:
+            project_frame.setMaximumHeight(80)  # Original size
+        
         project_layout = QHBoxLayout(project_frame)
-        project_layout.setContentsMargins(10, 5, 10, 5)  # Tighter margins
-        project_layout.setSpacing(10)  # Consistent spacing
+        
+        # Responsive margins and spacing
+        margin = self.get_responsive_spacing(10)
+        spacing = self.get_responsive_spacing(10)
+        project_layout.setContentsMargins(margin, margin//2, margin, margin//2)
+        project_layout.setSpacing(spacing)
         
         # Project selection
         project_layout.addWidget(QLabel("Current Project:"))
         
         self.project_combo = QComboBox()
-        self.project_combo.setMinimumWidth(200)
+        
+        # Responsive combo box width
+        combo_width = 200 if height_class != "small" else 150
+        self.project_combo.setMinimumWidth(combo_width)
         self.project_combo.currentTextChanged.connect(self.on_project_changed)
         project_layout.addWidget(self.project_combo)
         
-        # Project management buttons
+        # Project management buttons with responsive sizing
+        button_height = 30 if height_class != "small" else 25
+        
         self.new_project_btn = QPushButton("New Project")
+        self.new_project_btn.setMaximumHeight(button_height)
         self.new_project_btn.clicked.connect(self.create_new_project)
         project_layout.addWidget(self.new_project_btn)
         
         self.delete_project_btn = QPushButton("Delete Project")
+        self.delete_project_btn.setMaximumHeight(button_height)
         self.delete_project_btn.clicked.connect(self.delete_current_project)
         self.delete_project_btn.setEnabled(False)
         project_layout.addWidget(self.delete_project_btn)
         
         self.refresh_projects_btn = QPushButton("Refresh")
+        self.refresh_projects_btn.setMaximumHeight(button_height)
         self.refresh_projects_btn.clicked.connect(self.load_projects)
         project_layout.addWidget(self.refresh_projects_btn)
         

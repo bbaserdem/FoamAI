@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                                QLineEdit, QLabel, QFrame, QTextEdit, QMessageBox, QDialog,
-                               QProgressBar)
+                               QProgressBar, QScrollArea, QApplication)
 from PySide6.QtCore import Qt, QTimer, Signal, QThread, QObject
 from PySide6.QtGui import QFont
 
@@ -47,46 +47,97 @@ class SimulationSetupWidget(QWidget):
         
         logger.info("SimulationSetupWidget initialized")
     
+    def get_screen_height_class(self):
+        """Determine screen height class for responsive design"""
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_height = screen.size().height()
+            if screen_height < 768:
+                return "small"
+            elif screen_height < 1080:
+                return "medium"
+            else:
+                return "large"
+        return "medium"  # default fallback
+    
+    def get_responsive_spacing(self, base_spacing=20):
+        """Get responsive spacing based on screen height - prioritize content over spacing"""
+        height_class = self.get_screen_height_class()
+        if height_class == "small":
+            return int(base_spacing * 0.5)  # 50% reduction
+        elif height_class == "medium":
+            return int(base_spacing * 0.75)  # 25% reduction
+        else:
+            return int(base_spacing * 0.85)  # 15% reduction even on large screens to save space
+    
+    def get_responsive_font_size(self, base_size=18):
+        """Get responsive font size based on screen height"""
+        height_class = self.get_screen_height_class()
+        if height_class == "small":
+            return max(12, int(base_size * 0.67))  # Significantly smaller for small screens
+        elif height_class == "medium":
+            return max(14, int(base_size * 0.83))  # Moderately smaller
+        else:
+            return base_size
+    
+    def get_responsive_log_height(self):
+        """Get adaptive log display height based on screen size - prioritize simulation cards"""
+        screen = QApplication.primaryScreen()
+        if screen:
+            height_class = self.get_screen_height_class()
+            
+            if height_class == "small":
+                return 80  # Fixed small height for small screens
+            elif height_class == "medium":
+                return 100  # Fixed moderate height for medium screens
+            else:
+                return 120  # Fixed reasonable height for large screens - don't scale with screen size
+        return 100  # fallback
+    
     def setup_ui(self):
         """Set up the user interface."""
         layout = QVBoxLayout(self)
-        layout.setSpacing(20)
-        layout.setContentsMargins(20, 20, 20, 20)
         
-        # Title
+        # Use responsive spacing and margins
+        responsive_spacing = self.get_responsive_spacing(20)
+        layout.setSpacing(responsive_spacing)
+        layout.setContentsMargins(responsive_spacing, responsive_spacing, responsive_spacing, responsive_spacing)
+        
+        # Title with responsive font size
         title = QLabel("CFD Simulation Setup")
-        title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
+        title_font_size = self.get_responsive_font_size(18)
+        title.setFont(QFont("Arial", title_font_size, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
         
-        # Input section
+        # Input section with consolidated action buttons in header
         input_frame = QFrame()
         input_frame.setFrameStyle(QFrame.Shape.Box)
         input_frame.setStyleSheet("QFrame { border: 1px solid #ccc; border-radius: 5px; padding: 10px; }")
         input_layout = QVBoxLayout(input_frame)
+        input_layout.setSpacing(self.get_responsive_spacing(10))
         
-        # Prompt input
+        # Header row with prompt label and action buttons
+        header_layout = QHBoxLayout()
+        
         prompt_label = QLabel("Describe your simulation:")
         prompt_label.setFont(QFont("Arial", 9, QFont.Weight.Bold))
-        input_layout.addWidget(prompt_label)
+        header_layout.addWidget(prompt_label)
         
-        self.prompt_input = QTextEdit()
-        self.prompt_input.setMaximumHeight(100)
-        self.prompt_input.setPlaceholderText("e.g., 'Flow around a cylinder at 5 m/s with a diameter of 0.1m'")
-        input_layout.addWidget(self.prompt_input)
+        header_layout.addStretch()  # Push buttons to the right
         
-        # Action buttons
-        button_layout = QHBoxLayout()
-        
-        self.start_button = QPushButton("Start Simulation Setup")
+        # Action buttons in header (consolidated to save vertical space)
+        self.start_button = QPushButton("Start Setup")
+        self.start_button.setMaximumHeight(30)
         self.start_button.setStyleSheet("""
             QPushButton {
                 background-color: #4CAF50;
                 color: white;
                 border: none;
-                padding: 10px 20px;
+                padding: 8px 16px;
                 border-radius: 5px;
                 font-weight: bold;
+                font-size: 11px;
             }
             QPushButton:hover {
                 background-color: #45a049;
@@ -98,14 +149,16 @@ class SimulationSetupWidget(QWidget):
         """)
         
         self.stop_button = QPushButton("Stop")
+        self.stop_button.setMaximumHeight(30)
         self.stop_button.setStyleSheet("""
             QPushButton {
                 background-color: #f44336;
                 color: white;
                 border: none;
-                padding: 10px 20px;
+                padding: 8px 16px;
                 border-radius: 5px;
                 font-weight: bold;
+                font-size: 11px;
             }
             QPushButton:hover {
                 background-color: #da190b;
@@ -114,14 +167,16 @@ class SimulationSetupWidget(QWidget):
         self.stop_button.setEnabled(False)
         
         self.run_simulation_button = QPushButton("Run Simulation")
+        self.run_simulation_button.setMaximumHeight(30)
         self.run_simulation_button.setStyleSheet("""
             QPushButton {
                 background-color: #2196F3;
                 color: white;
                 border: none;
-                padding: 10px 20px;
+                padding: 8px 16px;
                 border-radius: 5px;
                 font-weight: bold;
+                font-size: 11px;
             }
             QPushButton:hover {
                 background-color: #1976D2;
@@ -133,60 +188,120 @@ class SimulationSetupWidget(QWidget):
         """)
         self.run_simulation_button.setEnabled(False)
         
-        button_layout.addWidget(self.start_button)
-        button_layout.addWidget(self.stop_button)
-        button_layout.addStretch()
-        button_layout.addWidget(self.run_simulation_button)
+        header_layout.addWidget(self.start_button)
+        header_layout.addWidget(self.stop_button)
+        header_layout.addWidget(self.run_simulation_button)
         
-        input_layout.addLayout(button_layout)
+        input_layout.addLayout(header_layout)
+        
+        # Prompt input
+        self.prompt_input = QTextEdit()
+        
+        # Responsive input height - prioritize simulation cards over prompt area
+        height_class = self.get_screen_height_class()
+        input_height = 60 if height_class == "small" else 75 if height_class == "medium" else 80
+        self.prompt_input.setMaximumHeight(input_height)
+        self.prompt_input.setPlaceholderText("e.g., 'Flow around a cylinder at 5 m/s with a diameter of 0.1m'")
+        input_layout.addWidget(self.prompt_input)
+        
         layout.addWidget(input_frame)
         
-        # Progress section
+        # Progress section (hidden to save vertical space, but kept for functionality)
         progress_frame = QFrame()
         progress_frame.setFrameStyle(QFrame.Shape.Box)
-        progress_frame.setStyleSheet("QFrame { border: 1px solid #ccc; border-radius: 5px; padding: 10px; }")
+        progress_frame.setStyleSheet("QFrame { border: 1px solid #ccc; border-radius: 5px; padding: 8px; }")
         progress_layout = QVBoxLayout(progress_frame)
+        progress_layout.setSpacing(5)
         
+        # Combine progress label and bar in one compact section
+        progress_header = QHBoxLayout()
         self.progress_label = QLabel("Ready to start simulation setup")
-        progress_layout.addWidget(self.progress_label)
+        self.progress_label.setFont(QFont("Arial", 9))
+        progress_header.addWidget(self.progress_label)
         
         self.progress_bar = QProgressBar()
+        self.progress_bar.setMaximumHeight(20)
         self.progress_bar.setVisible(False)
-        progress_layout.addWidget(self.progress_bar)
+        progress_header.addWidget(self.progress_bar)
+        
+        progress_layout.addLayout(progress_header)
+        
+        # Hide the entire progress section to save vertical space
+        progress_frame.setVisible(False)
         
         layout.addWidget(progress_frame)
         
-        # Simulation cards
-        cards_frame = QFrame()
-        cards_layout = QVBoxLayout(cards_frame) # Changed to VBoxLayout
-        cards_layout.setSpacing(15) # Reduced spacing
+        # Simulation cards section - scroll area for small/medium screens, direct layout for large screens
+        height_class = self.get_screen_height_class()
         
-        # Mesh card
-        self.mesh_card = MeshCard()
-        cards_layout.addWidget(self.mesh_card)
+        if height_class in ["small", "medium"]:
+            # Use scroll area for constrained screens
+            scroll_area = QScrollArea()
+            scroll_area.setWidgetResizable(True)
+            scroll_area.setFrameStyle(QFrame.NoFrame)
+            
+            cards_widget = QWidget()
+            cards_layout = QVBoxLayout(cards_widget)
+            
+            # More compact spacing for smaller screens
+            cards_spacing = 5 if height_class == "small" else 8
+            cards_layout.setSpacing(cards_spacing)
+            
+            # Mesh card (fixed height for scrolling)
+            self.mesh_card = MeshCard()
+            cards_layout.addWidget(self.mesh_card)
+            
+            # Solver card (fixed height for scrolling)
+            self.solver_card = SolverCard()
+            cards_layout.addWidget(self.solver_card)
+            
+            # Parameters card (fixed height for scrolling)
+            self.parameters_card = ParametersCard()
+            cards_layout.addWidget(self.parameters_card)
+            
+            cards_layout.addStretch()  # Push cards to top
+            scroll_area.setWidget(cards_widget)
+            layout.addWidget(scroll_area, 1)
+            
+        else:
+            # Use direct layout for large screens - no scrolling, cards expand to fill space
+            cards_frame = QFrame()
+            cards_frame.setFrameStyle(QFrame.NoFrame)
+            cards_layout = QVBoxLayout(cards_frame)
+            
+            cards_spacing = self.get_responsive_spacing(15)  # Normal spacing on large screens
+            cards_layout.setSpacing(cards_spacing)
+            
+            # Mesh card with expansion
+            self.mesh_card = MeshCard()
+            cards_layout.addWidget(self.mesh_card, 1)  # Give equal stretch to all cards
+            
+            # Solver card with expansion
+            self.solver_card = SolverCard()
+            cards_layout.addWidget(self.solver_card, 1)  # Give equal stretch to all cards
+            
+            # Parameters card with expansion
+            self.parameters_card = ParametersCard()
+            cards_layout.addWidget(self.parameters_card, 1)  # Give equal stretch to all cards
+            
+            layout.addWidget(cards_frame, 1)  # Give simulation cards area more weight in layout
         
-        # Solver card  
-        self.solver_card = SolverCard()
-        cards_layout.addWidget(self.solver_card)
-        
-        # Parameters card
-        self.parameters_card = ParametersCard()
-        cards_layout.addWidget(self.parameters_card)
-        
-        layout.addWidget(cards_frame)
-        
-        # Log section
+        # Log section with adaptive height
         log_frame = QFrame()
         log_frame.setFrameStyle(QFrame.Shape.Box)
         log_frame.setStyleSheet("QFrame { border: 1px solid #ccc; border-radius: 5px; padding: 5px; }")
         log_layout = QVBoxLayout(log_frame)
+        log_layout.setSpacing(5)
         
         log_label = QLabel("Workflow Log:")
         log_label.setFont(QFont("Arial", 9, QFont.Weight.Bold))
         log_layout.addWidget(log_label)
         
         self.log_display = QTextEdit()
-        self.log_display.setMaximumHeight(200) # Increased height
+        
+        # Use adaptive height instead of fixed height
+        adaptive_log_height = self.get_responsive_log_height()
+        self.log_display.setMaximumHeight(adaptive_log_height)
         self.log_display.setReadOnly(True)
         self.log_display.setStyleSheet("QTextEdit { background-color: #f5f5f5; }")
         log_layout.addWidget(self.log_display)

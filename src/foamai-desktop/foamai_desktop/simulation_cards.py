@@ -33,23 +33,58 @@ class SimulationCard(QFrame):
     
     def setup_ui(self):
         """Setup the card UI"""
-        self.setFixedHeight(150)
+        # Get screen height for responsive layout
+        try:
+            from PySide6.QtWidgets import QApplication
+            screen = QApplication.primaryScreen()
+            screen_height = screen.size().height() if screen else 1080
+        except:
+            screen_height = 1080
+        
+        # Three-tier responsive height system - minimum heights only, allow expansion
+        if screen_height < 768:
+            min_card_height = 120  # Small screens - very compact
+            is_small_screen = True
+        elif screen_height < 1000:
+            min_card_height = 130  # Medium screens - still compact
+            is_small_screen = False
+        else:
+            min_card_height = 160  # Large screens - can be taller but ensure all fit
+            is_small_screen = False
+        self.setMinimumHeight(min_card_height)  # Allow expansion beyond minimum
         self.setFrameStyle(QFrame.StyledPanel)
         self.setCursor(Qt.PointingHandCursor)
         
         layout = QVBoxLayout(self)
-        layout.setSpacing(8)
-        layout.setContentsMargins(15, 15, 15, 15)
+        spacing = 5 if is_small_screen else 8
+        margins = 10 if is_small_screen else 15
+        layout.setSpacing(spacing)
+        layout.setContentsMargins(margins, margins, margins, margins)
         
-        # Header with title and lock checkbox
+        # Header with title, status, button, and lock checkbox (all in one row)
         header_layout = QHBoxLayout()
         
         # Title
         self.title_label = QLabel(self.title)
-        self.title_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        font_size = 11 if is_small_screen else 12
+        self.title_label.setFont(QFont("Segoe UI", font_size, QFont.Bold))
         header_layout.addWidget(self.title_label)
         
+        # Status indicator (always in header now)
+        self.status_label = QLabel("Empty")
+        status_font_size = 9 if is_small_screen else 10
+        self.status_label.setStyleSheet(f"color: #888; font-size: {status_font_size}pt;")
+        header_layout.addWidget(self.status_label)
+        
         header_layout.addStretch()
+        
+        # Action button (always in header now)
+        self.action_button = QPushButton()
+        button_size = 20 if is_small_screen else 25
+        button_width = 60 if is_small_screen else 80
+        self.action_button.setFixedSize(button_width, button_size)
+        self.action_button.clicked.connect(self.upload_clicked.emit)
+        header_layout.addWidget(self.action_button)
         
         # Lock checkbox
         self.lock_checkbox = QCheckBox("🔒")
@@ -59,36 +94,30 @@ class SimulationCard(QFrame):
         
         layout.addLayout(header_layout)
         
-        # Description area
+        # Description area - allow expansion to fill available space
         self.description_label = QLabel("Click to configure or drag files here")
         self.description_label.setWordWrap(True)
-        self.description_label.setStyleSheet("color: #666; font-style: italic;")
-        layout.addWidget(self.description_label)
+        self.description_label.setAlignment(Qt.AlignTop)  # Align text to top of expanded area
+        desc_font_size = 9 if is_small_screen else 10
+        self.description_label.setStyleSheet(f"color: #666; font-style: italic; font-size: {desc_font_size}pt;")
+        layout.addWidget(self.description_label, 1)  # Give stretch factor to expand
         
-        # Status and buttons area
-        bottom_layout = QHBoxLayout()
+        # Details button area (only when needed)
+        detail_layout = QHBoxLayout()
+        detail_layout.addStretch()
         
-        # Status indicator
-        self.status_label = QLabel("Empty")
-        self.status_label.setStyleSheet("color: #888; font-size: 10pt;")
-        bottom_layout.addWidget(self.status_label)
+        # Details button (compact for all screen sizes since status/action moved to header)
+        button_text = "Details" if is_small_screen else "View Details"
+        button_width = 50 if is_small_screen else 80
+        button_height = 18 if is_small_screen else 25
         
-        bottom_layout.addStretch()
-        
-        # Details button
-        self.details_button = QPushButton("View Details")
-        self.details_button.setFixedSize(80, 25)
+        self.details_button = QPushButton(button_text)
+        self.details_button.setFixedSize(button_width, button_height)
         self.details_button.clicked.connect(self.on_details_clicked)
         self.details_button.setVisible(False)  # Hidden by default
-        bottom_layout.addWidget(self.details_button)
+        detail_layout.addWidget(self.details_button)
         
-        # Action button (upload, select, etc.)
-        self.action_button = QPushButton()
-        self.action_button.setFixedSize(80, 25)
-        self.action_button.clicked.connect(self.upload_clicked.emit)
-        bottom_layout.addWidget(self.action_button)
-        
-        layout.addLayout(bottom_layout)
+        layout.addLayout(detail_layout)
     
     def setup_styling(self):
         """Setup card styling"""

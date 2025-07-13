@@ -163,6 +163,16 @@ def map_boundary_conditions_to_patches(
             "walls": ["walls", "top", "bottom"],
             "sides": ["sides", "front", "back"]
         },
+        GeometryType.NOZZLE: {
+            "inlet": ["inlet"],
+            "outlet": ["outlet"],
+            "nozzle": ["nozzle"],
+            "top": ["top"],
+            "bottom": ["bottom"],
+            "front": ["front"],
+            "back": ["back"],
+            "walls": ["top", "bottom", "front", "back"]  # Keep for backward compatibility
+        },
         GeometryType.CUSTOM: {
             # STL geometries - external flow around custom geometry
             "inlet": ["inlet"],
@@ -403,8 +413,12 @@ def generate_boundary_conditions_with_mapping(
 ) -> Dict[str, Any]:
     """Generate boundary conditions with intelligent patch mapping."""
     
+    # Get solver type for compressible flow detection
+    solver_info = state.get("solver_settings", {})
+    solver_type = solver_info.get("solver_type")
+    
     # First, generate standard boundary conditions
-    boundary_conditions = generate_boundary_conditions(parsed_params, geometry_info, mesh_config)
+    boundary_conditions = generate_boundary_conditions(parsed_params, geometry_info, mesh_config, solver_type)
     
     # Check if we can read actual mesh patches (post-mesh generation)
     case_directory = state.get("case_directory")
@@ -471,7 +485,7 @@ def merge_ai_boundary_conditions(
     return existing_conditions
 
 
-def generate_boundary_conditions(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any], mesh_config: Dict[str, Any]) -> Dict[str, Any]:
+def generate_boundary_conditions(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any], mesh_config: Dict[str, Any], solver_type: SolverType = None) -> Dict[str, Any]:
     """Generate complete boundary condition configuration."""
     flow_type = parsed_params.get("flow_type", FlowType.LAMINAR)
     velocity = parsed_params.get("velocity", 1.0)
@@ -481,7 +495,7 @@ def generate_boundary_conditions(parsed_params: Dict[str, Any], geometry_info: D
     # Generate field files
     boundary_conditions = {
         "U": generate_velocity_field(parsed_params, geometry_info, mesh_config),
-        "p": generate_pressure_field(parsed_params, geometry_info, mesh_config),
+        "p": generate_pressure_field(parsed_params, geometry_info, mesh_config, solver_type),
     }
     
     # Add turbulence fields if needed
@@ -834,21 +848,61 @@ def generate_velocity_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
             velocity_field["boundaryField"][stl_name] = {
                 "type": "noSlip"  # Wall boundary on STL surface
             }
+    elif geometry_type == GeometryType.NOZZLE:
+        # Internal flow through nozzle - using snappyHexMesh
+        velocity_field["boundaryField"] = {
+            "inlet": {
+                "type": "fixedValue",
+                "value": f"uniform {velocity_vector}"
+            },
+            "outlet": {
+                "type": "zeroGradient"
+            },
+            "nozzle": {
+                "type": "noSlip"  # Nozzle surface as no-slip wall
+            },
+            "top": {
+                "type": "slip"  # Far field boundary
+            },
+            "bottom": {
+                "type": "slip"  # Far field boundary
+            },
+            "front": {
+                "type": "slip"  # Far field boundary
+            },
+            "back": {
+                "type": "slip"  # Far field boundary
+            }
+        }
     
     return velocity_field
 
 
-def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any], mesh_config: Dict[str, Any]) -> Dict[str, Any]:
+def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[str, Any], mesh_config: Dict[str, Any], solver_type: SolverType = None) -> Dict[str, Any]:
     """Generate pressure field (p) boundary conditions."""
     pressure = parsed_params.get("pressure", 0.0)
     
+    # Determine if this is a compressible flow solver
+    is_compressible_solver = solver_type in [
+        SolverType.RHO_PIMPLE_FOAM, 
+        SolverType.SONIC_FOAM, 
+        SolverType.CHT_MULTI_REGION_FOAM,  # Can be compressible
+        SolverType.REACTING_FOAM  # Can be compressible
+    ]
+    
     # For incompressible flow simulations, use gauge pressure (0) instead of absolute pressure
-    # This ensures proper pressure gradients for visualization
-    # Check if pressure looks like absolute pressure (atmospheric ~101325 Pa)
-    if pressure > 50000:  # Anything above 50kPa is likely absolute pressure
-        # Convert to gauge pressure for incompressible flow
-        logger.info(f"Converting absolute pressure ({pressure} Pa) to gauge pressure (0 Pa) for incompressible flow")
+    # For compressible flow simulations, keep absolute pressure
+    if pressure > 50000 and not is_compressible_solver:  # Anything above 50kPa is likely absolute pressure
+        # Convert to gauge pressure for incompressible flow only
+        logger.info(f"Converting absolute pressure ({pressure} Pa) to gauge pressure (0 Pa) for incompressible flow solver {solver_type}")
         pressure = 0.0  # Use gauge pressure for incompressible flow
+    elif pressure > 50000 and is_compressible_solver:
+        # Keep absolute pressure for compressible flows
+        logger.info(f"Keeping absolute pressure ({pressure} Pa) for compressible flow solver {solver_type}")
+    elif pressure <= 50000 and is_compressible_solver and pressure <= 0:
+        # For compressible flows, ensure we don't have zero or negative pressure
+        logger.warning(f"Compressible flow solver {solver_type} requires positive absolute pressure. Setting to atmospheric pressure (101325 Pa)")
+        pressure = 101325.0  # Default to atmospheric pressure
     
     geometry_type = geometry_info["type"]
     flow_context = geometry_info.get("flow_context", {})
@@ -1093,6 +1147,32 @@ def generate_pressure_field(parsed_params: Dict[str, Any], geometry_info: Dict[s
             pressure_field["boundaryField"][stl_name] = {
                 "type": "zeroGradient"  # No pressure gradient at STL surface
             }
+    elif geometry_type == GeometryType.NOZZLE:
+        # Internal flow through nozzle - using snappyHexMesh
+        pressure_field["boundaryField"] = {
+            "inlet": {
+                "type": "zeroGradient"  # Let velocity drive the flow
+            },
+            "outlet": {
+                "type": "fixedValue",
+                "value": f"uniform {pressure}"  # Fix pressure at outlet
+            },
+            "nozzle": {
+                "type": "zeroGradient"  # No pressure gradient at nozzle surface
+            },
+            "top": {
+                "type": "zeroGradient"  # Far field boundary
+            },
+            "bottom": {
+                "type": "zeroGradient"  # Far field boundary
+            },
+            "front": {
+                "type": "zeroGradient"  # Far field boundary
+            },
+            "back": {
+                "type": "zeroGradient"  # Far field boundary
+            }
+        }
     
     return pressure_field
 
@@ -2449,6 +2529,32 @@ def generate_temperature_field(parsed_params: Dict[str, Any], geometry_info: Dic
         stl_name = mesh_config["stl_name"]
         temp_field["boundaryField"][stl_name] = {
             "type": "zeroGradient"  # No temperature gradient at STL surface
+        }
+    elif geometry_type == GeometryType.NOZZLE:
+        # Internal flow through nozzle - using snappyHexMesh
+        temp_field["boundaryField"] = {
+            "inlet": {
+                "type": "fixedValue",
+                "value": f"uniform {temperature}"
+            },
+            "outlet": {
+                "type": "zeroGradient"
+            },
+            "nozzle": {
+                "type": "zeroGradient"  # No temperature gradient at nozzle surface
+            },
+            "top": {
+                "type": "zeroGradient"  # Far field boundary
+            },
+            "bottom": {
+                "type": "zeroGradient"  # Far field boundary
+            },
+            "front": {
+                "type": "zeroGradient"  # Far field boundary
+            },
+            "back": {
+                "type": "zeroGradient"  # Far field boundary
+            }
         }
     
     return temp_field

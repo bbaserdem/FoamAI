@@ -57,6 +57,24 @@ Generate an SSH key pair for EC2 access:
 ssh-keygen -t ed25519 -f ~/.ssh/foamai-key -C "your-email@example.com"
 ```
 
+#### 4. Enhanced IAM Permissions
+For full console and deployment access, your IAM user needs comprehensive permissions. Here are two policy options:
+
+**Minimal Console Access** (for basic AWS console access):
+- EC2 read access across all regions
+- Cost and Usage reporting access
+- Security Hub read access
+
+**Full DevOps Access** (for complete FoamAI deployment):
+- All minimal access permissions
+- EC2 instance management (create, modify, terminate)
+- VPC and networking management
+- EBS volume management
+- Security group configuration
+- ECR (Elastic Container Registry) access
+
+Create custom IAM policies with these permissions and attach to your user account. See the IAM Setup Guide for detailed policy JSON and step-by-step instructions.
+
 ### Compute Requirements
 
 #### Instance Types
@@ -797,6 +815,78 @@ aws ec2 describe-volumes --region us-east-1
 aws ec2 attach-volume --volume-id vol-xxxxx --instance-id i-xxxxx --device /dev/sdf
 ```
 
+## Advanced Configuration
+
+### EBS Volume Configuration Details
+
+The deployment supports flexible EBS volume configuration with multiple discovery strategies:
+
+#### Volume Discovery Strategies
+1. **Size-based Discovery** (Most Flexible)
+   - Searches for devices matching expected size (±10% tolerance)
+   - Works regardless of device naming conventions
+   - Handles filesystem overhead calculations
+
+2. **AWS Metadata-based Discovery** (Most Authoritative)
+   - Uses AWS instance metadata for definitive device mapping
+   - Requires AWS CLI availability
+   - Provides authoritative device identification
+
+3. **Unused Device Discovery** (Fallback)
+   - Finds unformatted, unmounted devices
+   - Validates against root device to prevent conflicts
+   - Last resort for edge cases
+
+#### Configuration Variables
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `data_volume_size` | 100 | Size of EBS data volume in GB |
+| `data_volume_filesystem` | ext4 | Filesystem type (ext4, xfs) |
+| `data_volume_mount_point` | /data | Mount point for data volume |
+| `ebs_wait_timeout` | 300 | Timeout for volume detection (seconds) |
+
+#### Deployment Profiles
+- **minimal**: Small volume, basic setup (testing/development)
+- **standard**: Current default configuration (production workloads)
+- **performance**: Optimized for high-performance (heavy CFD simulations)
+- **development**: Development-specific settings
+
+### Local Development Workflow
+
+For local testing before deployment:
+
+```bash
+# 1. Install and configure tools
+terraform --version  # Ensure ≥ 1.8
+aws configure        # Set up credentials
+
+# 2. Set up local backend
+cd infra
+terraform init
+
+# 3. Validate configuration
+terraform fmt -check
+terraform validate
+terraform plan -var-file="terraform.tfvars"
+
+# 4. Deploy and test
+terraform apply -var-file="terraform.tfvars"
+
+# 5. SSH and verify
+ssh ubuntu@$(terraform output -raw instance_public_ip)
+docker ps  # Confirm services running
+
+# 6. Clean up when done
+terraform destroy -var-file="terraform.tfvars"
+```
+
+#### Quick Iteration Options
+| Task | Command |
+|------|---------|
+| Test user-data script only | `terraform apply -replace="aws_instance.foamai_instance"` |
+| Test single resource | `terraform apply -target=aws_security_group.foamai_sg` |
+| Test new variables | Edit `terraform.tfvars`, run `terraform plan` |
+
 ---
 
-*This guide provides comprehensive coverage of FoamAI's DevOps workflow. For additional support, refer to the individual module documentation or check the project's GitHub issues.*
+*This guide provides comprehensive coverage of FoamAI's DevOps workflow. For additional support, refer to the individual module documentation, Contributing.md for development setup, or check the project's GitHub issues.*

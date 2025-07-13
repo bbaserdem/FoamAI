@@ -3,6 +3,7 @@
 from typing import Dict, Any, Optional, List
 from loguru import logger
 import re
+import os
 
 from .state import CFDState, CFDStep, GeometryType, FlowType, AnalysisType, SolverType
 
@@ -2566,6 +2567,22 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
     gpu_info = parsed_params.get("gpu_info", {})
     use_gpu = gpu_info.get("use_gpu", False)
     gpu_backend = gpu_info.get("gpu_backend", "petsc")
+
+    # Validate GPU libraries are available before enabling GPU solvers
+    gpu_libs_available = False
+    if use_gpu:
+        import os
+        home_dir = os.path.expanduser("~")
+        petsc_dir = f"{home_dir}/gpu_libs/petsc-3.20.6"
+        petsc_arch = "linux-gnu-cuda-opt"
+        gpu_libs_available = os.path.exists(petsc_dir) and os.path.exists(f"{petsc_dir}/{petsc_arch}")
+        
+        if not gpu_libs_available:
+            # GPU requested but libraries not available - fall back to CPU
+            use_gpu = False
+            gpu_backend = "cpu"
+            logger.warning("GPU acceleration requested but PETSc libraries not found - falling back to CPU solvers")
+ 
     
     # Base solution settings
     fv_solution = {
@@ -2576,7 +2593,8 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
         "residualControl": {}
     }
     
-    # GPU-specific library loading
+    # GPU-specific library loading - only if libraries are available
+    if use_gpu and gpu_libs_available:
     if use_gpu:
         fv_solution["libs"] = ["libpetscFoam.so"]
         if gpu_backend == "amgx":

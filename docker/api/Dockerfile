@@ -9,7 +9,7 @@ ENV TZ=UTC
 # Python environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-ENV PATH="/home/apiuser/.local/bin:$PATH"
+ENV PYTHONPATH=/app/src/foamai-server:$PYTHONPATH
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -23,57 +23,51 @@ RUN apt-get update && apt-get install -y \
     curl \
     wget \
     git \
+    # Required for some Python packages
+    gcc \
+    g++ \
     # Clean up apt cache to reduce image size
     && rm -rf /var/lib/apt/lists/*
 
 # Create API user (non-root for security)
 RUN groupadd -r apiuser && useradd -r -g apiuser -m -d /home/apiuser apiuser
 
-# Install UV (modern Python package manager)
-RUN pip3 install --no-cache-dir uv
+# Install UV package manager system-wide
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.cargo/bin:$PATH"
 
 # Set working directory
 WORKDIR /app
 
-# Copy project files
-COPY ../../pyproject.toml ./
-COPY ../../src/ ./src/
+# Copy the foamai-server directory from the build context
+# The build context is set to "." (root of the repo) in the workflow
+COPY src/foamai-server/ ./src/foamai-server/
 
-# Install Python dependencies using UV
-RUN uv sync --no-dev || uv pip install --system fastapi uvicorn[standard]
+# Create virtual environment and install dependencies using uv
+WORKDIR /app/src/foamai-server
+RUN uv venv .venv && \
+    uv pip install -e .
 
 # Create necessary directories and set permissions
-RUN mkdir -p /data \
-    && chown -R apiuser:apiuser /app \
-    && chown -R apiuser:apiuser /data
+RUN mkdir -p /data /tmp/foamai
+
+# Give ownership to apiuser
+RUN chown -R apiuser:apiuser /app \
+    && chown -R apiuser:apiuser /data \
+    && chown -R apiuser:apiuser /tmp/foamai
 
 # Switch to apiuser (non-root)
 USER apiuser
 
-# Create a basic FastAPI application starter
-RUN mkdir -p /app/src/foamai/api \
-    && echo '#!/usr/bin/env python3' > /app/src/foamai/api/__init__.py \
-    && echo 'from fastapi import FastAPI' > /app/src/foamai/api/main.py \
-    && echo 'from fastapi.responses import JSONResponse' >> /app/src/foamai/api/main.py \
-    && echo '' >> /app/src/foamai/api/main.py \
-    && echo 'app = FastAPI(title="FoamAI API", version="0.1.0")' >> /app/src/foamai/api/main.py \
-    && echo '' >> /app/src/foamai/api/main.py \
-    && echo '@app.get("/ping")' >> /app/src/foamai/api/main.py \
-    && echo 'async def ping():' >> /app/src/foamai/api/main.py \
-    && echo '    """Health check endpoint."""' >> /app/src/foamai/api/main.py \
-    && echo '    return JSONResponse(content="pong")' >> /app/src/foamai/api/main.py \
-    && echo '' >> /app/src/foamai/api/main.py \
-    && echo '@app.get("/")' >> /app/src/foamai/api/main.py \
-    && echo 'async def root():' >> /app/src/foamai/api/main.py \
-    && echo '    """Root endpoint."""' >> /app/src/foamai/api/main.py \
-    && echo '    return JSONResponse(content={"message": "FoamAI API is running!"})' >> /app/src/foamai/api/main.py
+# Update PATH for the apiuser to include the virtual environment
+ENV PATH="/app/src/foamai-server/.venv/bin:$PATH"
 
 # Expose FastAPI port
 EXPOSE 8000
 
 # Health check to ensure API is responding
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/ping || exit 1
+    CMD curl -f http://localhost:8000/api/health || exit 1
 
-# Command to run the FastAPI application
-CMD ["uvicorn", "src.foamai.api.main:app", "--host", "0.0.0.0", "--port", "8000"] 
+# Command to run the FastAPI application with the correct module path
+CMD ["uvicorn", "foamai_server.main:app", "--host", "0.0.0.0", "--port", "8000"] 

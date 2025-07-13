@@ -23,12 +23,19 @@ def validate_pvserver_pid(pid: int, expected_port: int = None) -> bool:
         process = psutil.Process(pid)
         
         # Check if it's actually a pvserver process
-        if 'pvserver' not in process.name():
+        # Be more flexible - check process name and command line
+        process_name = process.name().lower()
+        cmdline = process.cmdline()
+        cmdline_str = ' '.join(cmdline).lower()
+        
+        # Valid if process name contains 'pvserver' OR command line contains 'pvserver'
+        is_pvserver = 'pvserver' in process_name or 'pvserver' in cmdline_str
+        
+        if not is_pvserver:
             return False
         
         # If we have an expected port, validate it
         if expected_port:
-            cmdline = process.cmdline()
             found_port = None
             
             # Look for '--server-port=PORT' or '--server-port PORT'
@@ -60,16 +67,22 @@ class ProcessValidator:
         Validate a single pvserver record.
         
         Args:
-            record: Dictionary containing 'pvserver_pid' and 'pvserver_port'.
+            record: Dictionary containing pvserver info. Supports both formats:
+                    - Task-based: 'pvserver_pid' and 'pvserver_port'
+                    - Project-based: 'pid' and 'port'
             
         Returns:
             bool: True if process is valid/running, False if dead.
         """
-        if not record or not record.get('pvserver_pid') or not record.get('pvserver_port'):
+        if not record:
             return False
             
-        pid = record['pvserver_pid']
-        port = record['pvserver_port']
+        # Support both task-based and project-based field names
+        pid = record.get('pvserver_pid') or record.get('pid')
+        port = record.get('pvserver_port') or record.get('port')
+        
+        if not pid or not port:
+            return False
         
         return validate_pvserver_pid(pid, port)
 

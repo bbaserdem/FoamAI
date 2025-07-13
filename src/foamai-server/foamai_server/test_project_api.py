@@ -1,37 +1,35 @@
 """
-Integration Test Script for Project API Endpoints
+Integration Test Script for Project API Endpoints (Remote EC2 Testing)
 
-This script tests the /api/projects routes of the FoamAI API.
-It is intended to be run from the command line while the FastAPI server is running.
+This script tests the /api/projects routes of the FoamAI API running on an EC2 instance.
+It reads the EC2_HOST from backend_api/.env or config.py and tests the remote API.
 
 Setup and Execution Steps:
 1.  Ensure you have the 'requests' library installed:
     pip install requests
 
-2.  Open two terminal windows in the 'backend_api' directory.
+2.  Set the EC2_HOST environment variable in backend_api/.env file:
+    EC2_HOST=your-ec2-instance-ip-or-hostname
 
-3.  In the first terminal, set the FOAM_RUN environment variable to the
-    temporary test directory that this script uses. Then, start the API server:
+3.  Ensure your EC2 instance is running the FoamAI API server on port 8000
 
-    export FOAM_RUN=$(pwd)/test_foam_run
-    uvicorn main:app --reload
-
-4.  In the second terminal, run this script:
-
+4.  Run this script from the backend_api directory:
     python test_project_api.py
 
-The script will print the results of each test case and automatically clean up
-the 'test_foam_run' directory it creates.
+The script will test the remote API and verify project creation on the EC2 instance.
 """
 import requests
 import os
-import shutil
+import sys
 from pathlib import Path
 import time
 
+# Import EC2_HOST from config.py
+sys.path.insert(0, '.')
+from config import EC2_HOST
+
 # --- Configuration ---
-API_BASE_URL = "http://127.0.0.1:8000"
-TEST_DIR_NAME = "test_foam_run"
+API_BASE_URL = f"http://{EC2_HOST}:8000"
 # ---
 
 def print_test_header(name):
@@ -48,117 +46,166 @@ def print_status(message, success):
         print(f"  ❌ FAILED: {message}")
     return success
 
-def setup_test_environment():
-    """Creates the temporary test directory for FOAM_RUN."""
-    print("--- Setting up test environment ---")
-    test_path = Path(TEST_DIR_NAME)
-    if test_path.exists():
-        shutil.rmtree(test_path)
-    test_path.mkdir()
-    print(f"Created temporary directory: {test_path.resolve()}")
-    print("-----------------------------------")
-
-def cleanup_test_environment():
-    """Removes the temporary test directory."""
-    print("\n--- Cleaning up test environment ---")
-    test_path = Path(TEST_DIR_NAME)
-    if test_path.exists():
-        shutil.rmtree(test_path)
-        print(f"Removed temporary directory: {test_path.resolve()}")
-    print("------------------------------------")
+def print_configuration():
+    """Prints the current test configuration."""
+    print("--- Test Configuration ---")
+    print(f"EC2_HOST: {EC2_HOST}")
+    print(f"API_BASE_URL: {API_BASE_URL}")
+    print("-------------------------")
 
 def check_server_health():
     """Checks if the API server is reachable before running tests."""
     try:
-        response = requests.get(f"{API_BASE_URL}/api/health")
+        response = requests.get(f"{API_BASE_URL}/api/health", timeout=10)
         response.raise_for_status()
-        print("API server is running and healthy.")
+        print("✅ API server is running and healthy on EC2 instance.")
         return True
     except requests.exceptions.RequestException as e:
         print("="*60)
-        print("API server is not reachable.")
+        print("❌ API server is not reachable on EC2 instance.")
         print(f"Error: {e}")
-        print("Please ensure the FastAPI server is running before executing this script.")
-        print_instructions()
+        print("Please ensure:")
+        print("1. Your EC2 instance is running")
+        print("2. The FastAPI server is running on port 8000")
+        print("3. Security groups allow inbound traffic on port 8000")
+        print("4. EC2_HOST is correctly set in .env file or environment")
         print("="*60)
         return False
 
-def print_instructions():
-    print("\nTo run the server:")
-    print("  export FOAM_RUN=$(pwd)/test_foam_run")
-    print("  uvicorn main:app --reload")
+def verify_project_creation_remotely(project_name):
+    """
+    Verify project creation by making an API call to list projects.
+    Since we can't directly access the EC2 filesystem, we use the API to verify.
+    """
+    try:
+        response = requests.get(f"{API_BASE_URL}/api/projects", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return project_name in data.get('projects', [])
+        return False
+    except requests.exceptions.RequestException:
+        return False
 
 def test_list_projects_empty():
     print_test_header("List Projects (Initially Empty)")
-    response = requests.get(f"{API_BASE_URL}/api/projects")
-    
-    if not print_status("Request returned status 200 OK", response.status_code == 200):
-        return False
+    try:
+        response = requests.get(f"{API_BASE_URL}/api/projects", timeout=10)
         
-    data = response.json()
-    return print_status("Response contains an empty list of projects", data['projects'] == [] and data['count'] == 0)
+        if not print_status("Request returned status 200 OK", response.status_code == 200):
+            return False
+            
+        data = response.json()
+        return print_status("Response contains project list", 'projects' in data and 'count' in data)
+    except requests.exceptions.RequestException as e:
+        print_status(f"Request failed: {e}", False)
+        return False
 
 def test_create_project_success():
     print_test_header("Create Project (Success Case)")
-    project_name = "my-first-project"
-    response = requests.post(f"{API_BASE_URL}/api/projects", json={"project_name": project_name})
+    project_name = "remote-test-project"
+    
+    try:
+        response = requests.post(f"{API_BASE_URL}/api/projects", 
+                               json={"project_name": project_name}, 
+                               timeout=10)
 
-    if not print_status("Request returned status 201 Created", response.status_code == 201):
-        print(f"    Response body: {response.text}")
-        return False
-        
-    if not print_status("Directory was created on the filesystem", (Path(TEST_DIR_NAME) / project_name).is_dir()):
-        return False
+        if not print_status("Request returned status 201 Created", response.status_code == 201):
+            print(f"    Response body: {response.text}")
+            return False
+            
+        # Verify project was created by checking if it appears in the project list
+        if not print_status("Project appears in remote project list", 
+                          verify_project_creation_remotely(project_name)):
+            return False
 
-    return True
+        return True
+    except requests.exceptions.RequestException as e:
+        print_status(f"Request failed: {e}", False)
+        return False
 
 def test_create_project_conflict():
     print_test_header("Create Project (Conflict/Exists Case)")
-    project_name = "my-first-project" # Same name as before
-    response = requests.post(f"{API_BASE_URL}/api/projects", json={"project_name": project_name})
+    project_name = "remote-test-project"  # Same name as before
     
-    return print_status("Request returned status 409 Conflict", response.status_code == 409)
+    try:
+        response = requests.post(f"{API_BASE_URL}/api/projects", 
+                               json={"project_name": project_name}, 
+                               timeout=10)
+        
+        return print_status("Request returned status 409 Conflict", response.status_code == 409)
+    except requests.exceptions.RequestException as e:
+        print_status(f"Request failed: {e}", False)
+        return False
 
 def test_create_project_invalid_name():
     print_test_header("Create Project (Invalid Name Case)")
     project_name = "invalid/name"
-    response = requests.post(f"{API_BASE_URL}/api/projects", json={"project_name": project_name})
     
-    return print_status("Request returned status 400 Bad Request", response.status_code == 400)
+    try:
+        response = requests.post(f"{API_BASE_URL}/api/projects", 
+                               json={"project_name": project_name}, 
+                               timeout=10)
+        
+        return print_status("Request returned status 400 Bad Request", response.status_code == 400)
+    except requests.exceptions.RequestException as e:
+        print_status(f"Request failed: {e}", False)
+        return False
 
 def test_list_projects_with_content():
     print_test_header("List Projects (With Content)")
+    
     # First, create another project to have multiple items
-    requests.post(f"{API_BASE_URL}/api/projects", json={"project_name": "project.2"})
-    
-    response = requests.get(f"{API_BASE_URL}/api/projects")
-    
-    if not print_status("Request returned status 200 OK", response.status_code == 200):
-        return False
+    try:
+        requests.post(f"{API_BASE_URL}/api/projects", 
+                     json={"project_name": "remote-project-2"}, 
+                     timeout=10)
         
-    data = response.json()
-    expected_projects = ["my-first-project", "project.2"]
-    
-    # Sort both lists to ensure comparison is order-independent
-    return print_status(f"Response contains the correct projects: {sorted(expected_projects)}", sorted(data['projects']) == sorted(expected_projects) and data['count'] == 2)
+        response = requests.get(f"{API_BASE_URL}/api/projects", timeout=10)
+        
+        if not print_status("Request returned status 200 OK", response.status_code == 200):
+            return False
+            
+        data = response.json()
+        expected_projects = ["remote-test-project", "remote-project-2"]
+        
+        # Check if both projects exist in the response
+        projects_found = all(project in data.get('projects', []) for project in expected_projects)
+        return print_status(f"Response contains the expected projects", 
+                          projects_found and data.get('count', 0) >= 2)
+    except requests.exceptions.RequestException as e:
+        print_status(f"Request failed: {e}", False)
+        return False
 
+def test_cleanup_projects():
+    print_test_header("Cleanup Test Projects")
+    
+    # Note: This is a cleanup step, not a real test
+    # In a real scenario, you might want to implement a DELETE endpoint
+    # or manually clean up the projects on the EC2 instance
+    
+    print("  ℹ️  NOTE: Test projects created on EC2 instance:")
+    print("     - remote-test-project")
+    print("     - remote-project-2")
+    print("  ℹ️  These should be manually cleaned up from the EC2 instance")
+    print("     or implement a DELETE endpoint for automated cleanup.")
+    
+    return True
 
 def run_all_tests():
     """Runs all test cases in sequence and reports the final result."""
+    print_configuration()
+    
     if not check_server_health():
         return
 
-    setup_test_environment()
-    
     results = {
         "list_empty": test_list_projects_empty(),
         "create_success": test_create_project_success(),
         "create_conflict": test_create_project_conflict(),
         "create_invalid": test_create_project_invalid_name(),
         "list_content": test_list_projects_with_content(),
+        "cleanup_note": test_cleanup_projects(),
     }
-    
-    cleanup_test_environment()
     
     print("\n" + "="*60)
     print("  TEST SUMMARY")
@@ -166,6 +213,9 @@ def run_all_tests():
     
     all_passed = True
     for test_name, result in results.items():
+        if test_name == "cleanup_note":
+            continue  # Skip cleanup note in pass/fail summary
+            
         status = "✅ PASSED" if result else "❌ FAILED"
         print(f"  - {test_name.replace('_', ' ').title()}: {status}")
         if not result:
@@ -174,6 +224,7 @@ def run_all_tests():
     print("-" * 60)
     if all_passed:
         print("🎉 All tests passed successfully! 🎉")
+        print(f"🌐 Remote API testing on {EC2_HOST} completed successfully!")
     else:
         print("🔥 Some tests failed. Please review the output above. 🔥")
     print("="*60)

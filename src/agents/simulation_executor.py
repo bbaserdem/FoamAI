@@ -446,8 +446,32 @@ def run_solver(case_directory: Path, solver: str, state: CFDState) -> Dict[str, 
         from foamai.config import get_settings
         settings = get_settings()
         
-        # Prepare environment
-        env = prepare_openfoam_env()
+        # Check if GPU acceleration is requested
+        gpu_info = state.get("gpu_info", {})
+        use_gpu = gpu_info.get("use_gpu", False)
+        
+        # Prepare environment with GPU support if requested
+        env = prepare_openfoam_env(use_gpu=use_gpu)
+        
+        if use_gpu:
+            # Check if GPU libraries are actually available
+            import os
+            home_dir = os.path.expanduser("~")
+            petsc_dir = f"{home_dir}/gpu_libs/petsc-3.20.6"
+            petsc_arch = "linux-gnu-cuda-opt"
+            gpu_libs_available = os.path.exists(petsc_dir) and os.path.exists(f"{petsc_dir}/{petsc_arch}")
+            
+            if state["verbose"]:
+                logger.info("=" * 60)
+                logger.info("GPU ACCELERATION ENABLED")
+                logger.info(f"GPU Backend: {gpu_info.get('gpu_backend', 'petsc')}")
+                if gpu_libs_available:
+                    logger.info("✅ GPU libraries detected - using GPU acceleration")
+                    logger.info(f"PETSc Directory: {petsc_dir}")
+                else:
+                    logger.warning("⚠️  GPU libraries not found - falling back to CPU")
+                    logger.warning("To install GPU support, run: bash setup_gpu_acceleration.sh")
+                logger.info("=" * 60)
         
         # Determine if we need to use WSL
         if settings.openfoam_path and settings.openfoam_path.startswith("/"):
@@ -614,8 +638,9 @@ def run_solver(case_directory: Path, solver: str, state: CFDState) -> Dict[str, 
         }
 
 
-def prepare_openfoam_env() -> Dict[str, str]:
+def prepare_openfoam_env(use_gpu: bool = False) -> Dict[str, str]:
     """Prepare OpenFOAM environment variables."""
+    import os
     env = os.environ.copy()
     
     # Get configured OpenFOAM path
@@ -643,6 +668,53 @@ def prepare_openfoam_env() -> Dict[str, str]:
             env["PATH"] = f"{bin_path}:{env['PATH']}"
         else:
             env["PATH"] = bin_path
+    
+    # Add GPU environment if requested
+    if use_gpu:
+        import os
+        home_dir = os.path.expanduser("~")
+        
+        # PETSc environment
+        petsc_dir = f"{home_dir}/gpu_libs/petsc-3.20.6"
+        petsc_arch = "linux-gnu-cuda-opt"
+        
+        # Check if GPU libraries are installed
+        if os.path.exists(petsc_dir) and os.path.exists(f"{petsc_dir}/{petsc_arch}"):
+            env["PETSC_DIR"] = petsc_dir
+            env["PETSC_ARCH"] = petsc_arch
+            
+            # Add PETSc libraries to LD_LIBRARY_PATH
+            petsc_lib_path = f"{petsc_dir}/{petsc_arch}/lib"
+            if "LD_LIBRARY_PATH" in env:
+                env["LD_LIBRARY_PATH"] = f"{petsc_lib_path}:{env['LD_LIBRARY_PATH']}"
+            else:
+                env["LD_LIBRARY_PATH"] = petsc_lib_path
+            
+            # Add PETSc binaries to PATH
+            petsc_bin_path = f"{petsc_dir}/{petsc_arch}/bin"
+            if "PATH" in env:
+                env["PATH"] = f"{petsc_bin_path}:{env['PATH']}"
+            else:
+                env["PATH"] = petsc_bin_path
+            
+            # CUDA environment
+            cuda_home = "/usr/local/cuda"
+            if os.path.exists(cuda_home):
+                env["CUDA_HOME"] = cuda_home
+                
+                # Add CUDA libraries to LD_LIBRARY_PATH
+                cuda_lib_path = f"{cuda_home}/lib64"
+                if "LD_LIBRARY_PATH" in env:
+                    env["LD_LIBRARY_PATH"] = f"{cuda_lib_path}:{env['LD_LIBRARY_PATH']}"
+                else:
+                    env["LD_LIBRARY_PATH"] = cuda_lib_path
+                
+                # Add CUDA binaries to PATH
+                cuda_bin_path = f"{cuda_home}/bin"
+                if "PATH" in env:
+                    env["PATH"] = f"{cuda_bin_path}:{env['PATH']}"
+                else:
+                    env["PATH"] = cuda_bin_path
     
     return env
 
@@ -1291,57 +1363,106 @@ def remap_boundary_conditions_after_mesh(case_directory: Path, state: CFDState) 
             patches_info = read_mesh_patches_with_types(case_directory)
             patch_types = {info['name']: info['type'] for info in patches_info}
             
-            # Update alpha.water with correct boundary conditions
+            # Update alpha.water with correct boundary conditions (use mapped U field as basis)
             if "alpha.water" in solver_settings:
                 alpha_water_file = case_directory / "0" / "alpha.water"
                 if alpha_water_file.exists():
                     from .case_writer import write_foam_dict
                     
-                    alpha_water_config = solver_settings["alpha.water"]
-                    
-                    # Correct boundary conditions for each patch
-                    if "boundaryField" in alpha_water_config:
-                        corrected_boundary_field = {}
-                        for patch_name, bc_data in alpha_water_config["boundaryField"].items():
-                            patch_type = patch_types.get(patch_name, "patch")
-                            corrected_bc = adjust_boundary_condition_for_patch_type(
-                                bc_data, patch_type, "alpha.water", patch_name
-                            )
-                            corrected_boundary_field[patch_name] = corrected_bc
+                    # Use mapped U field boundary conditions as basis for alpha.water
+                    if "U" in mapped_conditions:
+                        u_boundary_field = mapped_conditions["U"]["boundaryField"]
                         
+                        # Create alpha.water boundary conditions based on U field
+                        alpha_boundary_field = {}
+                        for patch_name, patch_config in u_boundary_field.items():
+                            if patch_name == "inlet":
+                                # For inlet, set alpha.water = 0 (air only)
+                                alpha_boundary_field[patch_name] = {
+                                    "type": "fixedValue",
+                                    "value": "uniform 0"
+                                }
+                            elif patch_name == "outlet":
+                                alpha_boundary_field[patch_name] = {
+                                    "type": "zeroGradient"
+                                }
+                            else:
+                                # For all other patches (walls, top, bottom, etc.)
+                                alpha_boundary_field[patch_name] = {
+                                    "type": "zeroGradient"
+                                }
+                        
+                        # Create corrected alpha.water field
                         corrected_alpha_water = {
-                            **alpha_water_config,
-                            "boundaryField": corrected_boundary_field
+                            "dimensions": "[0 0 0 0 0 0 0]",  # Dimensionless volume fraction
+                            "internalField": "uniform 0",  # Start with air only
+                            "boundaryField": alpha_boundary_field
                         }
                         
                         write_foam_dict(alpha_water_file, corrected_alpha_water)
                         result["fields_updated"].append("alpha.water")
+                    else:
+                        # Fallback to original method if U field not available
+                        alpha_water_config = solver_settings["alpha.water"]
+                        
+                        # Correct boundary conditions for each patch
+                        if "boundaryField" in alpha_water_config:
+                            corrected_boundary_field = {}
+                            for patch_name, bc_data in alpha_water_config["boundaryField"].items():
+                                patch_type = patch_types.get(patch_name, "patch")
+                                corrected_bc = adjust_boundary_condition_for_patch_type(
+                                    bc_data, patch_type, "alpha.water", patch_name
+                                )
+                                corrected_boundary_field[patch_name] = corrected_bc
+                            
+                            corrected_alpha_water = {
+                                **alpha_water_config,
+                                "boundaryField": corrected_boundary_field
+                            }
+                            
+                            write_foam_dict(alpha_water_file, corrected_alpha_water)
+                            result["fields_updated"].append("alpha.water")
             
-            # Update p_rgh with correct boundary conditions
+            # Update p_rgh with correct boundary conditions (use mapped p field as basis)
             if "p_rgh" in solver_settings:
                 p_rgh_file = case_directory / "0" / "p_rgh"
                 if p_rgh_file.exists():
                     from .case_writer import write_foam_dict
                     
-                    p_rgh_config = solver_settings["p_rgh"]
-                    
-                    # Correct boundary conditions for each patch
-                    if "boundaryField" in p_rgh_config:
-                        corrected_boundary_field = {}
-                        for patch_name, bc_data in p_rgh_config["boundaryField"].items():
-                            patch_type = patch_types.get(patch_name, "patch")
-                            corrected_bc = adjust_boundary_condition_for_patch_type(
-                                bc_data, patch_type, "p_rgh", patch_name
-                            )
-                            corrected_boundary_field[patch_name] = corrected_bc
+                    # Use mapped p field boundary conditions as basis for p_rgh
+                    if "p" in mapped_conditions:
+                        p_boundary_field = mapped_conditions["p"]["boundaryField"]
                         
+                        # Create p_rgh with same boundary conditions as p field
                         corrected_p_rgh = {
-                            **p_rgh_config,
-                            "boundaryField": corrected_boundary_field
+                            "dimensions": "[1 -1 -2 0 0 0 0]",  # Kinematic pressure for interFoam
+                            "internalField": "uniform 0",
+                            "boundaryField": p_boundary_field
                         }
                         
                         write_foam_dict(p_rgh_file, corrected_p_rgh)
                         result["fields_updated"].append("p_rgh")
+                    else:
+                        # Fallback to original method if p field not available
+                        p_rgh_config = solver_settings["p_rgh"]
+                        
+                        # Correct boundary conditions for each patch
+                        if "boundaryField" in p_rgh_config:
+                            corrected_boundary_field = {}
+                            for patch_name, bc_data in p_rgh_config["boundaryField"].items():
+                                patch_type = patch_types.get(patch_name, "patch")
+                                corrected_bc = adjust_boundary_condition_for_patch_type(
+                                    bc_data, patch_type, "p_rgh", patch_name
+                                )
+                                corrected_boundary_field[patch_name] = corrected_bc
+                            
+                            corrected_p_rgh = {
+                                **p_rgh_config,
+                                "boundaryField": corrected_boundary_field
+                            }
+                            
+                            write_foam_dict(p_rgh_file, corrected_p_rgh)
+                            result["fields_updated"].append("p_rgh")
         
         result["success"] = True
         logger.info(f"Boundary condition remapping completed: {len(result['fields_updated'])} fields updated")

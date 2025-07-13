@@ -1224,6 +1224,38 @@ def write_solver_files(case_directory: Path, state: CFDState) -> None:
     # Write transportProperties
     write_foam_dict(case_directory / "constant" / "transportProperties", solver_settings["transportProperties"])
     
+    # Write GPU-specific configuration files
+    if state.get("use_gpu", False):
+        gpu_info = state.get("gpu_info", {})
+        if gpu_info.get("gpu_backend") == "amgx":
+            # Write AmgX configuration file
+            amgx_config = {
+                "config_version": 2,
+                "solver": {
+                    "preconditioner": {
+                        "scope": "precond",
+                        "solver": "BLOCK_JACOBI"
+                    },
+                    "solver": "PCG",
+                    "print_solve_stats": 1,
+                    "obtain_timings": 1,
+                    "max_iters": 200,
+                    "monitor_residual": 1,
+                    "store_res_history": 1,
+                    "scope": "main",
+                    "convergence": "RELATIVE_INI_CORE",
+                    "tolerance": 1e-03
+                }
+            }
+            
+            # Write AmgX configuration as JSON
+            import json
+            with open(case_directory / "system" / "amgxOptions", "w") as f:
+                json.dump(amgx_config, f, indent=4)
+            
+            if state["verbose"]:
+                logger.info("Case Writer: Wrote AmgX configuration file")
+    
     # Write solver-specific files
     # interFoam specific files
     if "g" in solver_settings:
@@ -1297,11 +1329,12 @@ def write_solver_files(case_directory: Path, state: CFDState) -> None:
         if state["verbose"]:
             logger.info("Case Writer: Wrote p_rgh field for interFoam")
     
-    # rhoPimpleFoam specific files
+    # Compressible solver files (rhoPimpleFoam, sonicFoam, etc.)
     if "thermophysicalProperties" in solver_settings:
         write_foam_dict(case_directory / "constant" / "thermophysicalProperties", solver_settings["thermophysicalProperties"])
         if state["verbose"]:
-            logger.info("Case Writer: Wrote thermophysicalProperties for rhoPimpleFoam")
+            solver_name = solver_settings.get("solver", "compressible solver")
+            logger.info(f"Case Writer: Wrote thermophysicalProperties for {solver_name}")
     
     if "T" in solver_settings:
         # Only write temperature field if it doesn't already exist from boundary conditions
@@ -1309,7 +1342,8 @@ def write_solver_files(case_directory: Path, state: CFDState) -> None:
         if not temp_file_path.exists():
             write_foam_dict(temp_file_path, solver_settings["T"])
             if state["verbose"]:
-                logger.info("Case Writer: Wrote initial temperature field T for rhoPimpleFoam")
+                solver_name = solver_settings.get("solver", "compressible solver")
+                logger.info(f"Case Writer: Wrote initial temperature field T for {solver_name}")
         else:
             if state["verbose"]:
                 logger.info("Case Writer: Temperature field T already exists from boundary conditions")
@@ -1775,12 +1809,9 @@ def validate_case_structure(case_directory: Path) -> Dict[str, Any]:
                     if not (case_directory / "0" / "alpha.water").exists():
                         errors.append("Missing alpha.water field for interFoam")
                 
-                # Check for rhoPimpleFoam specific files
-                elif solver == "rhoPimpleFoam":
-                    if not (case_directory / "constant" / "thermophysicalProperties").exists():
-                        errors.append("Missing thermophysicalProperties for rhoPimpleFoam")
-                    if not (case_directory / "0" / "T").exists():
-                        errors.append("Missing temperature field T for rhoPimpleFoam")
+                # For compressible solvers, files are written based on solver_settings
+                # so we don't need to check for file existence here since this validation
+                # runs before the files are actually written
     
     # Check boundary condition files
     zero_dir = case_directory / "0"

@@ -273,7 +273,8 @@ def create_initial_state(
         mesh_convergence_active: bool = False,
         mesh_convergence_levels: int = 4,
         mesh_convergence_target_params: List[str] = None,
-        mesh_convergence_threshold: float = 1.0
+        mesh_convergence_threshold: float = 1.0,
+        use_gpu: bool = False
     ) -> CFDState:
     """Create initial state for the CFD workflow."""
     return CFDState(
@@ -313,4 +314,10 @@ def create_initial_state(
         mesh_convergence_results={},
         mesh_convergence_report={},
         recommended_mesh_level=0,
+        use_gpu=use_gpu,
+        gpu_info={
+            "use_gpu": use_gpu,
+            "gpu_explicit": False,
+            "gpu_backend": "petsc"
+        }
     ) 

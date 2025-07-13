@@ -612,8 +612,8 @@ def apply_intelligent_defaults(geometry_type: GeometryType, dimensions: Dict[str
         
         if 'length' not in dimensions:
             if flow_context.is_external_flow:
-                # For 2D external flow, use thin slice
-                dimensions['length'] = dimensions['diameter'] * 0.1
+                # For external flow, use height equal to diameter by default
+                dimensions['length'] = dimensions['diameter']
             else:
                 # For internal flow (unlikely for cylinder), use longer length
                 dimensions['length'] = dimensions['diameter'] * 10
@@ -788,106 +788,142 @@ def detect_rotation_request(prompt: str) -> Dict[str, Any]:
 
 
 def detect_mesh_convergence_request(prompt: str) -> Dict[str, Any]:
-    """Detect mesh convergence study requests from the prompt."""
-    import re
-    
-    convergence_info = {
-        "mesh_convergence_active": False,
-        "mesh_convergence_levels": 4,  # Default
-        "mesh_convergence_threshold": 1.0,  # Default 1% threshold
-        "mesh_convergence_target_params": []
-    }
-    
+    """Detect mesh convergence study request from the prompt."""
     prompt_lower = prompt.lower()
     
-    # Mesh convergence keywords
-    mesh_convergence_keywords = [
-        r"\bmesh\s+convergence\b", r"\bmesh\s+independence\b", r"\bmesh\s+study\b",
-        r"\bgrid\s+convergence\b", r"\bgrid\s+independence\b", r"\bgrid\s+study\b",
-        r"\bconvergence\s+study\b", r"\bconvergence\s+test\b", r"\bconvergence\s+analysis\b",
-        r"\bmesh\s+refinement\s+study\b", r"\bgrid\s+refinement\s+study\b",
-        r"\bmesh\s+sensitivity\b", r"\bgrid\s+sensitivity\b", r"\bsensitivity\s+analysis\b",
-        r"\bmesh\s+quality\s+check\b", r"\bvalidate\s+mesh\b", r"\bverify\s+mesh\b",
-        r"\bmesh\s+resolution\s+study\b", r"\bcheck\s+mesh\s+convergence\b",
-        r"\bensure\s+mesh\s+independence\b", r"\btest\s+mesh\s+convergence\b",
-        r"\bmesh\s+convergence\s+test\b", r"\bmesh\s+independence\s+test\b"
+    # Initialize mesh convergence info
+    mesh_convergence_info = {
+        "mesh_convergence_active": False,
+        "mesh_convergence_levels": 4,
+        "mesh_convergence_target_params": [],
+        "mesh_convergence_threshold": 1.0
+    }
+    
+    # Detect mesh convergence request
+    mesh_convergence_patterns = [
+        r'mesh\s+convergence\s+study',
+        r'mesh\s+convergence\s+analysis',
+        r'mesh\s+independence\s+study',
+        r'mesh\s+independence\s+analysis',
+        r'mesh\s+sensitivity\s+study',
+        r'mesh\s+sensitivity\s+analysis',
+        r'grid\s+convergence\s+study',
+        r'grid\s+independence\s+study',
+        r'check\s+mesh\s+convergence',
+        r'verify\s+mesh\s+independence',
+        r'test\s+mesh\s+sensitivity',
+        r'perform\s+mesh\s+study',
+        r'run\s+mesh\s+convergence',
+        r'mesh\s+refinement\s+study',
+        r'grid\s+refinement\s+study'
     ]
     
-    # Check for mesh convergence keywords
-    has_mesh_convergence = any(re.search(keyword, prompt_lower) for keyword in mesh_convergence_keywords)
+    # Check for mesh convergence request
+    for pattern in mesh_convergence_patterns:
+        if re.search(pattern, prompt_lower):
+            mesh_convergence_info["mesh_convergence_active"] = True
+            break
     
-    if not has_mesh_convergence:
-        return convergence_info
-    
-    # Mesh convergence detected
-    convergence_info["mesh_convergence_active"] = True
-    
-    # Extract number of levels
-    level_patterns = [
-        r'(?:with\s+)?(\d+)\s+(?:mesh\s+)?levels?',
-        r'(?:using\s+)?(\d+)\s+(?:refinement\s+)?levels?',
-        r'(\d+)\s+(?:different\s+)?mesh(?:es)?',
-        r'(\d+)\s+(?:grid\s+)?refinements?',
-        r'(\d+)[-\s]?level\s+(?:mesh\s+)?study'
+    # Extract number of mesh levels
+    levels_patterns = [
+        r'(\d+)\s+mesh\s+levels',
+        r'(\d+)\s+refinement\s+levels',
+        r'(\d+)\s+grid\s+levels',
+        r'with\s+(\d+)\s+levels',
+        r'using\s+(\d+)\s+levels'
     ]
     
-    for pattern in level_patterns:
-        if match := re.search(pattern, prompt_lower):
+    for pattern in levels_patterns:
+        match = re.search(pattern, prompt_lower)
+        if match:
             levels = int(match.group(1))
-            if 2 <= levels <= 10:  # Reasonable range
-                convergence_info["mesh_convergence_levels"] = levels
-                break
-    
-    # Extract convergence threshold
-    threshold_patterns = [
-        r'(?:convergence\s+)?threshold\s*[:=]?\s*([\d.]+)\s*%',
-        r'(?:within\s+)?([\d.]+)\s*%\s*(?:convergence|accuracy)',
-        r'(?:tolerance\s+of\s+)?([\d.]+)\s*%',
-        r'(?:error\s+less\s+than\s+)?([\d.]+)\s*%'
-    ]
-    
-    for pattern in threshold_patterns:
-        if match := re.search(pattern, prompt_lower):
-            threshold = float(match.group(1))
-            if 0.1 <= threshold <= 10.0:  # Reasonable range
-                convergence_info["mesh_convergence_threshold"] = threshold
+            if 2 <= levels <= 8:  # Reasonable range
+                mesh_convergence_info["mesh_convergence_levels"] = levels
                 break
     
     # Extract target parameters
     param_patterns = [
-        r'(?:monitor|check|track|analyze)\s+([^.]+?)(?:for\s+convergence|convergence)',
-        r'convergence\s+of\s+([^.]+)',
-        r'(?:study|analyze)\s+([^.]+?)\s+convergence'
+        r'monitor\s+([^.]+?)(?:\s+for\s+convergence|$)',
+        r'check\s+([^.]+?)(?:\s+convergence|$)',
+        r'target\s+parameters?\s*[:=]?\s*([^.]+?)(?:\s|$)',
+        r'convergence\s+of\s+([^.]+?)(?:\s|$)'
     ]
     
-    common_params = {
-        r'\bdrag\b': 'drag_coefficient',
-        r'\blift\b': 'lift_coefficient',
-        r'\bpressure\s+drop\b': 'pressure_drop',
-        r'\bmax\s+velocity\b': 'max_velocity',
-        r'\bvelocity\b': 'max_velocity',
-        r'\bpressure\b': 'pressure_drop',
-        r'\bstrouhal\b': 'strouhal_number',
-        r'\bfriction\b': 'friction_factor',
-        r'\bforce\b': 'drag_coefficient'
+    for pattern in param_patterns:
+        match = re.search(pattern, prompt_lower)
+        if match:
+            param_text = match.group(1)
+            # Extract parameter names
+            params = [p.strip() for p in re.split(r'[,\s]+', param_text) if p.strip()]
+            if params:
+                mesh_convergence_info["mesh_convergence_target_params"] = params
+                break
+    
+    # Extract convergence threshold
+    threshold_patterns = [
+        r'threshold\s+of\s+([\d.]+)\s*%',
+        r'convergence\s+threshold\s+([\d.]+)\s*%',
+        r'within\s+([\d.]+)\s*%',
+        r'accuracy\s+of\s+([\d.]+)\s*%'
+    ]
+    
+    for pattern in threshold_patterns:
+        match = re.search(pattern, prompt_lower)
+        if match:
+            threshold = float(match.group(1))
+            if 0.1 <= threshold <= 10.0:  # Reasonable range
+                mesh_convergence_info["mesh_convergence_threshold"] = threshold
+                break
+    
+    return mesh_convergence_info
+
+
+def detect_gpu_request(prompt: str) -> Dict[str, Any]:
+    """Detect explicit GPU acceleration request from the prompt."""
+    prompt_lower = prompt.lower()
+    
+    # Initialize GPU info
+    gpu_info = {
+        "use_gpu": False,
+        "gpu_explicit": False,
+        "gpu_backend": "petsc"
     }
     
-    for pattern in param_patterns:
-        if match := re.search(pattern, prompt_lower):
-            param_text = match.group(1).strip()
-            for param_pattern, param_name in common_params.items():
-                if re.search(param_pattern, param_text):
-                    if param_name not in convergence_info["mesh_convergence_target_params"]:
-                        convergence_info["mesh_convergence_target_params"].append(param_name)
+    # Detect explicit GPU requests - user must explicitly ask for GPU
+    gpu_patterns = [
+        r'use\s+(?:the\s+)?gpu',
+        r'use\s+my\s+gpu',
+        r'with\s+gpu',
+        r'gpu\s+acceleration',
+        r'accelerate\s+with\s+gpu',
+        r'run\s+on\s+gpu',
+        r'enable\s+gpu',
+        r'use\s+graphics\s+card',
+        r'leverage\s+gpu',
+        r'utilize\s+gpu',
+        r'gpu\s+computing',
+        r'gpu\s+solver',
+        r'cuda\s+acceleration',
+        r'use\s+cuda'
+    ]
     
-    # If no specific parameters found, check for general mentions
-    if not convergence_info["mesh_convergence_target_params"]:
-        for param_pattern, param_name in common_params.items():
-            if re.search(param_pattern, prompt_lower):
-                if param_name not in convergence_info["mesh_convergence_target_params"]:
-                    convergence_info["mesh_convergence_target_params"].append(param_name)
+    # Check for explicit GPU request
+    for pattern in gpu_patterns:
+        if re.search(pattern, prompt_lower):
+            gpu_info["use_gpu"] = True
+            gpu_info["gpu_explicit"] = True
+            break
     
-    return convergence_info
+    # Detect specific GPU backend preferences
+    if gpu_info["use_gpu"]:
+        if re.search(r'petsc', prompt_lower):
+            gpu_info["gpu_backend"] = "petsc"
+        elif re.search(r'amgx', prompt_lower):
+            gpu_info["gpu_backend"] = "amgx"
+        elif re.search(r'rapidcfd', prompt_lower):
+            gpu_info["gpu_backend"] = "rapidcfd"
+    
+    return gpu_info
 
 
 def detect_multiphase_flow(prompt: str) -> Dict[str, Any]:
@@ -1258,6 +1294,31 @@ Return valid JSON that matches the schema exactly.
                 if mesh_convergence_info["mesh_convergence_target_params"]:
                     logger.info(f"NL Interpreter: Target parameters: {mesh_convergence_info['mesh_convergence_target_params']}")
         
+        # Detect GPU request from prompt
+        gpu_info = detect_gpu_request(state["user_prompt"])
+        
+        # Merge GPU info with existing flag from CLI
+        # Priority: CLI flag > prompt detection
+        final_gpu_info = {
+            "use_gpu": state.get("use_gpu", False) or gpu_info["use_gpu"],
+            "gpu_explicit": state.get("use_gpu", False) or gpu_info["gpu_explicit"],
+            "gpu_backend": gpu_info["gpu_backend"]
+        }
+        
+        # Log GPU detection if found
+        if final_gpu_info["use_gpu"]:
+            if state["verbose"]:
+                logger.info(f"NL Interpreter: GPU acceleration requested!")
+                logger.info(f"NL Interpreter: GPU explicit: {final_gpu_info['gpu_explicit']}")
+                logger.info(f"NL Interpreter: GPU backend: {final_gpu_info['gpu_backend']}")
+                if state.get("use_gpu", False):
+                    logger.info(f"NL Interpreter: GPU enabled via --use-gpu flag")
+                if gpu_info["use_gpu"]:
+                    logger.info(f"NL Interpreter: GPU requested in prompt")
+        
+        # Store GPU info in parsed parameters
+        parsed_params["gpu_info"] = final_gpu_info
+        
         # Detect advanced parameters from prompt and check for validation errors
         advanced_params = detect_advanced_parameters(state["user_prompt"])
         all_validation_errors = []
@@ -1299,7 +1360,10 @@ Return valid JSON that matches the schema exactly.
                     "mesh_convergence_active": mesh_convergence_info["mesh_convergence_active"],
                     "mesh_convergence_levels": mesh_convergence_info["mesh_convergence_levels"],
                     "mesh_convergence_threshold": mesh_convergence_info["mesh_convergence_threshold"],
-                    "mesh_convergence_target_params": mesh_convergence_info["mesh_convergence_target_params"]
+                    "mesh_convergence_target_params": mesh_convergence_info["mesh_convergence_target_params"],
+                    # Include GPU parameters in state
+                    "use_gpu": final_gpu_info["use_gpu"],
+                    "gpu_info": final_gpu_info
                 }
             else:
                 # Normal validation failure - stop execution with helpful error message
@@ -1321,7 +1385,10 @@ Return valid JSON that matches the schema exactly.
             "mesh_convergence_active": mesh_convergence_info["mesh_convergence_active"],
             "mesh_convergence_levels": mesh_convergence_info["mesh_convergence_levels"],
             "mesh_convergence_threshold": mesh_convergence_info["mesh_convergence_threshold"],
-            "mesh_convergence_target_params": mesh_convergence_info["mesh_convergence_target_params"]
+            "mesh_convergence_target_params": mesh_convergence_info["mesh_convergence_target_params"],
+            # Include GPU parameters in state
+            "use_gpu": final_gpu_info["use_gpu"],
+            "gpu_info": final_gpu_info
         }
         
     except Exception as e:

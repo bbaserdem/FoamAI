@@ -29,7 +29,8 @@ def cli():
 @click.option('--mesh-levels', default=4, help='Number of mesh refinement levels for convergence study')
 @click.option('--mesh-target-params', help='Comma-separated list of parameters to monitor for convergence (e.g., drag_coefficient,pressure_drop)')
 @click.option('--mesh-convergence-threshold', default=1.0, help='Convergence threshold percentage (default: 1.0%)')
-def solve(prompt: str, output_format: str, no_export_images: bool, no_user_approval: bool, verbose: bool, max_retries: int, stl_file: str, force_validation: bool, mesh_study: bool, mesh_levels: int, mesh_target_params: str, mesh_convergence_threshold: float):
+@click.option('--use-gpu', is_flag=True, help='Enable GPU acceleration for supported solvers (requires compatible GPU and PETSc/AmgX)')
+def solve(prompt: str, output_format: str, no_export_images: bool, no_user_approval: bool, verbose: bool, max_retries: int, stl_file: str, force_validation: bool, mesh_study: bool, mesh_levels: int, mesh_target_params: str, mesh_convergence_threshold: float, use_gpu: bool):
     """Solve a CFD problem from natural language description."""
     
     # Import here to avoid circular imports and startup time
@@ -65,7 +66,8 @@ def solve(prompt: str, output_format: str, no_export_images: bool, no_user_appro
             f"\n[green]Mesh Convergence Study:[/green] {mesh_study}" +
             (f"\n[green]  Mesh Levels:[/green] {mesh_levels}" if mesh_study else "") +
             (f"\n[green]  Target Parameters:[/green] {', '.join(target_params) if target_params else 'Auto-detect'}" if mesh_study else "") +
-            (f"\n[green]  Convergence Threshold:[/green] {mesh_convergence_threshold}%" if mesh_study else ""),
+            (f"\n[green]  Convergence Threshold:[/green] {mesh_convergence_threshold}%" if mesh_study else "") +
+            (f"\n[green]  Use GPU:[/green] {use_gpu}" if use_gpu else ""),
             title="CFD Problem Setup",
             border_style="blue"
         )
@@ -85,7 +87,8 @@ def solve(prompt: str, output_format: str, no_export_images: bool, no_user_appro
             mesh_convergence_active=mesh_study,
             mesh_convergence_levels=mesh_levels,
             mesh_convergence_target_params=target_params,
-            mesh_convergence_threshold=mesh_convergence_threshold
+            mesh_convergence_threshold=mesh_convergence_threshold,
+            use_gpu=use_gpu
         )
         
         # Create workflow

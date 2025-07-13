@@ -575,7 +575,9 @@ def generate_mesh_config(geometry_info: Dict[str, Any], parsed_params: Dict[str,
     """Generate mesh configuration based on geometry type."""
     geometry_type = geometry_info["type"]
     dimensions = geometry_info["dimensions"]
-    mesh_resolution = geometry_info.get("mesh_resolution", "medium")
+    mesh_resolution = geometry_info.get("mesh_resolution")
+    if mesh_resolution is None:
+        mesh_resolution = "medium"  # Default mesh resolution
     flow_context = geometry_info.get("flow_context", {})
     is_custom_geometry = geometry_info.get("is_custom_geometry", False)
     stl_file = geometry_info.get("stl_file")
@@ -626,14 +628,22 @@ def get_resolution_multiplier(mesh_resolution: str) -> float:
         "fine": 2.0,
         "very_fine": 4.0
     }
+    if mesh_resolution is None:
+        return 1.0  # Default medium resolution
     return resolution_map.get(mesh_resolution, 1.0)
 
 
 def generate_cylinder_mesh(dimensions: Dict[str, float], resolution: str = "medium", 
                           is_external_flow: bool = True, flow_context: Dict[str, Any] = None) -> Dict[str, Any]:
     """Generate mesh configuration for cylinder geometry."""
-    diameter = dimensions.get("diameter", 0.1)  # Default 0.1m diameter
-    length = dimensions.get("length", diameter * 0.1)  # Default thin slice for 2D
+    # Handle None values explicitly
+    diameter = dimensions.get("diameter")
+    if diameter is None:
+        diameter = 0.1  # Default 0.1m diameter
+    
+    length = dimensions.get("length")
+    if length is None:
+        length = diameter  # Default height equal to diameter
     
     # Determine if this is a 2D or 3D case based on length
     # If length is very small compared to diameter, it's 2D
@@ -641,7 +651,9 @@ def generate_cylinder_mesh(dimensions: Dict[str, float], resolution: str = "medi
     
     if is_external_flow:
         # External flow around cylinder - create proper O-grid mesh
-        domain_multiplier = flow_context.get("domain_size_multiplier", 20.0) if flow_context else 20.0
+        domain_multiplier = flow_context.get("domain_size_multiplier") if flow_context else None
+        if domain_multiplier is None:
+            domain_multiplier = 20.0  # Default domain size multiplier
         
         # Domain dimensions
         domain_length = diameter * domain_multiplier
@@ -847,16 +859,27 @@ def generate_cylinder_mesh(dimensions: Dict[str, float], resolution: str = "medi
 def generate_airfoil_mesh(dimensions: Dict[str, float], resolution: str = "medium", 
                          is_external_flow: bool = True, flow_context: Dict[str, Any] = None) -> Dict[str, Any]:
     """Generate mesh configuration for airfoil geometry."""
-    chord = dimensions.get("chord", 0.1)
-    span = dimensions.get("span", chord * 0.1)  # Default thin span for 2D
-    thickness = dimensions.get("thickness", chord * 0.12)  # NACA 0012 default
+    # Handle None values explicitly
+    chord = dimensions.get("chord")
+    if chord is None:
+        chord = 0.1  # Default 10cm chord
+    
+    span = dimensions.get("span")
+    if span is None:
+        span = chord * 0.1  # Default thin span for 2D
+    
+    thickness = dimensions.get("thickness")
+    if thickness is None:
+        thickness = chord * 0.12  # NACA 0012 default
     
     # Determine if this is 2D or 3D
     is_2d = span < chord * 0.2  # Less than 20% of chord means 2D
     
     if is_external_flow:
         # External flow around airfoil
-        domain_multiplier = flow_context.get("domain_size_multiplier", 30.0) if flow_context else 30.0
+        domain_multiplier = flow_context.get("domain_size_multiplier") if flow_context else None
+        if domain_multiplier is None:
+            domain_multiplier = 30.0  # Default domain size multiplier
         
         # Domain dimensions
         domain_length = chord * domain_multiplier
@@ -985,8 +1008,14 @@ def generate_airfoil_mesh(dimensions: Dict[str, float], resolution: str = "mediu
 
 def generate_pipe_mesh(dimensions: Dict[str, float], resolution_multiplier: float, params: Dict[str, Any]) -> Dict[str, Any]:
     """Generate mesh configuration for pipe geometry."""
-    diameter = dimensions.get("diameter", 0.05)
-    length = dimensions.get("length", 1.0)
+    # Handle None values explicitly
+    diameter = dimensions.get("diameter")
+    if diameter is None:
+        diameter = 0.05  # Default 5cm pipe
+    
+    length = dimensions.get("length")
+    if length is None:
+        length = 1.0  # Default 1m length
     
     # Base mesh resolution
     base_resolution = int(30 * resolution_multiplier)
@@ -1025,9 +1054,18 @@ def generate_pipe_mesh(dimensions: Dict[str, float], resolution_multiplier: floa
 
 def generate_channel_mesh(dimensions: Dict[str, float], resolution_multiplier: float, params: Dict[str, Any]) -> Dict[str, Any]:
     """Generate mesh configuration for channel geometry."""
-    width = dimensions.get("width", 0.1)
-    height = dimensions.get("height", 0.02)
-    length = dimensions.get("length", 1.0)
+    # Handle None values explicitly
+    width = dimensions.get("width")
+    if width is None:
+        width = 0.1  # Default 10cm width
+    
+    height = dimensions.get("height")
+    if height is None:
+        height = 0.02  # Default 2cm height
+    
+    length = dimensions.get("length")
+    if length is None:
+        length = 1.0  # Default 1m length
     
     # Base mesh resolution
     base_resolution = int(40 * resolution_multiplier)
@@ -1069,11 +1107,16 @@ def generate_channel_mesh(dimensions: Dict[str, float], resolution_multiplier: f
 def generate_sphere_mesh(dimensions: Dict[str, float], resolution: str = "medium", 
                         is_external_flow: bool = True, flow_context: Dict[str, Any] = None) -> Dict[str, Any]:
     """Generate mesh configuration for sphere geometry."""
-    diameter = dimensions.get("diameter", 0.1)
+    # Handle None values explicitly
+    diameter = dimensions.get("diameter")
+    if diameter is None:
+        diameter = 0.1  # Default 10cm sphere
     
     if is_external_flow:
         # External flow around sphere - must be 3D
-        domain_multiplier = flow_context.get("domain_size_multiplier", 20.0) if flow_context else 20.0
+        domain_multiplier = flow_context.get("domain_size_multiplier") if flow_context else None
+        if domain_multiplier is None:
+            domain_multiplier = 20.0  # Default domain size multiplier
         
         # Domain dimensions - sphere requires 3D domain
         domain_length = diameter * domain_multiplier
@@ -1193,14 +1236,19 @@ def generate_sphere_mesh(dimensions: Dict[str, float], resolution: str = "medium
 
 def generate_cube_mesh(dimensions: Dict[str, float], resolution: str = "medium", is_external_flow: bool = True, flow_context: Dict[str, Any] = None) -> Dict[str, Any]:
     """Generate mesh configuration for cube geometry."""
-    side_length = dimensions.get("side_length", 0.1)
+    # Handle None values explicitly
+    side_length = dimensions.get("side_length")
+    if side_length is None:
+        side_length = 0.1  # Default 10cm cube
     
     # Get resolution count  
     base_resolution = {"coarse": 15, "medium": 30, "fine": 60, "very_fine": 90}.get(resolution, 30)
     
     if is_external_flow:
         # External flow around cube
-        domain_multiplier = flow_context.get("domain_size_multiplier", 20.0) if flow_context else 20.0
+        domain_multiplier = flow_context.get("domain_size_multiplier") if flow_context else None
+        if domain_multiplier is None:
+            domain_multiplier = 20.0  # Default domain size multiplier
         
         # Domain dimensions
         domain_length = side_length * domain_multiplier

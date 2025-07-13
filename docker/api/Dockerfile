@@ -9,7 +9,7 @@ ENV TZ=UTC
 # Python environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONPATH=/app/src/foamai-server:$PYTHONPATH
+ENV PYTHONPATH=/app/src/foamai-server:${PYTHONPATH}
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -34,7 +34,7 @@ RUN groupadd -r apiuser && useradd -r -g apiuser -m -d /home/apiuser apiuser
 
 # Install UV package manager system-wide
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.cargo/bin:$PATH"
+ENV PATH="/root/.local/bin:$PATH"
 
 # Set working directory
 WORKDIR /app

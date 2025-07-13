@@ -2739,7 +2739,7 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
         }
     else:
         # Standard pressure solver for incompressible flows
-        if use_gpu and gpu_backend == "petsc":
+        if use_gpu and gpu_libs_available and gpu_backend == "petsc":
             fv_solution["solvers"]["p"] = {
                 "solver": "petsc",
                 "petsc": {
@@ -2752,7 +2752,7 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
                 "tolerance": 1e-06,
                 "relTol": 0.1
             }
-        elif use_gpu and gpu_backend == "amgx":
+        elif use_gpu and gpu_libs_available and gpu_backend == "amgx":
             fv_solution["solvers"]["p"] = {
                 "solver": "amgx",
                 "amgx": {},
@@ -2792,7 +2792,7 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
         }
         if solver_type != SolverType.INTER_FOAM and "pFinal" not in fv_solution["solvers"]:
             # Apply same GPU settings to pFinal solver
-            if use_gpu and gpu_backend == "petsc":
+            if use_gpu and gpu_libs_available and gpu_backend == "petsc":
                 fv_solution["solvers"]["pFinal"] = {
                     "solver": "petsc",
                     "petsc": {
@@ -2805,7 +2805,7 @@ def generate_fv_solution(solver_settings: Dict[str, Any], parsed_params: Dict[st
                     "tolerance": 1e-06,
                     "relTol": 0
                 }
-            elif use_gpu and gpu_backend == "amgx":
+            elif use_gpu and gpu_libs_available and gpu_backend == "amgx":
                 fv_solution["solvers"]["pFinal"] = {
                     "solver": "amgx",
                     "amgx": {},

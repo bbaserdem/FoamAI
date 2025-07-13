@@ -43,10 +43,12 @@ WORKDIR /app
 # The build context is set to "." (root of the repo) in the workflow
 COPY src/foamai-server/ ./src/foamai-server/
 
-# Create virtual environment and install dependencies using uv
+# Create virtual environment using system Python and install dependencies
 WORKDIR /app/src/foamai-server
-RUN uv venv .venv && \
-    uv pip install -e .
+RUN python3 -m venv .venv && \
+    .venv/bin/pip install --upgrade pip && \
+    .venv/bin/pip install uv && \
+    .venv/bin/uv pip install -e .
 
 # Create necessary directories and set permissions
 RUN mkdir -p /data /tmp/foamai

@@ -649,6 +649,86 @@ docker-compose logs -f openfoam
 docker-compose logs -f pvserver
 ```
 
+### Comprehensive Testing Suite
+
+FoamAI includes multiple testing tools for validation:
+
+#### 1. Python Test Suite
+```bash
+# Comprehensive service testing
+uv run python test-foamai-service.py --host YOUR_IP --verbose
+
+# Test features:
+# ✅ API functionality validation
+# 🏗️ Infrastructure component testing  
+# 🔮 Future endpoint detection
+# ⚡ Performance benchmarking
+# 📊 Detailed reporting
+```
+
+#### 2. Quick Shell Tests
+```bash
+# Fast basic functionality check
+./test-foamai-quick.sh YOUR_IP
+
+# Features:
+# 🚀 Fast basic functionality check
+# 📋 Manual testing commands
+# 🎯 Service status summary
+```
+
+#### 3. Remote Server Inspection
+```bash
+# SSH-based server diagnostics
+./test-remote-server.sh YOUR_IP ~/.ssh/foamai-key
+
+# Features:
+# 🔐 SSH connectivity testing
+# 🐳 Docker container inspection
+# 📋 Service status checking
+# 📄 Log file analysis
+```
+
+### Manual Testing Commands
+
+#### API Endpoint Testing
+```bash
+# Health checks
+curl http://YOUR_IP:8000/ping
+curl http://YOUR_IP:8000/api/health
+
+# API schema inspection
+curl -s http://YOUR_IP:8000/openapi.json | jq '.paths'
+
+# Interactive documentation
+open http://YOUR_IP:8000/docs
+```
+
+#### Network Connectivity Testing
+```bash
+# Test API port
+telnet YOUR_IP 8000
+
+# Test ParaView port
+telnet YOUR_IP 11111
+
+# Check security group rules
+aws ec2 describe-security-groups --region YOUR_REGION
+```
+
+#### Container Health Validation
+```bash
+# Check container status
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+
+# Container resource usage
+docker stats --no-stream
+
+# Container logs
+docker-compose logs --tail=50 api
+docker-compose logs --tail=50 pvserver
+```
+
 ### Log Files Location
 
 | Log File | Purpose | Location |

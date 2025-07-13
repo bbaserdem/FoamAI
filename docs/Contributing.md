@@ -602,15 +602,55 @@ uv run pytest tests/test_user_approval.py
 FoamAI includes comprehensive testing tools for deployed services:
 
 ```bash
-# Test deployed service (Python)
-cd docs/task_4_devops/demo_00/
+# Comprehensive Python test suite
 uv run python test-foamai-service.py --host YOUR_IP --verbose
 
-# Quick shell test
+# Quick shell test for basic functionality
 ./test-foamai-quick.sh YOUR_IP
 
-# Remote server inspection
+# Remote server inspection and diagnostics
 ./test-remote-server.sh YOUR_IP ~/.ssh/foamai-key
+```
+
+#### API Testing Workflow
+
+```bash
+# Test health endpoints
+curl http://YOUR_IP:8000/ping
+curl http://YOUR_IP:8000/api/health
+
+# Test API documentation
+curl -s http://YOUR_IP:8000/openapi.json | jq '.paths'
+
+# View interactive documentation
+open http://YOUR_IP:8000/docs
+```
+
+#### Infrastructure Testing
+
+```bash
+# Test network connectivity
+telnet YOUR_IP 8000
+telnet YOUR_IP 11111
+
+# Test SSH access
+ssh -i ~/.ssh/foamai-key ubuntu@YOUR_IP
+
+# Check service status
+ssh -i ~/.ssh/foamai-key ubuntu@YOUR_IP "sudo foamai-status"
+```
+
+#### Performance Testing
+
+```bash
+# Basic load testing
+ab -n 100 -c 10 http://YOUR_IP:8000/ping
+
+# Memory and CPU monitoring
+ssh -i ~/.ssh/foamai-key ubuntu@YOUR_IP "htop"
+
+# Docker container resource usage
+ssh -i ~/.ssh/foamai-key ubuntu@YOUR_IP "docker stats"
 ```
 
 #### Local Container Testing

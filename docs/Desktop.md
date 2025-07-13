@@ -614,11 +614,136 @@ class CustomVisualizationPlugin:
         pass
 ```
 
+## Docker Container Deployment
+
+For containerized deployment of the FoamAI Desktop Application:
+
+### Quick Start with Docker
+
+```bash
+# Allow X11 forwarding (Linux/macOS)
+xhost +local:docker
+
+# Run with Docker Compose
+docker-compose -f docker-compose.desktop.yml up
+
+# Or run directly
+docker run -it --rm \
+  -e DISPLAY=$DISPLAY \
+  -v /tmp/.X11-unix:/tmp/.X11-unix \
+  -v $HOME/.Xauthority:/tmp/.Xauthority \
+  --network host \
+  foamai-desktop
+```
+
+### Windows Docker Setup
+
+```powershell
+# Install VcXsrv and start with "Disable access control" checked
+docker run -it --rm \
+  -e DISPLAY=host.docker.internal:0 \
+  foamai-desktop
+```
+
+### Building the Container
+
+```bash
+# Build the desktop container
+docker build -f docker/desktop/Dockerfile -t foamai-desktop .
+
+# Build with specific versions
+docker build \
+  --build-arg PYTHON_VERSION=3.12 \
+  --build-arg PARAVIEW_VERSION=6.0.0 \
+  -f docker/desktop/Dockerfile \
+  -t foamai-desktop .
+```
+
+### Container Configuration
+
+Environment variables for container deployment:
+
+```env
+# Server Configuration
+SERVER_HOST=host.docker.internal
+SERVER_PORT=8000
+PARAVIEW_SERVER_HOST=host.docker.internal
+PARAVIEW_SERVER_PORT=11111
+
+# Application Settings  
+WINDOW_WIDTH=1400
+WINDOW_HEIGHT=900
+CHAT_HISTORY_LIMIT=200
+PARAVIEW_TIMEOUT=45
+REQUEST_TIMEOUT=120
+
+# Display Settings
+DISPLAY=:0
+QT_X11_NO_MITSHM=1
+```
+
+## Testing & Validation
+
+### Development Testing
+
+```bash
+# Test desktop application functionality
+cd src/foamai-desktop
+uv run pytest tests/
+
+# Test ParaView integration
+uv run python test_paraview_integration.py
+
+# Test server connectivity
+uv run python test_server_connection.py --host localhost --port 8000
+```
+
+### Manual Test Workflow
+
+1. **Component Tests**:
+   ```bash
+   # Test ParaView widget
+   uv run python -c "
+   from foamai_desktop.paraview_widget import ParaViewWidget
+   print('✅ ParaView widget imports successfully')
+   "
+   
+   # Test API client
+   uv run python -c "
+   from foamai_desktop.api_client import APIClient
+   client = APIClient('http://localhost:8000')
+   print('✅ API client initialized')
+   "
+   ```
+
+2. **Full Workflow Test**:
+   ```bash
+   # Start test servers
+   python start_all_servers.py
+   
+   # Run workflow test
+   python test_workflow.py
+   ```
+
+### Performance Testing
+
+```bash
+# Large mesh performance test
+uv run python test_large_mesh_performance.py
+
+# Memory usage monitoring
+uv run python test_memory_usage.py --duration 300
+
+# Rendering performance test
+uv run python test_rendering_performance.py --resolution 1920x1080
+```
+
 ## Additional Resources
 
 - [FoamAI Contributing Guide](Contributing.md) - Development setup and workflows
 - [Backend API Reference](BackendAPI.md) - Server API documentation
 - [LangGraph Agents System](Agents.md) - AI agent architecture
+- [DevOps Guide](DevOps.md) - Infrastructure deployment and testing
 - [ParaView Documentation](https://www.paraview.org/documentation/) - ParaView user guide
 - [PySide6 Documentation](https://doc.qt.io/qtforpython/) - Qt Python bindings
 

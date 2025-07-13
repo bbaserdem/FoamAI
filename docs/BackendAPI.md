@@ -657,12 +657,68 @@ curl http://localhost:8000/api/task_status/YOUR_TASK_ID
 curl http://localhost:8000/api/projects
 ```
 
+### Desktop Application Integration
+
+The backend API is designed specifically to integrate with the FoamAI Desktop Application:
+
+#### Architecture Overview
+
+```
+┌─────────────────────┐    REST API     ┌─────────────────────┐
+│   Desktop App       │◄──────────────►│   API Server        │
+│   (PySide6/Qt)      │                 │   (FastAPI)         │
+│                     │                 │                     │
+│                     │    ParaView     │                     │
+│   ParaView Widget   │◄──────────────►│   pvserver          │
+│                     │   Connection    │   (Port 11111)      │
+└─────────────────────┘                 └─────────────────────┘
+```
+
+#### Desktop Integration Requirements
+
+1. **REST API Endpoints**: All endpoints listed in this documentation
+2. **ParaView Server**: pvserver running on port 11111 (configurable)
+3. **CORS Configuration**: Enable cross-origin requests for desktop clients
+4. **WebSocket Support**: Real-time status updates (planned enhancement)
+
+#### Configuration for Desktop Integration
+
+```python
+# FastAPI CORS configuration for desktop app
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure appropriately for security
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+#### Status Polling Pattern
+
+The desktop application uses a polling pattern for task status:
+
+```python
+# Desktop app polling logic
+while task_status != "completed":
+    response = requests.get(f"/api/task_status/{task_id}")
+    task_status = response.json()["status"]
+    
+    if task_status == "waiting_approval":
+        # Show approval dialog to user
+        break
+    
+    time.sleep(5)  # Poll every 5 seconds
+```
+
 ### Integration with FoamAI Components
 
 The backend API integrates with:
 
 - **foamai-core**: Natural language processing and CFD logic
-- **foamai-desktop**: GUI client for user interactions
+- **foamai-desktop**: GUI client for user interactions (see section above)
 - **foamai-client**: CLI tools for automation
 - **Docker containers**: OpenFOAM and ParaView services
 - **AWS infrastructure**: Production deployment

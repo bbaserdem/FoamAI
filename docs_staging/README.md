@@ -7,11 +7,12 @@ This directory contains all consolidated documentation for the FoamAI project. A
 - [Deployment Analysis](DEPLOYMENT_ANALYSIS.md) - Analysis of deployment strategies
 
 ## Setup & Getting Started
-- [Development Setup](dev_README.md) - Development environment setup
+- [Contributing Guide](Contributing.md) - Complete development setup with UV workspace management
+- [DevOps Guide](DevOps.md) - Infrastructure deployment and pipeline management
 - [Docker Desktop Setup](docker_desktop_README.md) - Docker desktop configuration
-- [Noob Instructions](noob_instructions.md) - Beginner-friendly setup guide
 - [Examples](examples_README.md) - Example usage and tutorials
 - [Testing](tests_README.md) - Testing setup and procedures
+- [Service Testing](TESTING.md) - Production service testing guide
 
 ## Architecture & Technical Documentation
 - [Tech Stack Recommendations](tech_stack_recommendations.md) - Recommended technologies and tools
@@ -28,22 +29,15 @@ This directory contains all consolidated documentation for the FoamAI project. A
 
 ## Infrastructure & Deployment
 - [Infrastructure Setup](infra_README.md) - Infrastructure overview
-- [EBS Volume Mounting](EBS_VOLUME_MOUNTING.md) - AWS EBS volume configuration
-- [Deployment Improvements](DEPLOYMENT_IMPROVEMENTS.md) - Deployment optimization
-- [IAM Setup Guide](IAM-SETUP-GUIDE.md) - AWS IAM configuration
-- [User Data Modules](user_data_modules_README.md) - EC2 user data modules
 - [GitHub Registry Deployment](GITHUB_REGISTRY_DEPLOYMENT.md) - Container registry deployment
 - [Nix Setup](nix_README.md) - Nix package manager setup
 
 ## DevOps & Workflows
-- [DevOps PRD](devops_prd.md) - DevOps product requirements
-- [Workflow](workflow.md) - Development workflows
-- [Local Workflow](local_workflow.md) - Local development workflow
-- [NixOS Considerations](nixos_considerations.md) - NixOS specific guidance
-- [Recommendations](recommendations.md) - General DevOps recommendations
+*See [DevOps Guide](DevOps.md) for comprehensive deployment and pipeline documentation*
 
 ## Testing & Quality Assurance
-- [Testing Documentation](TESTING.md) - Testing strategies and procedures
+- [Testing Documentation](TESTING.md) - Service testing strategies and procedures
+*See [Contributing Guide](Contributing.md#testing-infrastructure) for development testing with UV*
 
 ## Collaboration & Project Management
 - [Collaboration Recommendations](collaboration_recommendations.md) - Team collaboration guidelines

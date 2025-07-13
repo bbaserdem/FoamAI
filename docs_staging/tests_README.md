@@ -14,13 +14,16 @@ From the project root:
 
 ```bash
 # Run all tests
-python -m pytest tests/
+uv run pytest tests/
 
 # Run specific test file
-python tests/test_user_approval.py
+uv run python tests/test_user_approval.py
 
 # Run with verbose output
-python -m pytest tests/ -v
+uv run pytest tests/ -v
+
+# Run with coverage
+uv run pytest --cov=src/ --cov-report=html
 ```
 
 ## Test Environment
@@ -28,4 +31,6 @@ python -m pytest tests/ -v
 Tests require:
 - OpenFOAM installation (for solver tests)
 - ParaView installation (for visualization tests)
-- All project dependencies installed via `uv sync` 
+- All project dependencies installed via `uv sync --group test`
+
+For complete testing setup and workflows, see the [Contributing Guide](Contributing.md#testing-infrastructure). 

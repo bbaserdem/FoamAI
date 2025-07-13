@@ -4,6 +4,8 @@ A guide for developers contributing to the FoamAI project, including development
 
 ## Table of Contents
 - [Development Environment](#development-environment)
+- [Project Structure](#project-structure)
+- [UV Workspace Management](#uv-workspace-management)
 - [Nix Dev Shell Setup](#nix-dev-shell-setup)
 - [Local Testing Workflow](#local-testing-workflow)
 - [Code Contribution Guidelines](#code-contribution-guidelines)
@@ -12,9 +14,11 @@ A guide for developers contributing to the FoamAI project, including development
 ## Development Environment
 
 ### Prerequisites
-- Git (version 2.0+)
-- Docker (for local testing)
-- Text editor or IDE of choice
+- **Python 3.13+** (required for UV workspace)
+- **UV** (Python package manager) - [Install UV](https://docs.astral.sh/uv/getting-started/installation/)
+- **Git** (version 2.0+)
+- **Docker** (for local testing and containers)
+- **Text editor or IDE** of choice
 
 ### Repository Setup
 ```bash
@@ -22,8 +26,268 @@ A guide for developers contributing to the FoamAI project, including development
 git clone https://github.com/bbaserdem/FoamAI.git
 cd FoamAI
 
-# Set up development environment
-# (See specific sections below for your OS)
+# Install UV (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Set up Python environment and workspace
+uv sync
+
+# Activate the virtual environment
+source .venv/bin/activate  # Linux/macOS
+# or
+.venv\Scripts\activate  # Windows
+```
+
+## Project Structure
+
+FoamAI is organized as a UV workspace with multiple Python packages:
+
+```
+FoamAI/
+├── pyproject.toml              # Workspace configuration
+├── uv.lock                     # Dependency lock file
+├── src/
+│   ├── foamai-core/           # Core CFD logic and LLM agents
+│   │   ├── foamai_core/
+│   │   │   ├── orchestrator.py    # Main agent orchestrator
+│   │   │   ├── solver_selector.py # OpenFOAM solver selection
+│   │   │   ├── case_writer.py     # Case file generation
+│   │   │   ├── mesh_generator.py  # Mesh generation logic
+│   │   │   └── ...
+│   │   └── pyproject.toml
+│   ├── foamai-server/         # FastAPI backend service
+│   │   ├── foamai_server/
+│   │   │   ├── main.py            # API endpoints
+│   │   │   ├── database.py        # Database models
+│   │   │   ├── celery_worker.py   # Background job processing
+│   │   │   └── ...
+│   │   └── pyproject.toml
+│   ├── foamai-desktop/        # PySide6 desktop application
+│   │   ├── foamai_desktop/
+│   │   │   ├── main_window.py     # Main GUI window
+│   │   │   ├── paraview_widget.py # ParaView integration
+│   │   │   └── ...
+│   │   └── pyproject.toml
+│   └── foamai-client/         # CLI client tools
+│       ├── foamai_client/
+│       │   ├── cli.py             # Command-line interface
+│       │   └── ...
+│       └── pyproject.toml
+├── docker/                    # Container definitions
+│   ├── api/Dockerfile         # Server container
+│   ├── openfoam/Dockerfile    # OpenFOAM solver container
+│   ├── pvserver/Dockerfile    # ParaView server container
+│   └── desktop/Dockerfile     # Desktop app container
+├── infra/                     # Infrastructure (Terraform)
+├── tests/                     # Integration tests
+├── examples/                  # Usage examples
+└── dev/                       # Development tools
+```
+
+### Package Overview
+
+| Package | Purpose | Key Dependencies |
+|---------|---------|------------------|
+| **foamai-core** | CFD logic, LLM agents, simulation orchestration | LangChain, LangGraph, Pydantic |
+| **foamai-server** | REST API, background jobs, database | FastAPI, Celery, SQLAlchemy |
+| **foamai-desktop** | GUI application for simulation setup/monitoring | PySide6, ParaView Qt widgets |
+| **foamai-client** | CLI tools for automation and testing | Click, requests |
+
+## UV Workspace Management
+
+FoamAI uses UV for Python package and dependency management across multiple related packages.
+
+### Initial Setup
+
+```bash
+# Install dependencies for all workspace members
+uv sync
+
+# Install with specific dependency groups
+uv sync --group dev        # Development tools (ruff, pytest)
+uv sync --group test       # Testing dependencies only
+uv sync --group lint       # Linting tools only
+```
+
+### Working with Individual Packages
+
+```bash
+# Run commands in specific package context
+uv run --package foamai-server python -m foamai_server.main
+uv run --package foamai-desktop python -m foamai_desktop.main
+uv run --package foamai-client foamai-cli --help
+
+# Install package-specific dependencies
+cd src/foamai-server
+uv add fastapi uvicorn
+uv add --dev pytest-asyncio
+
+# Remove dependencies
+uv remove httpx
+```
+
+### Development Workflow
+
+```bash
+# Install in development mode (editable)
+uv sync --dev
+
+# Add a new dependency to the workspace
+uv add requests
+
+# Add a dev dependency to specific package
+cd src/foamai-core
+uv add --dev pytest-mock
+
+# Update all dependencies
+uv lock --upgrade
+
+# Run linting across workspace
+uv run ruff check .
+uv run ruff format .
+
+# Run tests
+uv run pytest
+uv run pytest src/foamai-core/  # Test specific package
+```
+
+### Managing Virtual Environments
+
+```bash
+# UV automatically creates and manages .venv/
+# Activate the environment manually if needed:
+source .venv/bin/activate
+
+# Check installed packages
+uv pip list
+
+# Show dependency tree
+uv tree
+
+# Export requirements for Docker builds
+uv export --format requirements-txt > requirements.txt
+uv export --package foamai-server --format requirements-txt > docker/api/requirements.txt
+```
+
+### Package Installation Modes
+
+```bash
+# Install from workspace (during development)
+uv sync
+
+# Install individual package in development mode
+uv pip install -e src/foamai-core/
+
+# Install from PyPI (when published)
+uv add foamai-core==0.1.0
+
+# Install from Git (for dependencies)
+uv add git+https://github.com/example/package.git
+```
+
+### Dependency Groups
+
+The workspace defines several dependency groups for different purposes:
+
+```toml
+[dependency-groups]
+dev = [
+    "pyyaml>=6.0.2",
+    {include-group = "lint"},
+    {include-group = "test"},
+]
+lint = [
+    "ruff>=0.12.1",
+]
+test = [
+    "pytest>=8.4.1",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=6.2.1",
+    "pytest-mock>=3.14.1",
+]
+```
+
+Use these groups for specific workflows:
+
+```bash
+# Development setup
+uv sync --group dev
+
+# CI/CD linting only
+uv sync --group lint
+uv run ruff check .
+
+# Testing only
+uv sync --group test
+uv run pytest
+```
+
+### Local Testing with UV
+
+```bash
+# Test the API server locally
+cd src/foamai-server
+uv run python -m foamai_server.main
+
+# Test the desktop application
+cd src/foamai-desktop  
+uv run python -m foamai_desktop.main
+
+# Run integration tests
+uv run pytest tests/
+
+# Test specific functionality
+uv run python examples/demo_user_approval.py
+```
+
+### Building and Distribution
+
+```bash
+# Build individual packages
+uv build src/foamai-core/
+uv build src/foamai-server/
+
+# Build all packages
+for pkg in src/*/; do
+    echo "Building $pkg"
+    uv build "$pkg"
+done
+
+# Publish to PyPI (when ready)
+uv publish dist/foamai_core-*.whl
+```
+
+### Common UV Commands
+
+| Command | Purpose |
+|---------|---------|
+| `uv sync` | Install/update all workspace dependencies |
+| `uv add <package>` | Add dependency to workspace |
+| `uv remove <package>` | Remove dependency from workspace |
+| `uv run <command>` | Run command in UV environment |
+| `uv lock` | Update lock file with latest versions |
+| `uv tree` | Show dependency tree |
+| `uv pip list` | List installed packages |
+| `uv export` | Export requirements for Docker/CI |
+
+### Troubleshooting UV Issues
+
+```bash
+# Clear UV cache
+uv cache clean
+
+# Reinstall from scratch
+rm -rf .venv uv.lock
+uv sync
+
+# Check for dependency conflicts
+uv lock --upgrade
+
+# Verbose output for debugging
+uv sync --verbose
+
+# Use specific Python version
+uv sync --python 3.13
 ```
 
 ## Nix Dev Shell Setup
@@ -228,6 +492,25 @@ docs(devops): update deployment guide
 
 ### Linting and Formatting
 
+#### Python (UV + Ruff)
+```bash
+# Format Python code across workspace
+uv run ruff format .
+
+# Check Python code style and errors
+uv run ruff check .
+
+# Fix auto-fixable issues
+uv run ruff check --fix .
+
+# Type checking (if mypy is added)
+uv run mypy src/
+
+# Run all linting checks
+uv sync --group lint
+uv run ruff check . && uv run ruff format --check .
+```
+
 #### Terraform
 ```bash
 # Format code
@@ -290,10 +573,76 @@ aws ec2 describe-regions
 
 ### Testing Infrastructure
 
-#### Local Infrastructure Testing
+#### Python Testing with UV
+```bash
+# Install test dependencies
+uv sync --group test
+
+# Run all tests
+uv run pytest
+
+# Run tests for specific package
+uv run pytest src/foamai-core/
+uv run pytest src/foamai-server/
+
+# Run tests with coverage
+uv run pytest --cov=src/ --cov-report=html
+
+# Run tests matching pattern
+uv run pytest -k "test_solver"
+
+# Run tests with verbose output
+uv run pytest -v
+
+# Run specific test file
+uv run pytest tests/test_user_approval.py
+```
+
+#### Service Testing
+FoamAI includes comprehensive testing tools for deployed services:
+
+```bash
+# Test deployed service (Python)
+cd docs/task_4_devops/demo_00/
+uv run python test-foamai-service.py --host YOUR_IP --verbose
+
+# Quick shell test
+./test-foamai-quick.sh YOUR_IP
+
+# Remote server inspection
+./test-remote-server.sh YOUR_IP ~/.ssh/foamai-key
+```
+
+#### Local Container Testing
+```bash
+# Test container setup locally
+cd dev/
+./local-test.sh setup      # Setup test environment
+./local-test.sh build      # Build all containers
+./local-test.sh test       # Run comprehensive tests
+./local-test.sh cleanup    # Clean up resources
+
+# Test individual operations
+./local-test.sh start      # Start services
+./local-test.sh status     # Check status
+./local-test.sh logs       # View logs
+./local-test.sh stop       # Stop services
+```
+
+#### Deployment Simulation
+```bash
+# Simulate AWS deployment locally
+cd dev/
+./simulate-deployment.sh full      # Full simulation
+./simulate-deployment.sh init      # Initialize only
+./simulate-deployment.sh test      # Test simulation
+./simulate-deployment.sh cleanup   # Clean up
+```
+
+#### Infrastructure Testing
 - **LocalStack**: Test AWS services locally
-- **Vagrant/Multipass**: Test scripts on local VMs
-- **Docker Compose**: Test service orchestration
+- **Terraform validate**: Validate infrastructure code
+- **Docker Compose**: Test service orchestration locally
 
 #### Staging Environment
 - Use terraform workspaces for staging
@@ -302,13 +651,51 @@ aws ec2 describe-regions
 
 ### Common Development Tasks
 
-#### Updating Container Images
+#### Running Python Applications
+```bash
+# Start the API server
+cd src/foamai-server
+uv run python -m foamai_server.main
+
+# Launch desktop application
+cd src/foamai-desktop
+uv run python -m foamai_desktop.main
+
+# Use CLI tools
+cd src/foamai-client
+uv run foamai-cli --help
+
+# Run examples
+uv run python examples/demo_user_approval.py
+uv run python examples/open_in_paraview.py
+```
+
+#### Package Development
+```bash
+# Add new dependency to core package
+cd src/foamai-core
+uv add numpy scipy
+
+# Add development dependency
+uv add --dev pytest-mock
+
+# Remove dependency
+uv remove httpx
+
+# Update package dependencies
+uv lock --upgrade
+```
+
+#### Container Development
 ```bash
 # Build and test locally
 docker build -t foamai/api:dev -f docker/api/Dockerfile .
 
 # Test with docker-compose
 docker-compose -f docker-compose.dev.yml up
+
+# Export requirements for containers
+uv export --package foamai-server --format requirements-txt > docker/api/requirements.txt
 ```
 
 #### Testing User Data Scripts

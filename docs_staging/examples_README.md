@@ -13,10 +13,10 @@ From the project root:
 
 ```bash
 # Run the user approval demo
-python examples/demo_user_approval.py
+uv run python examples/demo_user_approval.py
 
 # Open simulation results in ParaView
-python examples/open_in_paraview.py
+uv run python examples/open_in_paraview.py
 ```
 
 ## Prerequisites
@@ -25,6 +25,8 @@ Examples require:
 - FoamAI dependencies installed (`uv sync`)
 - OpenFOAM and ParaView installations
 - Sample simulation data (generated from running actual simulations)
+
+For complete development setup, see the [Contributing Guide](Contributing.md).
 
 ## Purpose
 

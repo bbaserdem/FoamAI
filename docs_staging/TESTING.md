@@ -33,10 +33,10 @@ Your FoamAI infrastructure is **fully deployed and operational** at:
 uv sync --group test
 
 # Test deployed service
-python test-foamai-service.py --host 35.167.193.72 --verbose
+uv run python test-foamai-service.py --host 35.167.193.72 --verbose
 
 # Test local development
-python test-foamai-service.py --verbose
+uv run python test-foamai-service.py --verbose
 ```
 
 **Features:**
@@ -190,13 +190,13 @@ curl -X GET http://35.167.193.72:8000/simulation/test-id/visualization
 ### 1. Before Making Changes
 ```bash
 # Baseline test
-python test-foamai-service.py --host 35.167.193.72 > baseline-test.log
+uv run python test-foamai-service.py --host 35.167.193.72 > baseline-test.log
 ```
 
 ### 2. After Implementing Features
 ```bash
 # Test new functionality
-python test-foamai-service.py --host 35.167.193.72 --verbose
+uv run python test-foamai-service.py --host 35.167.193.72 --verbose
 
 # Compare results
 diff baseline-test.log current-test.log
@@ -206,8 +206,8 @@ diff baseline-test.log current-test.log
 Add to your CI/CD pipeline:
 ```bash
 # In GitHub Actions or similar
-python test-external-apis.py --host $DEPLOYMENT_HOST
-python test-foamai-service.py --host $DEPLOYMENT_HOST
+uv run python test-external-apis.py --host $DEPLOYMENT_HOST
+uv run python test-foamai-service.py --host $DEPLOYMENT_HOST
 ```
 
 ---

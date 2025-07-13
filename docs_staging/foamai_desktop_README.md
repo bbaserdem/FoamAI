@@ -37,16 +37,7 @@ The application follows a client-server architecture:
 
 ## Installation
 
-1. **Clone the repository:**
-   ```bash
-   git clone <repository-url>
-   cd foamtest
-   ```
-
-2. **Install Python dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+See the [Contributing Guide](Contributing.md) for complete development setup instructions using UV workspace management.
 
 3. **Configure the application:**
    Create a `.env` file in the project root with the following settings:
@@ -248,17 +239,7 @@ For testing and development, a complete test server is included that simulates t
 - ✅ Supports the complete workflow: scenario → mesh → validation → simulation → results
 - ✅ Provides debugging endpoints for task monitoring
 
-### Test Server Endpoints
-- `GET /` - Health check and server info
-- `POST /submit_scenario` - Submit simulation scenario
-- `GET /status/<task_id>` - Get task status  
-- `POST /approve_mesh` - Approve generated mesh
-- `POST /reject_mesh` - Reject mesh with feedback
-- `POST /run_simulation` - Start simulation execution
-- `GET /results/<task_id>` - Get simulation results
-- `GET /download/<filename>` - Download OpenFOAM files
-- `GET /list_tasks` - List all tasks (debug)
-- `POST /clear_tasks` - Clear all tasks (debug)
+For complete API endpoint documentation, see the [API Documentation](FOAMAI_API_prd.md).
 
 ### Using Your Own OpenFOAM Data
 Place your OpenFOAM case in the `testdata/` directory with:

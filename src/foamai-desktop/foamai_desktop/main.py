@@ -5,7 +5,7 @@ import sys
 import logging
 import os
 from pathlib import Path
-
+print(os.environ["PYTHONPATH"])
 # Import PySide6 components
 from PySide6.QtWidgets import QApplication, QMessageBox, QSplashScreen
 from PySide6.QtCore import Qt, QTimer

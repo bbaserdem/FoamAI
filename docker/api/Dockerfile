@@ -1,10 +1,6 @@
 # FastAPI API Service Docker Container
-# Based on Ubuntu 22.04 LTS for stability and consistency with other services
-FROM ubuntu:22.04
-
-# Avoid timezone prompts during build
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=UTC
+# Using Python 3.12 base image for consistency
+FROM python:3.12-slim
 
 # Python environment variables
 ENV PYTHONUNBUFFERED=1
@@ -13,8 +9,6 @@ ENV PYTHONPATH=/app/src/foamai-server
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    # Add repository management
-    software-properties-common \
     # Basic utilities
     curl \
     wget \
@@ -25,23 +19,6 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     # Clean up apt cache to reduce image size
     && rm -rf /var/lib/apt/lists/*
-
-# Install Python 3.12 from deadsnakes PPA
-RUN add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update \
-    && apt-get install -y \
-    python3.12 \
-    python3.12-dev \
-    python3.12-venv \
-    python3.12-distutils \
-    && rm -rf /var/lib/apt/lists/*
-
-# Set Python 3.12 as default python3
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 \
-    && update-alternatives --set python3 /usr/bin/python3.12
-
-# Install pip for Python 3.12
-RUN python3.12 -m ensurepip --upgrade || curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12
 
 # Create API user (non-root for security)
 RUN groupadd -r apiuser && useradd -r -g apiuser -m -d /home/apiuser apiuser
@@ -61,7 +38,7 @@ COPY src/foamai-server/ ./src/foamai-server/
 WORKDIR /app/src/foamai-server
 
 # Step 1: Create virtual environment with Python 3.12
-RUN python3.12 -m venv .venv --system-site-packages
+RUN python -m venv .venv
 
 # Step 2: Upgrade pip in the virtual environment
 RUN .venv/bin/python -m pip install --upgrade pip setuptools wheel

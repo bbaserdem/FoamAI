@@ -22,6 +22,7 @@ This directory contains all consolidated documentation for the FoamAI project. A
 - [Brainlift](Brainlift.md) - Brainlift system documentation
 
 ## Server & API Documentation
+- [Backend API Reference](BackendAPI.md) - Complete API documentation with endpoints, workflows, and examples
 - [FoamAI API PRD](FOAMAI_API_prd.md) - API product requirements document
 - [Server Integration](SERVER_INTEGRATION.md) - Server integration guidelines
 - [FoamAI Desktop](foamai_desktop_README.md) - Desktop application documentation

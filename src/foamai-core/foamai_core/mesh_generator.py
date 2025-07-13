@@ -575,7 +575,9 @@ def generate_mesh_config(geometry_info: Dict[str, Any], parsed_params: Dict[str,
     """Generate mesh configuration based on geometry type."""
     geometry_type = geometry_info["type"]
     dimensions = geometry_info["dimensions"]
-    mesh_resolution = geometry_info.get("mesh_resolution", "medium")
+    mesh_resolution = geometry_info.get("mesh_resolution")
+    if mesh_resolution is None:
+        mesh_resolution = "medium"  # Default mesh resolution
     flow_context = geometry_info.get("flow_context", {})
     is_custom_geometry = geometry_info.get("is_custom_geometry", False)
     stl_file = geometry_info.get("stl_file")
@@ -612,6 +614,8 @@ def generate_mesh_config(geometry_info: Dict[str, Any], parsed_params: Dict[str,
         return generate_sphere_mesh(dimensions, mesh_resolution, is_external_flow, flow_context)
     elif geometry_type == GeometryType.CUBE:
         return generate_cube_mesh(dimensions, mesh_resolution, is_external_flow, flow_context)
+    elif geometry_type == GeometryType.NOZZLE:
+        return generate_nozzle_mesh(dimensions, mesh_resolution, flow_context, parsed_params)
     else:
         raise ValueError(f"Unsupported geometry type: {geometry_type}")
 
@@ -624,14 +628,22 @@ def get_resolution_multiplier(mesh_resolution: str) -> float:
         "fine": 2.0,
         "very_fine": 4.0
     }
+    if mesh_resolution is None:
+        return 1.0  # Default medium resolution
     return resolution_map.get(mesh_resolution, 1.0)
 
 
 def generate_cylinder_mesh(dimensions: Dict[str, float], resolution: str = "medium", 
                           is_external_flow: bool = True, flow_context: Dict[str, Any] = None) -> Dict[str, Any]:
     """Generate mesh configuration for cylinder geometry."""
-    diameter = dimensions.get("diameter", 0.1)  # Default 0.1m diameter
-    length = dimensions.get("length", diameter * 0.1)  # Default thin slice for 2D
+    # Handle None values explicitly
+    diameter = dimensions.get("diameter")
+    if diameter is None:
+        diameter = 0.1  # Default 0.1m diameter
+    
+    length = dimensions.get("length")
+    if length is None:
+        length = diameter  # Default height equal to diameter
     
     # Determine if this is a 2D or 3D case based on length
     # If length is very small compared to diameter, it's 2D
@@ -639,7 +651,9 @@ def generate_cylinder_mesh(dimensions: Dict[str, float], resolution: str = "medi
     
     if is_external_flow:
         # External flow around cylinder - create proper O-grid mesh
-        domain_multiplier = flow_context.get("domain_size_multiplier", 20.0) if flow_context else 20.0
+        domain_multiplier = flow_context.get("domain_size_multiplier") if flow_context else None
+        if domain_multiplier is None:
+            domain_multiplier = 20.0  # Default domain size multiplier
         
         # Domain dimensions
         domain_length = diameter * domain_multiplier
@@ -668,6 +682,9 @@ def generate_cylinder_mesh(dimensions: Dict[str, float], resolution: str = "medi
             "geometry_type": "cylinder",
             "is_external_flow": True,
             "is_2d": is_2d,
+            "is_custom_geometry": False,
+            "stl_file": None,
+            "stl_name": None,
             "background_mesh": {
                 # Background mesh (will be refined by snappyHexMesh)
                 "type": "blockMesh",
@@ -813,6 +830,9 @@ def generate_cylinder_mesh(dimensions: Dict[str, float], resolution: str = "medi
             "geometry_type": "cylinder_in_channel",
             "is_external_flow": False,
             "is_2d": is_2d,
+            "is_custom_geometry": False,
+            "stl_file": None,
+            "stl_name": None,
             "dimensions": {
                 "cylinder_diameter": diameter,
                 "channel_length": channel_length,
@@ -839,16 +859,27 @@ def generate_cylinder_mesh(dimensions: Dict[str, float], resolution: str = "medi
 def generate_airfoil_mesh(dimensions: Dict[str, float], resolution: str = "medium", 
                          is_external_flow: bool = True, flow_context: Dict[str, Any] = None) -> Dict[str, Any]:
     """Generate mesh configuration for airfoil geometry."""
-    chord = dimensions.get("chord", 0.1)
-    span = dimensions.get("span", chord * 0.1)  # Default thin span for 2D
-    thickness = dimensions.get("thickness", chord * 0.12)  # NACA 0012 default
+    # Handle None values explicitly
+    chord = dimensions.get("chord")
+    if chord is None:
+        chord = 0.1  # Default 10cm chord
+    
+    span = dimensions.get("span")
+    if span is None:
+        span = chord * 0.1  # Default thin span for 2D
+    
+    thickness = dimensions.get("thickness")
+    if thickness is None:
+        thickness = chord * 0.12  # NACA 0012 default
     
     # Determine if this is 2D or 3D
     is_2d = span < chord * 0.2  # Less than 20% of chord means 2D
     
     if is_external_flow:
         # External flow around airfoil
-        domain_multiplier = flow_context.get("domain_size_multiplier", 30.0) if flow_context else 30.0
+        domain_multiplier = flow_context.get("domain_size_multiplier") if flow_context else None
+        if domain_multiplier is None:
+            domain_multiplier = 30.0  # Default domain size multiplier
         
         # Domain dimensions
         domain_length = chord * domain_multiplier
@@ -875,6 +906,9 @@ def generate_airfoil_mesh(dimensions: Dict[str, float], resolution: str = "mediu
             "geometry_type": "airfoil",
             "is_external_flow": True,
             "is_2d": is_2d,
+            "is_custom_geometry": False,
+            "stl_file": None,
+            "stl_name": None,
             "background_mesh": {
                 "type": "blockMesh",
                 "domain_length": domain_length,
@@ -974,15 +1008,27 @@ def generate_airfoil_mesh(dimensions: Dict[str, float], resolution: str = "mediu
 
 def generate_pipe_mesh(dimensions: Dict[str, float], resolution_multiplier: float, params: Dict[str, Any]) -> Dict[str, Any]:
     """Generate mesh configuration for pipe geometry."""
-    diameter = dimensions.get("diameter", 0.05)
-    length = dimensions.get("length", 1.0)
+    # Handle None values explicitly
+    diameter = dimensions.get("diameter")
+    if diameter is None:
+        diameter = 0.05  # Default 5cm pipe
+    
+    length = dimensions.get("length")
+    if length is None:
+        length = 1.0  # Default 1m length
     
     # Base mesh resolution
     base_resolution = int(30 * resolution_multiplier)
     
     mesh_config = {
         "type": "blockMesh",
+        "mesh_topology": "structured",
         "geometry_type": "pipe",
+        "is_external_flow": False,
+        "is_2d": False,
+        "is_custom_geometry": False,
+        "stl_file": None,
+        "stl_name": None,
         "dimensions": {
             "diameter": diameter,
             "length": length
@@ -1008,16 +1054,31 @@ def generate_pipe_mesh(dimensions: Dict[str, float], resolution_multiplier: floa
 
 def generate_channel_mesh(dimensions: Dict[str, float], resolution_multiplier: float, params: Dict[str, Any]) -> Dict[str, Any]:
     """Generate mesh configuration for channel geometry."""
-    width = dimensions.get("width", 0.1)
-    height = dimensions.get("height", 0.02)
-    length = dimensions.get("length", 1.0)
+    # Handle None values explicitly
+    width = dimensions.get("width")
+    if width is None:
+        width = 0.1  # Default 10cm width
+    
+    height = dimensions.get("height")
+    if height is None:
+        height = 0.02  # Default 2cm height
+    
+    length = dimensions.get("length")
+    if length is None:
+        length = 1.0  # Default 1m length
     
     # Base mesh resolution
     base_resolution = int(40 * resolution_multiplier)
     
     mesh_config = {
         "type": "blockMesh",
+        "mesh_topology": "structured",
         "geometry_type": "channel",
+        "is_external_flow": False,
+        "is_2d": False,
+        "is_custom_geometry": False,
+        "stl_file": None,
+        "stl_name": None,
         "dimensions": {
             "width": width,
             "height": height,
@@ -1046,11 +1107,16 @@ def generate_channel_mesh(dimensions: Dict[str, float], resolution_multiplier: f
 def generate_sphere_mesh(dimensions: Dict[str, float], resolution: str = "medium", 
                         is_external_flow: bool = True, flow_context: Dict[str, Any] = None) -> Dict[str, Any]:
     """Generate mesh configuration for sphere geometry."""
-    diameter = dimensions.get("diameter", 0.1)
+    # Handle None values explicitly
+    diameter = dimensions.get("diameter")
+    if diameter is None:
+        diameter = 0.1  # Default 10cm sphere
     
     if is_external_flow:
         # External flow around sphere - must be 3D
-        domain_multiplier = flow_context.get("domain_size_multiplier", 20.0) if flow_context else 20.0
+        domain_multiplier = flow_context.get("domain_size_multiplier") if flow_context else None
+        if domain_multiplier is None:
+            domain_multiplier = 20.0  # Default domain size multiplier
         
         # Domain dimensions - sphere requires 3D domain
         domain_length = diameter * domain_multiplier
@@ -1069,6 +1135,9 @@ def generate_sphere_mesh(dimensions: Dict[str, float], resolution: str = "medium
             "geometry_type": "sphere",
             "is_external_flow": True,
             "is_2d": False,  # Sphere is always 3D
+            "is_custom_geometry": False,
+            "stl_file": None,
+            "stl_name": None,
             "background_mesh": {
                 "type": "blockMesh",
                 "domain_length": domain_length,
@@ -1141,6 +1210,9 @@ def generate_sphere_mesh(dimensions: Dict[str, float], resolution: str = "medium
             "geometry_type": "sphere_in_duct",
             "is_external_flow": False,
             "is_2d": False,  # Always 3D
+            "is_custom_geometry": False,
+            "stl_file": None,
+            "stl_name": None,
             "dimensions": {
                 "sphere_diameter": diameter,
                 "duct_diameter": duct_diameter,
@@ -1164,14 +1236,19 @@ def generate_sphere_mesh(dimensions: Dict[str, float], resolution: str = "medium
 
 def generate_cube_mesh(dimensions: Dict[str, float], resolution: str = "medium", is_external_flow: bool = True, flow_context: Dict[str, Any] = None) -> Dict[str, Any]:
     """Generate mesh configuration for cube geometry."""
-    side_length = dimensions.get("side_length", 0.1)
+    # Handle None values explicitly
+    side_length = dimensions.get("side_length")
+    if side_length is None:
+        side_length = 0.1  # Default 10cm cube
     
     # Get resolution count  
     base_resolution = {"coarse": 15, "medium": 30, "fine": 60, "very_fine": 90}.get(resolution, 30)
     
     if is_external_flow:
         # External flow around cube
-        domain_multiplier = flow_context.get("domain_size_multiplier", 20.0) if flow_context else 20.0
+        domain_multiplier = flow_context.get("domain_size_multiplier") if flow_context else None
+        if domain_multiplier is None:
+            domain_multiplier = 20.0  # Default domain size multiplier
         
         # Domain dimensions
         domain_length = side_length * domain_multiplier
@@ -1195,6 +1272,9 @@ def generate_cube_mesh(dimensions: Dict[str, float], resolution: str = "medium",
             "geometry_type": "cube",
             "is_external_flow": is_external_flow,
             "is_2d": is_2d,
+            "is_custom_geometry": False,
+            "stl_file": None,
+            "stl_name": None,
             "background_mesh": {
                 "type": "blockMesh",
                 "domain_length": domain_length,
@@ -1271,6 +1351,9 @@ def generate_cube_mesh(dimensions: Dict[str, float], resolution: str = "medium",
             "geometry_type": "cube_in_channel",
             "is_external_flow": False,
             "is_2d": is_2d,
+            "is_custom_geometry": False,
+            "stl_file": None,
+            "stl_name": None,
             "dimensions": {
                 "cube_side_length": side_length,
                 "channel_length": channel_length,
@@ -1291,6 +1374,270 @@ def generate_cube_mesh(dimensions: Dict[str, float], resolution: str = "medium",
         }
     
     return mesh_config
+
+
+def generate_nozzle_mesh(dimensions: Dict[str, float], mesh_resolution: str, flow_context: Dict[str, Any], parsed_params: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate mesh configuration for nozzle geometry using snappyHexMesh with STL."""
+    from pathlib import Path
+    throat_diameter = dimensions.get("throat_diameter", 0.05)
+    inlet_diameter = dimensions.get("inlet_diameter", throat_diameter * 1.5)
+    outlet_diameter = dimensions.get("outlet_diameter", throat_diameter * 2.0)
+    length = dimensions.get("length", throat_diameter * 10)
+    convergent_length = dimensions.get("convergent_length", length * 0.3)
+    divergent_length = dimensions.get("divergent_length", length * 0.7)
+    
+    # Get base resolution settings
+    base_resolution = {"coarse": 30, "medium": 50, "fine": 80, "very_fine": 120}.get(mesh_resolution, 50)
+    
+    # Domain dimensions - larger for snappyHexMesh background mesh
+    max_diameter = max(inlet_diameter, outlet_diameter)
+    domain_height = max_diameter * 4.0  # Extra space for background mesh
+    domain_width = max_diameter * 4.0   # Extra space for background mesh
+    domain_length = length * 1.5       # Extra space upstream and downstream
+    
+    # Generate nozzle STL file
+    nozzle_stl_path = generate_nozzle_stl(
+        throat_diameter=throat_diameter,
+        inlet_diameter=inlet_diameter,
+        outlet_diameter=outlet_diameter,
+        length=length,
+        convergent_length=convergent_length,
+        divergent_length=divergent_length
+    )
+    
+    # Use snappyHexMesh for proper nozzle geometry
+    mesh_config = {
+        "type": "snappyHexMesh",
+        "mesh_topology": "snappy",
+        "geometry_type": "nozzle",
+        "is_external_flow": False,
+        "is_2d": False,
+        "is_custom_geometry": True,
+        "stl_file": nozzle_stl_path,
+        "stl_name": "nozzle",
+        "background_mesh": {
+            "type": "blockMesh",
+            "domain_length": domain_length,
+            "domain_height": domain_height,
+            "domain_width": domain_width,
+            "n_cells_x": int(base_resolution * 1.5),
+            "n_cells_y": int(base_resolution * 0.75),
+            "n_cells_z": int(base_resolution * 0.75)
+        },
+        "geometry": {
+            "nozzle": {
+                "type": "triSurfaceMesh",
+                "file": f'"{Path(nozzle_stl_path).name}"'
+            }
+        },
+        "dimensions": {
+            "throat_diameter": throat_diameter,
+            "inlet_diameter": inlet_diameter,
+            "outlet_diameter": outlet_diameter,
+            "length": length,
+            "convergent_length": convergent_length,
+            "divergent_length": divergent_length,
+            "domain_height": domain_height,
+            "domain_width": domain_width,
+            "domain_length": domain_length,
+            "characteristic_length": throat_diameter  # Use throat diameter as characteristic length
+        },
+        "resolution": {
+            "base_resolution": base_resolution,
+            "surface_resolution": base_resolution * 2,  # Higher resolution on nozzle surface
+            "volume_resolution": base_resolution
+        },
+        "snappy_settings": {
+            "castellated_mesh": True,
+            "snap": True,
+            "add_layers": True,
+            "refinement_levels": {
+                "min": 1,
+                "max": 2
+            },
+            "refinement_region": {
+                # Refinement box around nozzle
+                "min": [0, -max_diameter*2, -max_diameter*2],
+                "max": [length, max_diameter*2, max_diameter*2]
+            },
+            "location_in_mesh": [domain_length/4, domain_height/2, domain_width/2],  # Fixed: place within background mesh bounds
+            "layers": {
+                "n_layers": 5,
+                "expansion_ratio": 1.3,
+                "final_layer_thickness": 0.7,
+                "min_thickness": 0.1
+            }
+        },
+        "boundary_patches": {
+            "inlet": "patch",
+            "outlet": "patch", 
+            "nozzle": "wall",  # Nozzle surface as wall
+            "top": "patch",    # Background mesh boundaries
+            "bottom": "patch",
+            "front": "patch", 
+            "back": "patch"
+        },
+        "total_cells": base_resolution * base_resolution * 6,  # Estimate after refinement
+        "quality_metrics": {
+            "aspect_ratio": 2.0,  # Expected aspect ratio for snappy mesh
+            "quality_score": 0.80  # Good quality for snappy mesh
+        }
+    }
+    
+    return mesh_config
+
+
+def generate_nozzle_stl(throat_diameter: float, inlet_diameter: float, outlet_diameter: float, 
+                       length: float, convergent_length: float, divergent_length: float) -> str:
+    """Generate STL file for nozzle geometry."""
+    import math
+    import os
+    
+    # Create nozzle STL file
+    stl_filename = f"nozzle_{throat_diameter:.3f}_{inlet_diameter:.3f}_{outlet_diameter:.3f}.stl"
+    stl_path = os.path.join("stl", stl_filename)
+    
+    # Create stl directory if it doesn't exist
+    os.makedirs("stl", exist_ok=True)
+    
+    # Generate nozzle geometry points
+    n_axial = 60  # Number of points along axis
+    n_theta = 24  # Number of points around circumference
+    
+    # Axial positions
+    x_positions = []
+    radii = []
+    
+    # Convergent section
+    for i in range(int(n_axial * 0.3)):
+        x = i / (n_axial * 0.3) * convergent_length
+        progress = i / (n_axial * 0.3)
+        r = (inlet_diameter / 2) - progress * (inlet_diameter / 2 - throat_diameter / 2)
+        x_positions.append(x)
+        radii.append(r)
+    
+    # Throat section (short constant diameter)
+    throat_section_length = length - convergent_length - divergent_length
+    for i in range(int(n_axial * 0.1)):
+        x = convergent_length + i / (n_axial * 0.1) * throat_section_length
+        x_positions.append(x)
+        radii.append(throat_diameter / 2)
+    
+    # Divergent section
+    for i in range(int(n_axial * 0.6)):
+        x = convergent_length + throat_section_length + i / (n_axial * 0.6) * divergent_length
+        progress = i / (n_axial * 0.6)
+        r = (throat_diameter / 2) + progress * (outlet_diameter / 2 - throat_diameter / 2)
+        x_positions.append(x)
+        radii.append(r)
+    
+    # Generate STL triangles
+    triangles = []
+    
+    # Generate surface triangles
+    for i in range(len(x_positions) - 1):
+        for j in range(n_theta):
+            # Current ring
+            theta1 = 2 * math.pi * j / n_theta
+            theta2 = 2 * math.pi * ((j + 1) % n_theta) / n_theta
+            
+            # Current points
+            x1, r1 = x_positions[i], radii[i]
+            x2, r2 = x_positions[i + 1], radii[i + 1]
+            
+            # Points on current ring
+            p1 = (x1, r1 * math.cos(theta1), r1 * math.sin(theta1))
+            p2 = (x1, r1 * math.cos(theta2), r1 * math.sin(theta2))
+            
+            # Points on next ring
+            p3 = (x2, r2 * math.cos(theta1), r2 * math.sin(theta1))
+            p4 = (x2, r2 * math.cos(theta2), r2 * math.sin(theta2))
+            
+            # Two triangles per quad
+            triangles.append([p1, p2, p3])
+            triangles.append([p2, p4, p3])
+    
+    # Add inlet and outlet caps
+    # Inlet cap
+    inlet_center = (0, 0, 0)
+    for j in range(n_theta):
+        theta1 = 2 * math.pi * j / n_theta
+        theta2 = 2 * math.pi * ((j + 1) % n_theta) / n_theta
+        
+        p1 = (0, (inlet_diameter / 2) * math.cos(theta1), (inlet_diameter / 2) * math.sin(theta1))
+        p2 = (0, (inlet_diameter / 2) * math.cos(theta2), (inlet_diameter / 2) * math.sin(theta2))
+        
+        triangles.append([inlet_center, p2, p1])  # Inward normal
+    
+    # Outlet cap
+    outlet_center = (length, 0, 0)
+    for j in range(n_theta):
+        theta1 = 2 * math.pi * j / n_theta
+        theta2 = 2 * math.pi * ((j + 1) % n_theta) / n_theta
+        
+        p1 = (length, (outlet_diameter / 2) * math.cos(theta1), (outlet_diameter / 2) * math.sin(theta1))
+        p2 = (length, (outlet_diameter / 2) * math.cos(theta2), (outlet_diameter / 2) * math.sin(theta2))
+        
+        triangles.append([outlet_center, p1, p2])  # Outward normal
+    
+    # Write STL file
+    with open(stl_path, 'w') as f:
+        f.write("solid nozzle\n")
+        
+        for triangle in triangles:
+            # Calculate normal vector
+            v1 = [triangle[1][i] - triangle[0][i] for i in range(3)]
+            v2 = [triangle[2][i] - triangle[0][i] for i in range(3)]
+            normal = [
+                v1[1] * v2[2] - v1[2] * v2[1],
+                v1[2] * v2[0] - v1[0] * v2[2],
+                v1[0] * v2[1] - v1[1] * v2[0]
+            ]
+            
+            # Normalize
+            length_n = math.sqrt(sum(n**2 for n in normal))
+            if length_n > 0:
+                normal = [n / length_n for n in normal]
+            
+            f.write(f"  facet normal {normal[0]:.6f} {normal[1]:.6f} {normal[2]:.6f}\n")
+            f.write("    outer loop\n")
+            for point in triangle:
+                f.write(f"      vertex {point[0]:.6f} {point[1]:.6f} {point[2]:.6f}\n")
+            f.write("    endloop\n")
+            f.write("  endfacet\n")
+        
+        f.write("endsolid nozzle\n")
+    
+    return stl_path
+
+
+def generate_nozzle_blocks(throat_diameter: float, inlet_diameter: float, outlet_diameter: float, length: float, resolution: int) -> Dict[str, Any]:
+    """Generate block structure for nozzle mesh."""
+    return {
+        "block_count": 3,  # Convergent, throat, divergent sections
+        "sections": {
+            "convergent": {
+                "inlet_diameter": inlet_diameter,
+                "outlet_diameter": throat_diameter,
+                "grading": 1.0
+            },
+            "throat": {
+                "diameter": throat_diameter,
+                "grading": 1.0
+            },
+            "divergent": {
+                "inlet_diameter": throat_diameter,
+                "outlet_diameter": outlet_diameter,
+                "grading": 1.0
+            }
+        },
+        "boundary_layer": {
+            "enabled": True,
+            "first_layer_thickness": throat_diameter * 1e-4,
+            "expansion_ratio": 1.15,
+            "layers": 8
+        }
+    }
 
 
 def generate_cylinder_blocks(diameter: float, domain_width: float, domain_height: float, resolution: int) -> Dict[str, Any]:

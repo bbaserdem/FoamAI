@@ -30,6 +30,7 @@ class GeometryType(str, Enum):
     CHANNEL = "channel"
     SPHERE = "sphere"
     CUBE = "cube"
+    NOZZLE = "nozzle"
     CUSTOM = "custom"
 
 
@@ -123,4 +124,8 @@ class CFDState(TypedDict):
     mesh_convergence_target_params: List[str] = []
     mesh_convergence_results: Dict[str, Any] = {}
     mesh_convergence_report: Dict[str, Any] = {}
-    recommended_mesh_level: int = 0 
+    recommended_mesh_level: int = 0
+    
+    # GPU acceleration
+    use_gpu: bool = False
+    gpu_info: Dict[str, Any] = {} 

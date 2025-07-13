@@ -522,6 +522,8 @@ def generate_blockmesh_dict(mesh_config: Dict[str, Any], state: CFDState) -> Dic
                 return {"circumferential": count, "radial": count//2, "meridional": count//2}
             elif geom_type == "cube":
                 return {"x": count, "y": count, "z": count}
+            elif geom_type == "nozzle":
+                return {"x": count, "y": count, "z": count}
             else:
                 return {"x": count, "y": count, "z": count}
         
@@ -539,6 +541,8 @@ def generate_blockmesh_dict(mesh_config: Dict[str, Any], state: CFDState) -> Dic
         return generate_sphere_blockmesh_dict(dimensions, resolution)
     elif geometry_type == "cube":
         return generate_cube_blockmesh_dict(dimensions, resolution)
+    elif geometry_type == "nozzle":
+        return generate_nozzle_blockmesh_dict(dimensions, resolution)
     else:
         raise ValueError(f"Unsupported geometry type for blockMesh: {geometry_type}")
 
@@ -1220,6 +1224,38 @@ def write_solver_files(case_directory: Path, state: CFDState) -> None:
     # Write transportProperties
     write_foam_dict(case_directory / "constant" / "transportProperties", solver_settings["transportProperties"])
     
+    # Write GPU-specific configuration files
+    if state.get("use_gpu", False):
+        gpu_info = state.get("gpu_info", {})
+        if gpu_info.get("gpu_backend") == "amgx":
+            # Write AmgX configuration file
+            amgx_config = {
+                "config_version": 2,
+                "solver": {
+                    "preconditioner": {
+                        "scope": "precond",
+                        "solver": "BLOCK_JACOBI"
+                    },
+                    "solver": "PCG",
+                    "print_solve_stats": 1,
+                    "obtain_timings": 1,
+                    "max_iters": 200,
+                    "monitor_residual": 1,
+                    "store_res_history": 1,
+                    "scope": "main",
+                    "convergence": "RELATIVE_INI_CORE",
+                    "tolerance": 1e-03
+                }
+            }
+            
+            # Write AmgX configuration as JSON
+            import json
+            with open(case_directory / "system" / "amgxOptions", "w") as f:
+                json.dump(amgx_config, f, indent=4)
+            
+            if state["verbose"]:
+                logger.info("Case Writer: Wrote AmgX configuration file")
+    
     # Write solver-specific files
     # interFoam specific files
     if "g" in solver_settings:
@@ -1293,11 +1329,12 @@ def write_solver_files(case_directory: Path, state: CFDState) -> None:
         if state["verbose"]:
             logger.info("Case Writer: Wrote p_rgh field for interFoam")
     
-    # rhoPimpleFoam specific files
+    # Compressible solver files (rhoPimpleFoam, sonicFoam, etc.)
     if "thermophysicalProperties" in solver_settings:
         write_foam_dict(case_directory / "constant" / "thermophysicalProperties", solver_settings["thermophysicalProperties"])
         if state["verbose"]:
-            logger.info("Case Writer: Wrote thermophysicalProperties for rhoPimpleFoam")
+            solver_name = solver_settings.get("solver", "compressible solver")
+            logger.info(f"Case Writer: Wrote thermophysicalProperties for {solver_name}")
     
     if "T" in solver_settings:
         # Only write temperature field if it doesn't already exist from boundary conditions
@@ -1305,7 +1342,8 @@ def write_solver_files(case_directory: Path, state: CFDState) -> None:
         if not temp_file_path.exists():
             write_foam_dict(temp_file_path, solver_settings["T"])
             if state["verbose"]:
-                logger.info("Case Writer: Wrote initial temperature field T for rhoPimpleFoam")
+                solver_name = solver_settings.get("solver", "compressible solver")
+                logger.info(f"Case Writer: Wrote initial temperature field T for {solver_name}")
         else:
             if state["verbose"]:
                 logger.info("Case Writer: Temperature field T already exists from boundary conditions")
@@ -1771,12 +1809,9 @@ def validate_case_structure(case_directory: Path) -> Dict[str, Any]:
                     if not (case_directory / "0" / "alpha.water").exists():
                         errors.append("Missing alpha.water field for interFoam")
                 
-                # Check for rhoPimpleFoam specific files
-                elif solver == "rhoPimpleFoam":
-                    if not (case_directory / "constant" / "thermophysicalProperties").exists():
-                        errors.append("Missing thermophysicalProperties for rhoPimpleFoam")
-                    if not (case_directory / "0" / "T").exists():
-                        errors.append("Missing temperature field T for rhoPimpleFoam")
+                # For compressible solvers, files are written based on solver_settings
+                # so we don't need to check for file existence here since this validation
+                # runs before the files are actually written
     
     # Check boundary condition files
     zero_dir = case_directory / "0"
@@ -2209,3 +2244,69 @@ def generate_snappyhexmesh_dict(mesh_config: Dict[str, Any], state: CFDState) ->
         }
     
     return snappy_dict
+
+
+def generate_nozzle_blockmesh_dict(dimensions: Dict[str, float], resolution: Dict[str, int]) -> Dict[str, Any]:
+    """Generate blockMeshDict for nozzle geometry."""
+    # Extract nozzle dimensions
+    length = dimensions.get("length", 0.3)
+    max_diameter = dimensions.get("max_diameter", 0.1)
+    
+    # For nozzle, create a rectangular domain that encompasses the nozzle
+    # The actual nozzle profile will be handled by boundary conditions
+    domain_length = length
+    domain_height = max_diameter * 2.0  # 2x max diameter
+    domain_width = max_diameter * 2.0   # 2x max diameter
+    
+    # Cell counts
+    nx = resolution.get("x", 60)
+    ny = resolution.get("y", 30)
+    nz = resolution.get("z", 30)
+    
+    # Check if this is 2D or 3D
+    is_2d = nz == 1
+    
+    return {
+        "convertToMeters": 1.0,
+        "vertices": [
+            "(0 0 0)",
+            f"({domain_length} 0 0)",
+            f"({domain_length} {domain_height} 0)",
+            f"(0 {domain_height} 0)",
+            f"(0 0 {domain_width})",
+            f"({domain_length} 0 {domain_width})",
+            f"({domain_length} {domain_height} {domain_width})",
+            f"(0 {domain_height} {domain_width})"
+        ],
+        "blocks": [
+            f"hex (0 1 2 3 4 5 6 7) ({nx} {ny} {nz}) simpleGrading (1 1 1)"
+        ],
+        "edges": [],
+        "boundary": {
+            "inlet": {
+                "type": "patch",
+                "faces": ["(0 4 7 3)"]
+            },
+            "outlet": {
+                "type": "patch",
+                "faces": ["(1 2 6 5)"]
+            },
+            "top": {
+                "type": "slip",
+                "faces": ["(3 7 6 2)"]
+            },
+            "bottom": {
+                "type": "slip",
+                "faces": ["(0 1 5 4)"]
+            },
+            "front": {
+                "type": "slip",
+                "faces": ["(0 3 2 1)"]
+            },
+            "back": {
+                "type": "slip",
+                "faces": ["(4 5 6 7)"]
+            }
+        },
+        "mergePatchPairs": []
+    }

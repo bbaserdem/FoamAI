@@ -9,7 +9,7 @@ ENV TZ=UTC
 # Python environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONPATH=/app/src/foamai-server:${PYTHONPATH}
+ENV PYTHONPATH=/app/src/foamai-server
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -45,10 +45,11 @@ COPY src/foamai-server/ ./src/foamai-server/
 
 # Create virtual environment using system Python and install dependencies
 WORKDIR /app/src/foamai-server
-RUN python3 -m venv .venv && \
-    .venv/bin/pip install --upgrade pip && \
-    .venv/bin/pip install uv && \
-    .venv/bin/uv pip install -e .
+RUN python3 -m venv .venv --system-site-packages && \
+    . .venv/bin/activate && \
+    pip install --upgrade pip setuptools wheel && \
+    pip install uv && \
+    uv pip install -e .
 
 # Create necessary directories and set permissions
 RUN mkdir -p /data /tmp/foamai

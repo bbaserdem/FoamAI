@@ -15,6 +15,10 @@ class TaskNotFoundError(DatabaseError):
     """Exception raised when a task is not found"""
     pass
 
+class ProjectPVServerError(DatabaseError):
+    """Exception raised for project pvserver-related errors"""
+    pass
+
 @contextlib.contextmanager
 def get_connection():
     """Context manager for database connections with proper cleanup"""
@@ -44,6 +48,22 @@ def execute_query(query: str, params: tuple = (), fetch_one: bool = False, fetch
         else:
             conn.commit()
             return cursor.rowcount
+
+def init_project_pvserver_table():
+    """Initialize the project_pvservers table if it doesn't exist"""
+    query = """
+        CREATE TABLE IF NOT EXISTS project_pvservers (
+            project_name TEXT PRIMARY KEY,
+            port INTEGER,
+            pid INTEGER,
+            case_path TEXT,
+            status TEXT,
+            started_at TIMESTAMP,
+            last_activity TIMESTAMP,
+            error_message TEXT
+        )
+    """
+    execute_query(query)
 
 # =============================================================================
 # TASK OPERATIONS
@@ -96,7 +116,7 @@ def update_task_rejection(task_id: str, comments: Optional[str] = None):
     update_task_status(task_id, 'rejected', message)
 
 # =============================================================================
-# PVSERVER OPERATIONS
+# TASK-BASED PVSERVER OPERATIONS (Legacy)
 # =============================================================================
 
 def set_pvserver_running(task_id: str, port: int, pid: int):
@@ -203,81 +223,219 @@ def get_pvserver_info(task_id: str) -> Optional[Dict]:
         return record_dict
     return None
 
+# =============================================================================
+# PROJECT-BASED PVSERVER OPERATIONS
+# =============================================================================
+
+def create_project_pvserver(project_name: str, port: int, pid: int, case_path: str):
+    """Create a new project pvserver record. Raises ProjectPVServerError if project already has a pvserver."""
+    # Initialize table if it doesn't exist
+    init_project_pvserver_table()
+    
+    # Check if project already has a pvserver
+    existing = get_project_pvserver_info(project_name)
+    if existing and existing.get('status') == 'running':
+        raise ProjectPVServerError(f"Project '{project_name}' already has a running pvserver on port {existing['port']}")
+    
+    now = datetime.now()
+    query = """
+        INSERT OR REPLACE INTO project_pvservers 
+        (project_name, port, pid, case_path, status, started_at, last_activity, error_message)
+        VALUES (?, ?, ?, ?, 'running', ?, ?, NULL)
+    """
+    params = (project_name, port, pid, case_path, now, now)
+    execute_query(query, params)
+
+def get_project_pvserver_info(project_name: str) -> Optional[Dict]:
+    """
+    Get pvserver information for a project with automatic validation.
+    Dead processes are automatically marked as stopped.
+    """
+    # Initialize table if it doesn't exist
+    init_project_pvserver_table()
+    
+    query = "SELECT * FROM project_pvservers WHERE project_name = ?"
+    record = execute_query(query, (project_name,), fetch_one=True)
+    
+    if record:
+        record_dict = dict(record)
+        if record_dict.get('status') == 'running':
+            # Validate the process is still running
+            if not validator.is_running(record_dict):
+                set_project_pvserver_stopped(project_name, "Process died (detected during info lookup)")
+                # Refresh data after marking as stopped
+                updated_record = execute_query(query, (project_name,), fetch_one=True)
+                if updated_record:
+                    record_dict = dict(updated_record)
+        
+        # Add connection string only if status is running
+        if record_dict.get('status') == 'running':
+            record_dict['connection_string'] = f"localhost:{record_dict['port']}"
+        
+        return record_dict
+    return None
+
+def set_project_pvserver_stopped(project_name: str, message: str = "Process stopped"):
+    """Set a project's pvserver status to 'stopped'."""
+    now = datetime.now()
+    query = """
+        UPDATE project_pvservers 
+        SET status = 'stopped', error_message = ?, last_activity = ?
+        WHERE project_name = ?
+    """
+    params = (message, now, project_name)
+    rows_affected = execute_query(query, params)
+    if rows_affected == 0:
+        raise ProjectPVServerError(f"No pvserver found for project '{project_name}' to stop.")
+
+def set_project_pvserver_error(project_name: str, error_message: str):
+    """Set a project's pvserver status to 'error'."""
+    now = datetime.now()
+    query = """
+        UPDATE project_pvservers 
+        SET status = 'error', error_message = ?, last_activity = ?
+        WHERE project_name = ?
+    """
+    params = (error_message, now, project_name)
+    rows_affected = execute_query(query, params)
+    if rows_affected == 0:
+        raise ProjectPVServerError(f"No pvserver found for project '{project_name}' to set error.")
+
+def get_all_project_pvservers() -> List[Dict]:
+    """
+    Get all project pvserver records with automatic process validation.
+    Dead processes are automatically cleaned up.
+    """
+    # Initialize table if it doesn't exist
+    init_project_pvserver_table()
+    
+    query = "SELECT * FROM project_pvservers ORDER BY started_at DESC"
+    all_records = execute_query(query, fetch_all=True)
+    
+    validated_records = []
+    if not all_records:
+        return validated_records
+
+    for row in all_records:
+        record = dict(row)
+        if record.get('status') == 'running':
+            if validator.is_running(record):
+                validated_records.append(record)
+            else:
+                set_project_pvserver_stopped(record['project_name'], "Process died (detected during list retrieval)")
+                # Add the updated record
+                updated_record = get_project_pvserver_info(record['project_name'])
+                if updated_record:
+                    validated_records.append(updated_record)
+        else:
+            validated_records.append(record)
+            
+    return validated_records
+
+def get_running_project_pvservers() -> List[Dict]:
+    """Get all running project pvservers with automatic process validation."""
+    all_project_pvservers = get_all_project_pvservers()
+    return [record for record in all_project_pvservers if record.get('status') == 'running']
+
+def count_running_project_pvservers() -> int:
+    """Count currently running project pvservers."""
+    return len(get_running_project_pvservers())
+
+def delete_project_pvserver(project_name: str):
+    """Delete a project pvserver record completely."""
+    query = "DELETE FROM project_pvservers WHERE project_name = ?"
+    rows_affected = execute_query(query, (project_name,))
+    if rows_affected == 0:
+        raise ProjectPVServerError(f"No pvserver record found for project '{project_name}' to delete.")
+
+# =============================================================================
+# COMBINED PVSERVER OPERATIONS
+# =============================================================================
+
+def get_all_running_pvservers_combined() -> List[Dict]:
+    """Get all running pvservers from both tasks and projects."""
+    task_pvservers = get_running_pvservers()
+    project_pvservers = get_running_project_pvservers()
+    
+    # Add source information
+    for record in task_pvservers:
+        record['source'] = 'task'
+        record['identifier'] = record['task_id']
+    
+    for record in project_pvservers:
+        record['source'] = 'project'
+        record['identifier'] = record['project_name']
+    
+    return task_pvservers + project_pvservers
+
+def count_all_running_pvservers() -> int:
+    """Count all running pvservers from both tasks and projects."""
+    return count_running_pvservers() + count_running_project_pvservers()
+
+# =============================================================================
+# LEGACY FUNCTIONS (keeping for backward compatibility)
+# =============================================================================
+
 def get_inactive_pvservers(hours_threshold: int = 4) -> List[Dict]:
-    """Get pvservers that have been inactive for too long"""
+    """Get inactive pvserver records older than the threshold"""
     cutoff_time = datetime.now() - timedelta(hours=hours_threshold)
-    query = "SELECT task_id, pvserver_pid, pvserver_port, pvserver_started_at FROM tasks WHERE pvserver_status = 'running' AND pvserver_started_at < ? ORDER BY pvserver_started_at ASC"
-    results = execute_query(query, (cutoff_time,), fetch_all=True)
-    return [dict(row) for row in results] if results else []
+    query = "SELECT task_id, pvserver_port, pvserver_pid, pvserver_last_activity FROM tasks WHERE pvserver_status = 'running' AND pvserver_last_activity < ? ORDER BY pvserver_last_activity ASC"
+    return [dict(row) for row in execute_query(query, (cutoff_time,), fetch_all=True)]
 
 def link_task_to_pvserver(task_id: str, port: int, pid: int):
-    """Link a task to an existing pvserver"""
+    """Link a task to a running pvserver (for task-based operations)"""
     set_pvserver_running(task_id, port, pid)
 
-# =============================================================================
-# MAINTENANCE OPERATIONS
-# =============================================================================
-
 def get_all_tasks() -> List[Dict]:
-    """Get all tasks (mainly for debugging/maintenance)"""
+    """Get all tasks from the database"""
     query = "SELECT * FROM tasks ORDER BY created_at DESC"
-    results = execute_query(query, fetch_all=True)
-    return [dict(row) for row in results] if results else []
+    return [dict(row) for row in execute_query(query, fetch_all=True)]
 
 def delete_task(task_id: str):
-    """Delete a task (use with caution)"""
-    query = "DELETE FROM tasks WHERE task_id = ?"
-    execute_query(query, (task_id,))
+    """Delete a task from the database"""
+    execute_query("DELETE FROM tasks WHERE task_id = ?", (task_id,))
 
 def get_tasks_by_status(status: str) -> List[Dict]:
-    """Get all tasks with a specific status"""
+    """Get tasks by status"""
     query = "SELECT * FROM tasks WHERE status = ? ORDER BY created_at DESC"
-    results = execute_query(query, (status,), fetch_all=True)
-    return [dict(row) for row in results] if results else []
+    return [dict(row) for row in execute_query(query, (status,), fetch_all=True)]
 
 def get_database_stats() -> Dict:
-    """Get database statistics for monitoring"""
-    with get_connection() as conn:
-        cursor = conn.cursor()
+    """Get database statistics"""
+    stats = {}
+    
+    # Task stats
+    task_count = execute_query("SELECT COUNT(*) as count FROM tasks", fetch_one=True)
+    stats['total_tasks'] = task_count['count'] if task_count else 0
+    
+    running_task_pvservers = execute_query("SELECT COUNT(*) as count FROM tasks WHERE pvserver_status = 'running'", fetch_one=True)
+    stats['running_task_pvservers'] = running_task_pvservers['count'] if running_task_pvservers else 0
+    
+    # Project stats
+    try:
+        init_project_pvserver_table()
+        project_count = execute_query("SELECT COUNT(*) as count FROM project_pvservers", fetch_one=True)
+        stats['total_project_pvservers'] = project_count['count'] if project_count else 0
         
-        # Total tasks
-        cursor.execute("SELECT COUNT(*) FROM tasks")
-        total_tasks = cursor.fetchone()[0]
-        
-        # Tasks by status
-        cursor.execute("SELECT status, COUNT(*) FROM tasks GROUP BY status")
-        status_counts = {row[0]: row[1] for row in cursor.fetchall()}
-        
-        # PVServer stats
-        cursor.execute("SELECT pvserver_status, COUNT(*) FROM tasks WHERE pvserver_status IS NOT NULL GROUP BY pvserver_status")
-        pvserver_counts = {row[0]: row[1] for row in cursor.fetchall()}
-        
-        return {
-            'total_tasks': total_tasks,
-            'status_counts': status_counts,
-            'pvserver_counts': pvserver_counts,
-            'timestamp': datetime.now().isoformat()
-        }
+        running_project_pvservers = execute_query("SELECT COUNT(*) as count FROM project_pvservers WHERE status = 'running'", fetch_one=True)
+        stats['running_project_pvservers'] = running_project_pvservers['count'] if running_project_pvservers else 0
+    except DatabaseError:
+        stats['total_project_pvservers'] = 0
+        stats['running_project_pvservers'] = 0
+    
+    return stats
 
 def cleanup_stale_pvserver_entries() -> List[str]:
-    """
-    Clean up all stale database entries for dead processes.
-    This is now an explicit maintenance function.
-    """
-    query = "SELECT task_id, pvserver_pid, pvserver_port FROM tasks WHERE pvserver_status = 'running'"
-    records = execute_query(query, fetch_all=True)
-    cleaned_up_ids = []
+    """Clean up stale pvserver entries and return list of cleaned task IDs"""
+    stale_entries = []
     
-    if not records:
-        return cleaned_up_ids
-        
-    for row in records:
-        record = dict(row)
-        if not validator.is_running(record):
-            _cleanup_stale_pvserver_entry(record['task_id'], "Process died (detected during full stale cleanup)")
-            cleaned_up_ids.append(record['task_id'])
-            
-    return cleaned_up_ids
+    # Clean up task-based pvservers
+    running_pvservers = get_running_pvservers()  # This automatically cleans up stale entries
+    
+    # Clean up project-based pvservers
+    running_project_pvservers = get_running_project_pvservers()  # This also cleans up stale entries
+    
+    return stale_entries
 
 if __name__ == "__main__":
     # Test the database connection and schema

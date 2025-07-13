@@ -100,7 +100,7 @@ class ProcessManager:
         if not case_dir.is_dir():
             raise PVServerError(f"Case directory does not exist: {case_path}")
 
-        cmd = ['pvserver', f'--server-port={port}', '--disable-xdisplay-test']
+        cmd = ['pvserver', f'--server-port={port}', '--disable-xdisplay-test', '--force-offscreen-rendering']
         
         try:
             # Start process, ensuring it can be cleaned up properly

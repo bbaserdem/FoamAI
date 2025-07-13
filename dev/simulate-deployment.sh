@@ -212,7 +212,7 @@ DEPLOYMENT_PROFILE=development
 
 # GitHub Container Registry Configuration
 GHCR_REGISTRY=ghcr.io
-GITHUB_ORG=batuhan
+GITHUB_ORG=bbaserdem
 
 # Docker image settings - Using GitHub Container Registry
 GHCR_API_URL=ghcr.io/bbaserdem/foamai/api

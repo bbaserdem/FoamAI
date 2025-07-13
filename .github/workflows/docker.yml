@@ -50,6 +50,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write  # This can help with authentication
 
     steps:
     - name: Checkout repository
@@ -65,12 +66,14 @@ jobs:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+        # Alternative: Use a PAT if GITHUB_TOKEN doesn't work
+        # password: ${{ secrets.GHCR_TOKEN }}
 
     - name: Extract metadata
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: ${{ env.REGISTRY }}/${{ env.DOCKER_ORG }}/${{ matrix.service.name }}
+        images: ${{ env.REGISTRY }}/${{ env.DOCKER_ORG }}/foamai/${{ matrix.service.name }}
         tags: |
           type=ref,event=branch
           type=ref,event=pr
@@ -113,7 +116,7 @@ jobs:
     - name: Run Trivy vulnerability scanner
       uses: aquasecurity/trivy-action@master
       with:
-        image-ref: '${{ env.REGISTRY }}/${{ env.DOCKER_ORG }}/${{ matrix.service }}:latest'
+        image-ref: '${{ env.REGISTRY }}/${{ env.DOCKER_ORG }}/foamai/${{ matrix.service }}:latest'
         format: 'sarif'
         output: 'trivy-results.sarif'
 
@@ -145,8 +148,8 @@ jobs:
         if [ "${{ github.event_name }}" != "pull_request" ]; then
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Published Images 📦" >> $GITHUB_STEP_SUMMARY
-          echo "- \`ghcr.io/${{ env.DOCKER_ORG }}/openfoam:latest\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`ghcr.io/${{ env.DOCKER_ORG }}/api:latest\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`ghcr.io/${{ env.DOCKER_ORG }}/pvserver:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`ghcr.io/${{ env.DOCKER_ORG }}/foamai/openfoam:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`ghcr.io/${{ env.DOCKER_ORG }}/foamai/api:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`ghcr.io/${{ env.DOCKER_ORG }}/foamai/pvserver:latest\`" >> $GITHUB_STEP_SUMMARY
           echo "- Tagged with commit SHA: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-        fi 
+        fi

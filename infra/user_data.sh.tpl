@@ -10,6 +10,7 @@ export FILESYSTEM_TYPE="${filesystem_type}"
 export MOUNT_POINT="${mount_point}"
 export EBS_WAIT_TIMEOUT="${wait_timeout}"
 export DEPLOYMENT_PROFILE="${deployment_profile}"
+export GITHUB_ORG="${github_org}"
 
 # Logging setup
 LOG_FILE="/var/log/foamai-startup.log"
